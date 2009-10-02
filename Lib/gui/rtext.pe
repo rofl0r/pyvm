@@ -140,7 +140,9 @@ class _rtext (fbview)
 		y = cy * $dy
 		w = font.isizeof (text)
 		if (ul) {
-			font.underline ($fb, x, y, text, 0x363658)
+			# underline color half intensity of the text color
+			cc = (fg>>1) & ~0x808080
+			font.underline ($fb, x, y, text, cc)
 		}
 		font.render_to ($fb, x, y, text, fg)
 		if (click)
