@@ -134,7 +134,18 @@ class mounter
 	{
 		os.remove ($f1.fnm)
 		os.remove ($f2.fnm)
-		return ($read = $f1.read) (n)
+		return ($read = $read2) (n)
+	}
+
+	method read2 (n)
+	{
+		# in most cases this happens with just one `$f1.read`
+		data = ""
+		while (len (data) < n)
+			if !(more = $f1.read (n - len (data)))
+				raise Error ("pipe closed")
+			else data += more
+		return data
 	}
 
 	method read_int ()
@@ -237,6 +248,7 @@ class mounter
 				rez = guard (False, $ops.do_mkdir, path, mode) ? 0 : -2
 				$writes (rez)
 			}
+			print "UNEXPECTED TYPE:", req
 			break
 		}
 	}
