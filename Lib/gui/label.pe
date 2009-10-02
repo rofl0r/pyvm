@@ -1,0 +1,82 @@
+__autosem__
+from widget import widget
+from util import kwget
+
+#
+# label is a passive widget with some text
+# one line only. For multiline we must combine
+# multiple labels.
+#
+
+class label (widget)
+{
+	method Init (t, font=None, $align='center', alignto=None, $ew=False, **kw)
+	{
+		if (font == "bold") font = $A.dfontb
+		$font = font or $A.dfont
+		if ('w' not in kw)
+			kw ['w'] = alignto ? alignto.w : $font.isizeof (t -> str ? t : t ()) + 3
+		else if (kw ['w'] -> str)
+			kw ['w'] = $font.isizeof (kw ['w'])
+		if ('h' not in kw)
+			kw ['h'] = $font.size () [1] + 4
+		$active_fg = kw.pop ("fg", $A.color_txt)
+		$bg = kw.pop ("bg", $A.color_bg)
+		$widget_init (**kw)
+		$settext (t)
+		$enabled = True
+	}
+
+	method _resize_w (dw)
+		if ($elastic) {
+			$w += dw
+			$calctx ()
+		}
+
+	method _resize_h (dh)
+		return
+
+	method calctx ()
+	{
+		if ($align == 'center')
+			$tx = ($w - $font.isizeof ($txt ())) / 2
+		else if ($align == 'left' or $align == "Left")
+			$tx = 0
+		else $tx = $w - $font.isizeof ($txt ())
+		if ($tx < 0) $tx = 0
+	}
+
+	method settext ($t)
+	{
+		fx, fy = $font.size ()
+		$calctx ()
+		$ty = ($h - fy) / 2 + 1
+		if ($ty < 0) $ty = 0
+	}
+
+	method change_text (t)
+	{
+		$settext (t)
+		$Draw ()
+	}
+
+	method txt ()
+		return $t -> str ? $t : $t ()
+
+	method DrawText ()
+	{
+		t = $txt ()
+		a = $align == "Left"
+		while ($font.sizeof (t) > $w and t)
+			t = a ? t [1:] : t [:-1]
+		fg = $enabled ? $active_fg : $A.color_shaded
+		$draw_blank ($bg)
+		$draw_string (t, $tx, $ty, fg=fg, bg=$bg, font=$font)
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+		$DrawText ()
+	}
+}

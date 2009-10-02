@@ -1,0 +1,897 @@
+##  Graphical Windowing Environment
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This code runs a windowing environemnt. Interested applications
+# use a UNIX domain socket to set up a shared framebuffer. Then this
+# code makes sure that the contains of windows are properly clipped
+# so that each application has a -conceptually- independent "window".
+# It arranges to send input events to the correct window, can change
+# the stacking of windows, kill applications, etc.
+# Also, part of the windowing enviroment is the bottom "bar" which
+# allows window shuffling and the "Start" menu which can be used
+# to launch new applications and Shutdown the windowing server.
+
+# Like the vm and the rest of the toolchain, this windowing backend
+# does not have to host external/untrusted applications (for now).
+
+# This is the code of the server. The client implementation can be seen
+# in backend_pywm
+
+__autosem__
+
+from gfxbackends import Init
+from gfxbackends import backend_pywm as pywm
+from graphics.framebuffer import FrameBuffer
+from os import execbin_bg as run
+import os, thread, random, time, math
+
+if (!@lockfile.get ("winGFX")) {
+	# we need a different IPC socket for every windowing environment.
+	# currently the server just uses IPC/GFX and that's why it's protected.
+	print "Windowing environment already running"
+	exit ()
+}
+
+Window = Init ()
+
+# this environment variable will be passed to any applications
+# started from within the windowing environment and they'll know
+# to start their windows here
+os.putenv ("PYVM_DISPLAY", "pywm:GFX")
+
+GFonts = @fonts.render.Open ("$urw/sans-b", 11)
+GFonts2 = @fonts.render.Open ("$urw/sans", 14)
+GFonts3 = @fonts.render.Open ("$urw/sans-b", 16)
+FFont = @fonts.render.Open ("$unicode-8x16.psfu", 0)
+BH = GFonts2.maxh
+
+# so, we got "windows". after something is moved, opened or closed,
+# for each window the "visible rectangles" are calculated. After that
+# every fill_rect or show_fb operation gets clipped on the visible
+# rects. That's all on the output front.
+
+class basewin
+{
+	is_app = False
+	draw_deco = void
+	ax = ay = 0
+
+	method rect ()
+		return $x, $y, $x+$W, $y+$H
+
+	method xyin (x, y)
+		return $x <= x <= $x + $W and $y <= y <= $y + $H
+
+	method fill_rect (x, y, w, h, col)
+		$dpy.fill_rect ($vrects, x+$x, y+$y, w, h, col)
+
+	method show_fb (fb, x, y, w, h)
+		$dpy.update_fb ($vrects, fb, x+$x+$ax, y+$y+$ay, w, h, x, y)
+
+	method DrawWin ()
+	{
+		$Draw ()
+		$draw_deco ()
+	}
+
+	wmclose = void
+}
+
+class deco_win (**basewin)
+{
+	method __init__ ($dpy, $title, $x, $y, w, h, *args, **kwargs)
+	{
+		$vrects = None
+		$map (w, h)
+		$child_init (*args, **kwargs)
+	}
+
+	method map (w, h)
+	{
+		$W = w + 2
+		$H = h + 2 + BH
+		$ax = 1
+		$ay = BH + 1
+		$AW = w
+		$AH = h
+		$wbara = FrameBuffer ($AW, BH, $dpy.BPP)
+		$wbard = FrameBuffer ($AW, BH, $dpy.BPP)
+		$make_bars ()
+	}
+
+	method make_bars ()
+	{
+		$wbara.clear (0x6666ff)
+		$wbard.clear (0x776677)
+		GFonts.render_to ($wbara, 0, 0, $title, 0xf0f0f0)
+		GFonts.render_to ($wbard, 0, 0, $title, 0)
+		$wbara.fill_rect ($AW-10, 1, 8, $wbara.h-2, 0x3333aa)
+		GFonts.render_to ($wbara, $AW - 10, 0, "X", 0xf0f0f0)
+		$wbara.fill_rect ($AW-20, 1, 8, $wbara.h-2, 0x3333aa)
+		GFonts.render_to ($wbara, $AW - 20, 0, "_", 0xf0f0f0)
+		GFonts.render_to ($wbard, $AW - 10, 0, "x", 0)
+		GFonts.render_to ($wbard, $AW - 20, 0, "_", 0)
+	}
+
+	method draw_deco ()
+	{
+		topwin = $dpy.is_active (self)
+		lc = topwin ? 0xff0000 : 0x881010
+		$fill_rect (0, 0, $W, 1, lc)
+		$fill_rect (0, 0, 1, $H, lc)
+		$fill_rect ($W-1, 0, 1, $H, lc)
+		$fill_rect (0, $H-1, $W, 1, lc)
+		$dpy.update_fb ($vrects, topwin ? $wbara : $wbard,
+				1+$x, 1+$y, $AW, BH, 0, 0)
+	}
+
+	method do_click (b, x, y)
+		if (y < BH + 1) {
+			if (x > $AW - 10) $wmclose ()
+			else if (x > $AW - 20) $dpy.minimize (self)
+			else $dpy.movewin (self)
+		} else $do_click2 (b, x-$ax, y-$ay)
+
+	do_click2 = void
+
+	method in_bar (x, y)
+		return y < BH + 1
+}
+
+class appwin (**deco_win)
+{
+	is_app = True
+
+	method child_init ($fb, $ipc_channel)
+	{
+		thread.start_new ($handle_output)
+		$ev_fifo = thread.fifo ()
+		thread.start_new ($send_input)
+		$dpy.add_new_window (self)
+		return True
+	}
+
+	method Draw ()
+		$show_fb ($fb, 0, 0, $AW, $AH)
+
+	method do_click2 (b, x, y)
+		$ev_fifo.put ("CLICK %i %i %i\n"% (b, x, y))
+
+	method send_event (e)
+	{
+		if (e [0] == "XY") {
+			x, y = e [1]
+			x -= $x + $ax
+			y -= $y + $ay
+			e = "M %i %i" % (x, y)
+		} else if (e [0] in ("PRESS", "RELEASE")) {
+			e = list (e)
+			if (e [1] == "\n")
+				e [1] = "NL"
+			else if (e [1] == " ")
+				e [1] = "SP"
+			else if (e [1] == "\t")
+				e [1] = "TAB"
+			e = " ".join (e)
+		} else if (e [0] in ("CLICK", "UNCLICK")) {
+			x, y = e [2], e [3]
+			x -= $x + $ax
+			y -= $y + $ay
+			e = "%s %i %i %i" %(e [0], e [1], x, y)
+		} else if (e [0] == "FOCUS" or e [0] == "exit") {
+			e = e [0]
+		} else if (e [0] == "WHEEL") {
+			e = "WHEEL " + e [1]
+		} else return
+
+		$ev_fifo.put (e + "\n")
+	}
+
+
+	method send_input ()
+		while (1)
+			$ipc_channel.send ($ev_fifo.get ())
+
+	method wmclose ()
+	{
+		$send_event (["exit"])
+		$dpy.close_win (self)
+	}
+
+	# process requests from the client application
+	method handle_output ()
+	{
+		sleep (0.1)
+		for (r in $ipc_channel.readlines_rstr ()) {
+			r = r.split ()
+			r0 = r [0]
+			if (r0 == "EXIT")
+				break
+
+			if (r0 == "F") {		# flush
+				x0, y0, x1, y1 = [int (i) for (i in r [1:])]
+				with ($dpy.L)
+					$show_fb ($fb, x0, y0, x1 - x0, y1 - y0)
+			} else if (r0 == "NAME") {	# wm title
+				$title = unhexlify (r [1])
+				$make_bars ()
+				$dpy.change_name (self)
+			} else if (r0 == "REMAP") {	# resize
+				w, h, sid = [int (i) for (i in r [1:])]
+				pywm.resize ($fb, w, h, sid)
+				$map (w, h)
+				with ($dpy.L)
+					$dpy.resized ()
+			} else if (r0 == "COPY") {	# copy to clipboard
+				$dpy.SetClipboard (unhexlify (r [1]))
+			} else if (r0 == "PASTE") {	# paste from clipboard
+				$ev_fifo.put ("PASTED %s\n" %$dpy.GetClipboard ().hexlify ())
+			}
+		}
+
+		with ($dpy.L)
+			$dpy.close_win (self)
+	}
+
+}
+
+class bgwin (**basewin)
+{
+	method __init__ ($dpy, $W, $H, $col)
+	{
+		$vrects = None
+		$x = $y = 0
+	}
+
+	method send_event (e)
+		if (e and e [0] == "PRESS" and e [1] == "ESC")
+			if ($dpy.mwindows)
+				$dpy.bring_to_front ($dpy.mwindows [-1])
+			else $dpy.end ()
+
+	method Draw ()
+		$fill_rect (0, 0, $W, $H, $col)
+
+	do_click = void
+	in_bar = void
+
+	method wmclose ()
+		$dpy.end ()
+}
+
+def Run (cmdline)
+	run (*cmdline.split ())
+
+class Go (**basewin)
+{
+	Open = False
+
+	method __init__ ($dpy)
+	{
+		$apps = [
+			["webbrowser",	"pyvm www"],
+			["video",	"pyvm avplay -open"],
+			["pdf viewer",	"pyvm pdf -open"],
+			["mahjongg",	"pyvm mahjongg"],
+			["*My* Mbox",	"pyvm mymbox"],
+			["xterm",	"pyvm xterm"],
+			["xterm small",	"pyvm xterm -size 80x25 -12x22"],
+			["Exit",	 $Exit]
+		]
+
+		$vrects = None
+		F = GFonts3
+		$x = 1
+		$dy = F.maxh
+		$W = max ([F.isizeof (x[0]) for (x in $apps)]) + 25
+		$H = len ($apps) * F.maxh + 1
+		$y = $dpy.H - $H - BH - 1
+
+		$fb = FrameBuffer ($W-2, $H-2, $dpy.BPP)
+		f2 = FrameBuffer ($W - 4, $dy, $dpy.BPP)
+		$fb.clear (0x777777)
+		y = 0
+		for (a in $apps) {
+			f2.clear (0x333355)
+			f2.draw_rect (0, 0, f2.w - 1, f2.h - 1, 0)
+			F.render_to (f2, 1, 0, a[0], 0xd0d0d0)
+			$fb.put_image (f2.as_image (), 1, y)
+			y += F.maxh
+		}
+		$__class__.Open = self
+		$dpy.add_new_window (self)
+	}
+
+	method Draw ()
+	{
+		$fill_rect (0, 0, $W-1, 1, 0x333377)
+		$fill_rect (0, 0, 1, $H-1, 0x333377)
+		$fill_rect ($W-2, 0, 1, $H-1, 0x333377)
+		$fill_rect (0, $H-2, $W-1, 1, 0x333377)
+		$show_fb ($fb, 1, 1, $fb.w, $fb.h)
+	}
+
+	method send_event (e)
+		if (e and e [0] == "PRESS" and e [1] == "ESC")
+			$close ()
+
+	method do_click (b, x, y)
+		if (y > 0) try {
+			c = $apps [y / $dy][1]
+			if (c -> str)
+				Run (c)
+			else c ()
+			$close ()
+		} except print sys.exc_info ()
+
+	method in_bar (*args)
+		return False
+
+	method close ()
+	{
+		$dpy.close_win (self)
+		$__class__.Open = False
+	}
+
+	method Exit ()
+		$dpy.ShutDown ()
+}
+
+class clock (**basewin)
+{
+	method __init__ ($dpy)
+	{
+		$vrects = None
+		$x = $dpy.W - 71
+		$y = $dpy.H - 50
+		$W = 70
+		$H = 20
+		$fb = FrameBuffer ($W-2, $H-2, $dpy.BPP)
+		$running = True
+		thread.start_new ($update)
+	}
+
+	method Draw ()
+	{
+		$fill_rect (0, 0, $W, 1, 0x008000)
+		$fill_rect (0, 0, 1, $H, 0x008000)
+		$fill_rect ($W-1, 0, 1, $H, 0x008000)
+		$fill_rect (0, $H-1, $W, 1, 0x008000)
+		$fb.clear (0x0a0a0a)
+		FFont.render_to ($fb, 0, 2, time.ltimeof (), 0x88bb77)
+		$show_fb ($fb, 1, 1, $fb.w, $fb.h)
+	}
+
+	method update ()
+		while (1) {
+			sleep (2)
+			if.break (!$running)
+				littleclock.ClockWin = False
+			$Draw ()
+		}
+
+	method send_event (e)
+		if (e and e [0] == "PRESS" and e [1] == "ESC")
+			$close ()
+
+	method do_click (b, x, y)
+		$dpy.movewin (self)
+
+	method in_bar (*args)
+		return True
+
+	method close ()
+	{
+		$running = False
+		$dpy.close_win (self)
+	}
+}
+
+namespace littleclock
+{
+	ClockWin = False
+	Mod = False
+	def make_clock ()
+	{
+		while (1) {
+			hour = time.localtime ()[3] % 12
+			rad = math.pi * 2 * hour / 12
+			cf = FrameBuffer (BH, BH, 3)
+			cf.clear (0x909090)
+			cf.fill_circle (BH / 2, BH / 2, BH / 2 - 1, 0)
+			r = BH / 2 - 2
+			cf.fill_circle (BH / 2, BH / 2, r, 0xa0a0a0)
+			cf.draw_line_rel (BH/2, BH/2, int (r * math.sin (rad)),
+					  int (-r * math.cos (rad)), 0)
+			littleclock.Clocky = cf.as_image ()
+			littleclock.Mod = True
+			minute = time.localtime ()[4]
+			sleep (60 * (61 - minute))
+		}
+	}
+}
+
+class Bar
+{
+	lasthour = None
+
+	method __init__ ($dpy)
+	{
+		thread.start_new (littleclock.make_clock)
+		sleep (0.1)
+
+		go = FrameBuffer (30, $dpy.BH - 2, $dpy.BPP)
+		go.clear (0x333377)
+		go.draw_rect (0, 0, go.w - 1, go.h - 1, 0)
+		GFonts2.render_to (go, 1, 0, "Go", 0xffffff)
+		$go = go.as_image ()
+
+		$barfb = FrameBuffer ($dpy.W, $dpy.BH, $dpy.BPP)
+		$areas = []
+	}
+
+	method draw_bar ()
+	{
+		$barfb.clear (0x777777)
+		wspace = $barfb.w - BH - 1 - $go.w
+		nw = 0
+		for (w in $dpy.cwindows)
+			if (w.is_app)
+				nw += 1
+		bw = minmax (130, nw ? wspace / nw - 1 : 0, 200)
+		afb = FrameBuffer (bw, BH, $barfb.bpp)
+		
+		$areas = []
+		$barfb.put_image ($go, 1, 1)
+		x = $go.w + 2
+		n = 0
+		lastw = $dpy.windows [-1]
+		bw -= 3
+		for (w in $dpy.cwindows)
+			if (w.is_app) {
+				col = w is lastw ? 0x555577 : w in $dpy.mwindows
+					 ?  0x553333 : 0x333355
+				afb.clear (col)
+				afb.draw_rect (0, 0, afb.w - 1, afb.h - 1, 0)
+				if (GFonts2.isizeof (w.title) > bw) 
+					t = w.title [:GFonts2.hbreak (w.title, bw - 20)] + "..."
+				else t = w.title
+				GFonts2.render_to (afb, 2, 0, t, 0xffffff)
+				$areas.append ((x, 1, afb.w, afb.h, w))
+				$barfb.put_image (afb.as_image (), x, 1)
+				x += afb.w + 1
+				n += 1
+			}
+		$barfb.put_image (littleclock.Clocky, wspace + $go.w + 1, 1)
+
+		$dpy.gfx.show_image ($barfb.as_image (), 0, $dpy.H - $dpy.BH)
+		$dpy.flush_area (0, $dpy.H - $dpy.BH, $dpy.W, $dpy.BH)
+	}
+
+	method do_click (x, y)
+	{
+		if (x < $go.w)
+			if (!Go.Open) Go ($dpy)
+			else Go.Open.close ()
+		for (xx, yy, ww, hh, w in $areas)
+			if (xx <= x <= xx+ww and yy <= y <= yy+hh) {
+				if ($dpy.is_active (w))
+					$dpy.minimize (w)
+				else $dpy.bring_to_front (w)
+				return
+			}
+	}
+}
+
+class Windows
+{
+	method __init__ ()
+	{
+		$L = thread.xlock (False)
+		$END = thread.xlock (False)
+		$killed = False
+
+		$gfx = Window (0, 600)
+		$gfx.set_wm_name ("pyvm windows")
+		$W, $H, $BPP = $gfx.width, $gfx.height, $gfx.bpp
+
+		# windows in draw order
+		$windows = [bgwin (self, $gfx.width, $gfx.height, 0x0f0f0f)]
+		# in creation order (for the bar)
+		$cwindows = [$windows [0]]
+		# minimized
+		$mwindows = []
+
+		$qlc = False
+
+		$active = $windows [0]
+		$BH = BH + 2
+		$clip = 0, 0, $W, $H - $BH
+		$pevent = None
+
+		$Bar = Bar (self)
+		$Bar.draw_bar ()
+
+		thread.start_new ($handle_input)
+		$serverid = thread.start_new ($run_server)
+	}
+
+	# Accepting connections from applications
+	method run_server ()
+		try for (fb, sock in pywm.rfb_server ($W-2, $H-$BH-BH-2, $BPP, "GFX")) {
+			w, h = fb.w, fb.h
+			x = random.randint (0, $W - 2 - w)
+			y = random.randint (0, $H - 2 - $BH - h - BH)
+			application = appwin (self, "", x, y, fb.w, fb.h, fb, sock)
+		} except (thread.Interrupt) { }
+
+	method end ()
+		$killed = True
+
+	method change_name (w)
+	with ($L) {
+		w.draw_deco ()
+		$Bar.draw_bar ()
+	}
+
+	method is_active (w)
+		return w is $active
+
+	method activate (w)
+	{
+		old, $active = $active, w
+		old.draw_deco ()
+		w.DrawWin ()
+		$Bar.draw_bar ()
+	}
+
+	method flush_area (x, y, w, h)
+		$gfx.flush ((x, y, x+w, y+h))
+
+	method fill_rect2 (x, y, w, h, col)
+	{
+		if (c = clip_rect ((x, y, w, h), $clip))
+			x, y, w, h = c
+		else return
+		$gfx.fill_rect (x, y, w, h, col)
+		$flush_area (x, y, w, h)
+	}
+
+	method fill_rect (vr, x, y, w, h, col)
+	{
+		if (vr is None)
+			return $fill_rect2 (x, y, w, h, col)
+
+		for (r in vr)
+			if (c = clip_rect ((x, y, w, h), r)) {
+				xx, yy, ww, hh = c
+				$fill_rect2 (xx, yy, ww, hh, col)
+			}
+	}
+
+	method show_fb (fb, x, y, sx, sy, w, h)
+	{
+		xywh = x, y, w, h
+		if (c = clip_rect (xywh, $clip)) {
+			if (c != xywh) {
+				xx, yy, w, h = c
+				dx = xx - x
+				dy = yy - y
+				x, y = xx, yy
+				sx += dx
+				sy += dy
+			}
+		} else return
+
+		$gfx.show_image (fb.as_image (), x, y, sx, sy, w, h)
+		$flush_area (x, y, w, h)
+	}
+
+	method update_fb (vr, fb, x, y, w, h, sx, sy)
+	{
+		if (vr is None)
+			return $show_fb (fb, x, y, sx, sy, w, h)
+		for (r in vr)
+			if (c = clip_rect ((x, y, w, h), r)) {
+				xx, yy, ww, hh = c
+				dx = xx - x
+				dy = yy - y
+				$show_fb (fb, xx, yy, sx+dx, sy+dy, ww, hh)
+			}
+	}
+
+	method add_new_window (win)
+	{
+		$windows.append (win)
+		$cwindows.append (win)
+		$make_vrects ()
+		$activate (win)
+	}
+
+	method inlc (x, y)
+		return x > $W - BH and y > $H - BH
+
+	method handle_input ()
+	{
+		$windows [0].DrawWin ()
+		x = y = None
+		Alt = False
+		while (1) try {
+			if ($pevent) {
+				e = $pevent
+				$pevent = None
+			} else {
+				if !(e = $gfx.get_event ()) {
+					$L.release ()
+					$gfx.block_until_event ()
+					$L.acquire ()
+					e = $gfx.get_event ()
+				}
+			}
+
+			if.break ($killed) {
+				# terminate applications
+				try thread.interrupt ($serverid, thread.Interrupt, 0)
+				$shutdown ()
+				$END.release ()
+			}
+
+			if.continue (!e) {
+				xx, yy = $gfx.where ()
+				if (xx == x and yy == y)
+					continue
+
+				if.continue ($inlc (xx, yy) and !$qlc and !littleclock.ClockWin) {
+					$qlc = clock (self)
+					$add_new_window ($qlc)
+				}
+				if.continue ($qlc and !$inlc (xx, yy)) {
+					$qlc.close ()
+					$qlc = None
+				}
+
+				x, y = xx, yy
+				e = ["XY", (x, y)]
+				$active.send_event (e)
+			}
+
+			if.continue (e [0] == "REDRAW") {
+				$redraw (e [1:])
+				$Bar.draw_bar ()
+			}
+
+			if.continue (e [0] == "CLICK") {
+				button, cx, cy = e [1:]
+				if.continue ($inlc (cx, cy))
+					if (!littleclock.ClockWin) {
+						littleclock.ClockWin = $qlc
+						$qlc = None
+					} else $bring_to_front (littleclock.ClockWin)
+
+				if.continue (cy > $H - $BH)
+					$Bar.do_click (cx, cy + $BH - $H)
+
+				for (w in reversed ($windows))
+					if (w.xyin (cx, cy))
+						break
+				if (w is not $windows [-1] and w is not $windows [0]) {
+					$bring_to_front (w)
+					if (Go.Open)
+						Go.Open.close ()
+					if (!w.in_bar (cx - w.x, cy - w.y))
+						continue
+				}
+				if (w is $windows [0] and Go.Open)
+					Go.Open.close ()
+				cxx = cx - $active.x
+				cyy = cy - $active.y
+				if (0 <= cxx <= $active.W and 0 <= cyy <= $active.H)
+					$active.do_click (button, cxx, cyy)
+			}
+
+			if (e [0] == "PRESS" and e [1] == "ALT")
+				Alt = True
+			if (e [0] == "RELEASE" and e [1] == "ALT")
+				Alt = False
+
+			if (e [0] == "FOCUS")
+				Alt = False
+
+			if.continue (Alt and e [0] == "PRESS" and e [1] == "\t")
+				if (len ($cwindows) > 2) {
+					# circulate
+					n = $cwindows.index ($active) + 1
+					if (n == len ($cwindows))
+						n = 1
+					$bring_to_front ($cwindows [n])
+				}
+
+
+			$active.send_event (e)
+		} except {
+			print "exception in input handler:", sys.exc_info ()
+			break
+		}
+	}
+
+	method ShutDown ()
+		for (w in $cwindows [:])
+			w.wmclose ()
+
+	method bring_to_front (w)
+	{
+		if (w in $windows)
+			$windows.remove (w)
+		else $mwindows.remove (w)
+		$windows.append (w)
+		$make_vrects ()
+		$activate (w)
+		$active.send_event (["FOCUS"])
+	}
+
+	method movewin (w)
+	{
+		x, y = $gfx.where ()
+		dx = x - w.x
+		dy = y - w.y
+
+		while (1) {
+			$L.release ()
+			sleep (0.01)
+			$L.acquire ()
+			e = $gfx.get_event ()
+
+			if (e) {
+				$pevent = e
+				return
+			}
+
+			nx, ny = $gfx.where ()
+			if (nx != x or ny != y) {
+				wo = w.x, w.y, w.W, w.H
+				wnx = nx - dx
+				wny = ny - dy
+				if (wnx != w.x or wny != w.y) {
+					w.x, w.y = wnx, wny
+					$make_vrects ()
+					w.DrawWin ()
+					wn = w.x, w.y, w.W, w.H
+					for (ur in visible_rects (wo, wn))
+						$redraw (ur)
+				}
+				x = nx
+				y = ny
+			}
+		}
+	}
+
+	method close_win (w)
+	{
+		r = w.x, w.y, w.W, w.H
+		try $windows.remove (w)
+		try $cwindows.remove (w)
+		$make_vrects ()
+		$activate ($windows [-1])
+		$redraw (r)
+	}
+
+	method resized ()
+	{
+		$make_vrects ()
+		$redraw ((0, 0, $W, $H))
+	}
+
+	method minimize (w)
+	{
+		r = w.x, w.y, w.W, w.H
+		$windows.remove (w)
+		$mwindows.append (w)
+		$make_vrects ()
+		$activate ($windows [-1])
+		$redraw (r)
+	}
+
+	method shutdown ()
+		$gfx.shutdown ()
+
+	method redraw (rect)
+		if (c = clip_rect ($clip, rect)) {
+			$clip = c
+			for (w in $windows)
+				if (clip_rect (rect, w.rect ()))
+					w.DrawWin ()
+			$clip = 0, 0, $W, $H - $BH
+		}
+
+	# visible rectangles
+	method make_vrects ()
+	{
+		# note: the rectangles are relative to the screen coordinates, iow, absolute
+		ww = []
+		for (w in $windows) {
+			wr = w.x, w.y, w.W, w.H
+			w.vrects = [wr]
+			for (wu in ww)
+				wu.vrects = [r for (rr in wu.vrects) for (r in visible_rects (rr, wr))]
+			ww.append (w)
+		}
+		w.vrects = None
+		for (w in $mwindows)
+			w.vrects = []
+	}
+
+	# clipboard
+	method SetClipboard (text)
+		$gfx.Copy (text)
+	method GetClipboard ()
+		return $gfx.Paste ()
+}
+
+# split [x,y,w,h] into areas not covered by [rx,ry,rw,rh]
+def visible_rects ((x, y, w, h), (rx, ry, rw, rh))
+{
+	xx = x + w
+	yy = y + h
+	rxx = rx + rw
+	ryy = ry + rh
+
+	if (xx <= rx or x >= rxx or yy <= ry or y >= ryy)
+		return [(x, y, w, h)]
+
+	v = []
+	if (y < ry) {
+		v.append ((x, y, w, ry - y))
+		y = ry
+	}
+	if (yy > ryy) {
+		v.append ((x, ryy, w, yy - ryy))
+		yy = ryy
+	}
+	if (x < rx)
+		v.append ((x, y, rx - x, yy - y))
+	if (xx > rxx)
+		v.append ((rxx, y, xx - rxx, yy - y))
+
+	return v
+}
+
+def clip_rect ((x, y, w, h), (rx, ry, rw, rh))
+{
+	vx = max (x, rx)
+	vy = max (y, ry)
+	vxx = min (x + w, rx + rw)
+	vyy = min (y + h, ry + rh)
+	w = vxx - vx
+	h = vyy - vy
+	if (w <= 0 or h <= 0)
+		return
+	return vx, vy, w, h
+}
+
+## ---------------------------------------------------------
+
+D = Windows ()
+sleep (0.5)
+if (1) {
+#	run ("pyvm", "mahjongg")
+#os.system ("pyvm mahjongg & ")
+#	run ("pyvm", "freecell")
+#	run ("pyvm", "dummy.pe")
+#	run ("pyvm", "www")
+#run ("pyvm", "appa.pe")
+#os.system ("pyvm appa.pe &> pa")
+
+#run ("valgrind", "--tool=memcheck", "pyvm", "xterm")#, "-size", "100x50")
+#sleep (1)
+#os.system ("pyvm xterm &")
+#run ("pyvm", "xterm")#, "-size", "100x50")
+}
+D.END.acquire ()
+
+# screen saver
+# boxiens/wmnavigation: wm widgets as windows...
+# stdin

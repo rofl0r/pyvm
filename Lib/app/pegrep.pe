@@ -1,0 +1,20 @@
+__autosem__
+
+import os
+
+USAGE = "usage: pegrep 'text'
+
+ Search all the 'pe' and 'py' files in the Lib/
+ and print lines that contain the text. There is
+ no support for pattern matching and regular expressions,
+ only case sensitive exact substring match."
+
+word = sys.argp.one ()
+
+os.chdir (HOME + "Lib")
+for (f in os.walk ("."))
+	if (f.ew (".pe") or f.ew (".py"))
+		if (word in readfile (f))
+			for (l in open (f))
+				if (word in l)
+					print f [2:] + ":" + l [:-1]

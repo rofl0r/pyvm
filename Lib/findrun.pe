@@ -1,0 +1,48 @@
+# This script is used by the BIOS in order to seach and run
+# files from the library tree.  For example, running:
+#	pyvm git
+# using this library will redirect to:
+#	pyvm Lib/scm/.pycs/git.pyc
+# or
+#	pyvm Lib/scm/git.pyc
+# or
+#	pyvm Lib/scm/git.pe
+# depending which is modified last.
+
+__autosem__
+
+ALIASES = {
+	"wctok":"tokenize2",
+	"ucat":"transcode",
+}
+
+import os
+
+gen findfiles (dir)
+	for (f in os.listdir_fullpath (dir))
+		if (!os.path.isdir (f))
+			yield f
+		else if (!f.ew ("/.git") and
+			(os.access (f + "/__init__.py") or os.access (f + "/__init__.pe")))
+			for (f in findfiles (f))
+				yield f
+def find (name)
+{
+	if (name in ALIASES)
+		name = ALIASES [name]
+
+	for (f in findfiles (HOME + "Lib/"))
+		if (f.ew (".pe") or f.ew (".py")) {
+			dirname = os.path.dirname (f)
+			filename = os.path.basename (f)
+			if (filename [:-3] == name) {
+				pyc0 = filename [:-1] + "yc"
+				return max ([((os.path.getmtime (x) ?? 0), x) for (x in
+					[f, dirname + "/" + pyc0, dirname + "/.pycs/" + pyc0])])[1]
+			}
+		}
+	return name
+}
+
+if (__name__ == __main__)
+	print find (sys.argv [1])

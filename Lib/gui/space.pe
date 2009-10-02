@@ -1,0 +1,24 @@
+from widget import widget;
+
+class space (widget)
+{
+	method Init ($hexp=True, $wexp=True, **kw)
+		$widget_init (**kw);
+
+	method _resize_w (dw)
+		if ($wexp)
+			$w += dw;
+	method _resize_h (dh)
+		if ($hexp)
+			$h += dh;
+}
+
+class wspace (widget)
+	method _resize_w (dw)
+		$w += dw;
+
+class hspace (widget)
+	elastic = False;
+
+class fspace (widget)
+	elastic = 0;

@@ -1,0 +1,82 @@
+__autosem__
+
+# There are two kinds of "framebuffer" widgets.
+#
+# `fb`	  : This is a framebuffer with specific dimensions which has the
+#	    native backend color depth. Fliping this fb does not require
+#	    colorspace conversions.  In fact it may map directly to video
+#	    memory so writting to it may appear on the screen without
+#	    flipping.  Suitable for games/demos
+#
+# `fbview`: Framebuffer with custom colordepth.  If its size is not specified
+#	    it will expand according to the resize algorithm.  So the framebuffer
+#	    is actually created on the __setup__ method (by wm.Start) and will
+#	    call the `setupcb` callable to inform the application about the
+#	    size of the created framebuffer.  It always uses double buffering
+#	    so one can modify safely the framebuffer and be sure that nothing
+#	    will be drawn until flip()
+#
+
+from widget import widget
+
+class fb (widget)
+{
+	method Init (x=0, y=0, w=0, h=0, $decorated=False, **kw)
+	{
+		if (decorated)
+			$widget_init (x, y, w + 2, h + 2, **kw)
+		else {
+			Outline = None
+			$widget_init (x, y, w, h, **kw)
+		}
+		$F = $wm.B.DirectFrameBuffer (w, h)
+	}
+
+	method Draw ()
+	{
+		if ($decorated) {
+			$F.Update ($absx () + 1, $absy () + 1)
+			$outline ("sunken")
+		} else $F.Update ($absx (), $absy ())
+		# [do modrect()/flush() if needed only (the fb is not direct video)]
+		$modrect ()
+	}
+}
+
+class fbview (widget)
+{
+	elastic = True
+
+	method Init ($bpp=None, $setupcb=void, **kw)
+	{
+		$img = None
+		if ("w" in kw and "h" in kw)
+			$elastic = False
+		$widget_init (**kw)
+	}
+
+	fbview_init = Init
+
+	method __setup__ ()
+	{
+		$bpp = $bpp or $wm.bpp
+		$fb = @graphics.framebuffer.FrameBuffer ($w, $h, $bpp)
+		$elastic = False
+		$setupcb ()
+		del $setupcb
+	}
+
+	fbview_setup = __setup__
+
+	method flip_fb ()
+	{
+		$img = $fb.as_image_dup ()
+		$Draw ()
+	}
+
+	method Draw ()
+		if ($img) $show_image ($img, 0, 0, 0, 0, $fb.w, $fb.h)
+
+	method onRedraw (x, y, w, h)
+		if ($img) $show_image ($img, x, y, x, y, w, h);
+}

@@ -1,0 +1,336 @@
+__autosem__
+from widget import widget
+from ultext import hotkey
+
+# Pulldown menu HOWTO.
+# The pulldown menu is initialized with a list of "items".
+# Every item is a tuple with three fields
+#	1) item name
+#	2) item type (integer or function)
+#	3) function
+# if the item type is a function, the function will be called to produce the item type.
+# the final item types are integers with values:
+#	"0": a separator line, name and function ignored
+#	"1": a normal item. the "function" is called and then the menu closes
+#	"2": a submenu.  the function will be called if not already a list/tuple
+#	     to create the "items" of the submenu
+#	"3": a checkbox item.  the function called without items returns the state.
+#	     the function called with either True or False, sets the state.
+#	     if the function that sets the state returns True then the menu closes
+#	     otherwise it's left open.
+#	"4": a radio item.  the function with just the 'name' as argument returns
+#	     true if the specific item is the active one.  when called with the name
+#	     and a second argument `True` it sets the current item.
+#	"5": A combination of a submenu and a normal item. the cursor over it
+#	     expands a submenu by calling the function with one true argument.
+#	     If that returns an empty list, the item is converted to a type (1) item.
+#	     Clicking calls the function without arguments.
+# Negative values mean that an item is inactive, it is drawn in dim color and clicking
+# doesn't do anything.
+
+class PullDown (*widget)
+{
+	method Init ($font, items, **kw)
+	{
+		# `None` is the same as `["", 0, 0]`, iow, the separator
+		items = $items = [x is None ? ["", 0, 0] : x for (x in items)]
+
+		$lh = $font.maxh
+		$SubMenu = None
+		$SupMenu = None
+		$Current = -1
+
+		maxh = $max_height
+		y = 1
+		ys = []
+		for (n, i in enumerate ($items)) {
+			h = i [0] ? $lh : 2
+			ys.append ((n, y, h))
+			y += h
+
+			if.break (y > maxh) {
+				# too many, break to submenu
+				moreitems = $items [n-1:]
+				$items = $items [:n-1]
+				$items.append (["More", 2, moreitems])
+				y -= h
+				ys.pop ()
+			}
+		}
+		$ys = ys
+
+		h = kw ['h'] = y + 2
+		w = kw ['w'] = max ([$font.isizeof (i[0]) for (i in $items)]) + 40
+		$widget_init (**kw)
+	}
+
+	elastic = False
+
+	method Draw ()
+	{
+		$draw_blank ()
+		$outline ()
+		for (i in *len ($items))
+			$DrawItem (i)
+	}
+
+	method DrawItem (i)
+	{
+		if (i == -1)
+			return
+		txt, type, func = $items [i]
+		if (not type -> int)
+			type = type ()
+		inactive = type < 0
+		if (inactive) type = -type
+		None, y, dy = $ys [i]
+		if (type) {
+			bg = i == $Current and !inactive ? $wm.color_blue : $wm.color_bg
+			fg = inactive ? $wm.color_darker : $wm.color_txt
+			$draw_ulstring (txt, 10, y, fg, $font, bg)
+			ll = $font.isizeof (txt) + 10
+			$fill_rect (ll, y, $w - ll, dy, bg)
+			$fill_rect (0, y, 10, dy, bg)
+			if (type in (2, 5)) {
+				# submenu arrow
+				x0 = $w - 20
+				dy -= 4
+				for (y0 in *dy)
+					$draw_line (x0, y + y0 + 2, x0 +
+					dy / 2 - abs (dy / 2 - y0),
+						y + y0 + 2, $wm.color_darker)
+			} else if (type == 3) {
+				# checkbox
+				x0 = $w - 20
+				dh = dy - 5
+				$fill_rect (x0, y + 2, dh, dh, $wm.color_white)
+				$draw_rect (x0, y + 2, dh, dh, $wm.color_darker)
+				if (func ()) {
+					$draw_line (x0+2, y+4, x0+dh-3, y-1+dh, $wm.color_txt)
+					$draw_line (x0+2, y-1+dh, x0+dh-3, y+4, $wm.color_txt)
+					$draw_line (x0+2, y+5, x0+dh-3, y+dh, $wm.color_txt)
+					$draw_line (x0+2, y+dh, x0+dh-3, y+5, $wm.color_txt)
+				}
+			} else if (type == 4 and func (txt)) {
+				# radio ball
+				x0 = 4 + $w - dy
+				dh = dy - 5
+				yy = y + 2
+				dy -= 8
+				for (y0 in *dy) {
+					ww = dy / 2 - abs (dy / 2 - y0)
+					$draw_line (x0 - ww, yy + y0, x0 + ww, yy + y0, $wm.color_darker)
+				}
+			}
+		} else {
+			$draw_line (4, y, $w - 8, y, $wm.color_shaded)
+			$draw_line (4, y+1, $w - 8, y+1, $wm.color_white)
+		}
+	}
+
+	method item_at (y)
+		for (n, y0, h in $ys)
+			if (y0 <= y < y0 + h)
+				return n
+		else.for return -1
+
+	method ClickAt (x, y)
+	{
+		x, y = $relxy (x, y)
+
+		if (!$rxy_in (x, y)) {
+			r = $SubMenu ? $SubMenu.ClickAt (*$toabsxy (x, y)) : False
+			if ($SupMenu) return r
+			if (!r) $CloseAll ()
+			return
+		}
+
+		i = $item_at (y)
+		if (i != -1)
+			$DoItem (i)
+
+		return True
+	}
+
+	method Key (k)
+	{
+		if (k == "ESC")
+			$CloseAll ()
+		else if (k == "BACKSPACE" or k == "LEFT")
+			$CloseLast ()
+		else if (k == "DOWN") {
+			if ($Current == -1) {
+				if ($SubMenu)
+					return $SubMenu.Key (k)
+				$Current = 0
+			} else {
+				c = $Current
+				$Current = c + 1 >= len ($items) ? 0 : c + 1
+				$DrawItem (c)
+			}
+			$DrawItem ($Current)
+		} else if (k == "RIGHT") {
+			None, t, f = $items [$Current]
+			if (not t -> int)
+				t = t ()
+
+			if (t == 2) {
+				$OpenSubmenu ($Current, f)
+				$SubMenu.Key ("DOWN")
+			}
+
+			c = $Current
+			$Current = -1
+			$DrawItem (c)
+		} else if (k == "UP") {
+			if ($Current == -1) {
+				if ($SubMenu)
+					return $SubMenu.Key (k)
+				$Current = len ($items) - 1
+			} else {
+				c = $Current
+				$Current = c - 1 < 0 ? len ($items) - 1 : c - 1
+				$DrawItem (c)
+			}
+			$DrawItem ($Current)
+		} else if (k in (" ", "\n")) {
+			if ($SubMenu)
+				return $SubMenu.Key (k)
+			if ($Current != -1)
+				$DoItem ($Current, keep_open = k==" ")
+		} else $LastOne ().HotKey (k)
+		# todo:
+		# enter -> select
+		# arrows -> navigate
+		# hotkeys
+	}
+
+	method HotKey (k)
+		for (n, (txt, None, None) in enumerate ($items))
+			if.break (k in hotkey (txt))
+				$DoItem (n)
+
+	method DoItem (i, keep_open=False)
+	{
+		txt, t, func = $items [i]
+		if (not t -> int)
+			t = t ()
+		close = False
+		if (t in (1, 5)) {
+			func ()
+			close = True
+		} else if (t == 2) {
+			$OpenSubmenu (i, func)
+		} else if (t == 3) {
+			close = func (True)
+			$DrawItem (i)
+			if (keep_open) close = False
+		} else if (t == 4) {
+			close = func (txt, True)
+			$Draw ()
+			if (keep_open) close = False
+		}
+		if (close)
+			$CloseAll ()
+	}
+
+	method CloseAll ()
+		if ($SupMenu)
+			$SupMenu.CloseAll ()
+		else {
+			$wm.Menu = None
+			$Close1 ()
+		}
+
+	method LastOne ()
+	{
+		p = self
+		while (p.SubMenu)
+			p = p.SubMenu
+		return p
+	}
+
+	method CloseLast ()
+	{
+		m = $LastOne ()
+		m.p.Close ()
+		if (m.SupMenu) m.SupMenu.SubMenu = None
+		else $wm.Menu = None
+	}
+
+	method Close1 ()
+	{
+		if ($SubMenu)
+			$SubMenu.Close1 ()
+		$p.Close ()
+	}
+
+	method MouseAt (x, y)
+	{
+		x, y = $relxy (x, y)
+
+		if (!$rxy_in (x, y)) {
+			c = -1
+		} else c = $item_at (y)
+
+		if (!$wm.idle_for (0.04))
+			return
+
+		if (c != $Current) {
+			c, $Current = $Current, c
+			$DrawItem ($Current)
+			$DrawItem (c)
+		}
+
+		if ($Current == -1) {
+			if ($SubMenu)
+				$SubMenu.MouseAt (*$toabsxy (x, y))
+		} else if ($Current != c) {
+			None, t, f = $items [$Current]
+			if (not t -> int)
+				t = t ()
+
+			if (t == 2) {
+				$OpenSubmenu ($Current, f)
+			} else if (t == 5) {
+				if (!$OpenSubmenu ($Current, f (True))) {
+					$items [$Current] = [$items [$Current][0], 1, f]
+					$DrawItem ($Current)
+				}
+			} else if ($SubMenu) {
+				$SubMenu.Close1 ()
+				$SubMenu = None
+			}
+		}
+	}
+
+	method OpenSubmenu (i, items)
+	{
+		if (not (items -> list or items -> tuple))
+			items = items ()
+
+		if (!items)
+			return False
+
+		if ($SubMenu)
+			$SubMenu.Close1 ()
+
+		x = $absx () + $w
+		y = $absy () + $ys [i][1]
+		s = $wm.subWindow (x, y, 10, 10)
+
+		$SubMenu = PullDown ($font, items)
+		$SubMenu.SupMenu = self
+
+		# fix placement so it doesn't go off screen
+		if (s.x + $SubMenu.w > $wm.width)
+			s.x = $absx () - $SubMenu.w
+		if (s.y + $SubMenu.h > $wm.height)
+			s.y -= $SubMenu.h - $ys [i][2]
+		if (s.y + $SubMenu.h > $wm.height or s.y < 0)
+			s.y = 0
+
+		s.Done ()
+		return True
+	}
+}

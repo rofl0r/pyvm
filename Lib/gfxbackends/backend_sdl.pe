@@ -1,0 +1,331 @@
+##  SDL Backend
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+## XXX: put_pixel
+
+__autosem__
+from backend_base import Window as BaseWin, Shift, Exit
+from colornames import lookup as LookupColor
+from graphics.framebuffer import FrameBuffer as FBbase, image
+import DLL
+
+sdl = DLL.Import ('sdl', '-O2', libs=['SDL'], pelf=0)
+
+class Display (FBbase)
+{
+	# xxx: screen_size()
+
+	method __init__ (w, h)
+	{
+		$dpy = _buffer (sdl.sizeof_sdl ())
+
+		# depth=0: choose best
+		# depth in 16, 24, 32: specific one, good for testing various rgb conversions
+		depth = 0
+
+		v = array ('i', 8)
+		if (!sdl.init ($dpy, w, h, depth, v))
+			raise Error ("Cannot initialize SDL")
+		bpp, ptr, w, h, $sdl_surface, roff, goff, boff = v
+
+		offs = roff, goff, boff
+		print "RGB offsets:", bpp, offs
+		if (bpp == 3) {
+			if (offs == (16, 8, 0))
+				print "EXPECTING COLORS TO BE WRONG! Can you use 16 or 32 bpp?"
+		}
+		if (bpp == 4 and offs != (16, 8, 0))
+			print "EXPECTING WRONG COLORS FOR RGB32!"
+		if (bpp == 2 and offs != (11, 5, 0))
+			print "EXPECTING WRONG COLORS FOR RGB16!"
+
+		FBbase.__init__ (self, w, h, bpp, ptr)
+		$Q = []
+
+		print "SDL Display %ix%ix%i" %(w, h, bpp)
+	}
+
+	method resize (w, h)
+	{
+		if (w == $w and h == $h)
+			return
+		v = array ('i', 8)
+		if (!sdl.init ($dpy, w, h, 0, v))
+			return
+		bpp, ptr, w, h, $sdl_surface, roff, goff, boff = v
+		$reinit (w, h, bpp, ptr)
+	}
+
+	# accelerated (maybe).  If we don't define these two
+	# methods, we'll end up using the virtual-framebuffer's
+	# methods which are done with memset/memcpy (would require
+	# locking).
+	# For X11, in XShm there shouldn't be any difference.
+
+	method fill_rect (x, y, w, h, c) # must be locked?
+		sdl.fill_rect ($sdl_surface, x, y, w, h, c)
+	method put_image (image, x, y, sx=0, sy=0, sw=3200, sh=3200)
+	{
+		if (0) {
+			with (self)
+				FBbase.put_image (self, image, x, y, sx, sy, sw, sh)
+		} else {
+			# xxx: we convert to screen bpp. Maybe, sdl can do it faster itself?
+			# one point is that, SDL in X Windows (using XShm) cannot do any hardware
+			# acceleration, so this is moot.  SDL on other backends may have a chance,
+			# but is it used on anything besides X (on the platforms that pyvm runs)?
+			if (image.bpp != $bpp)
+				image.convert_bpp ($bpp)
+
+			# surface must not be locked
+			sdl.put_image ($sdl_surface, image.data, x, y, sx, sy, image.w,
+					 image.h, min (image.w, sw), min (image.h, sh))
+		}
+	}
+
+	# must be locked
+	method draw_line (x1, y1, x2, y2, c)
+		with (self) FBbase.draw_line (self, x1, y1, x2, y2, c)
+
+	method lock () sdl.lock ($sdl_surface)
+	method unlock () sdl.unlock ($sdl_surface)
+	method flush (area)
+	{
+		# it would be better to lock once and do all the drawings.
+		# but the "blit" drawing must not be locked. so?
+		x0, y0, x1, y1 = area
+		if (!$Q) {
+			sdl.flush ($dpy, x0, y0, x1, y1)
+			return
+		}
+		for (f, args in $Q)
+			f (*args)
+		$Q = []
+		sdl.flush ($dpy, x0, y0, x1, y1)
+	}
+
+	# drawing functions are queued until the flush.
+	# this may be better for caching. (Looks good)
+	method qdraw (f, *args)
+		$Q.append ((f, args))
+
+	method shutdown ()
+	{
+		try sdl.terminate ()
+		$dpy = None
+	}
+
+	method __del__ ()
+		$shutdown ()
+}
+
+class WFrameBuffer (FBbase)
+{
+	method __init__ (w, h, $dpy)
+	{
+		a = array ('i', 1)
+		$surface = sdl.create_fb (dpy.dpy, w, h, a)
+		FBbase.__init__ (self, w, h, dpy.bpp, a [0])
+	}
+
+	method Update (x, y)
+		$dpy.qdraw (sdl.blit, $surface, x, y, $dpy.sdl_surface)
+
+	method lock () sdl.lock ($surface)
+	method unlock () sdl.unlock ($surface)
+
+	method __del__ ()
+		try sdl.free_surface ($surface)
+}
+
+Translate = {
+	301:"CAPS",
+	303:"SHIFT",
+	304:"SHIFT",
+	305:"CTRL",
+	306:"CTRL",
+	307:"ALT",
+	308:"ALT",
+	273:"UP",
+	274:"DOWN",
+	275:"RIGHT",
+	276:"LEFT",
+	277:"INSERT",
+	278:"HOME",
+	279:"END",
+	280:"PAGEUP",
+	281:"PAGEDOWN",
+	27 :"ESC",
+	8  :"BACKSPACE",
+	127:"DEL",
+	13 :"\n",
+}
+
+class Window (**BaseWin)
+{
+	method __init__ (w=640, h=480)
+	{
+		$dpy = Display (w, h)
+		$width = $dpy.w
+		$height = $dpy.h
+		$bpp = $dpy.bpp
+		$std_fonts ()
+		$dpy.clear (0)
+
+		$MODS = {
+			"SHIFT":False,
+			"CTRL":False,
+			"ALT":False,
+			# caps-lock is very special in SDL
+			# it acts as a pressed modifier while ON.
+			"CAPS":False,
+		}
+	}
+
+	method resize (w, h)
+	{
+		$dpy.resize (w, h)
+		$width = $dpy.w
+		$height = $dpy.h
+	}
+
+	method draw_line (x0, y0, x1, y1, col)
+		$dpy.qdraw ($dpy.draw_line, x0, y0, x1, y1, col)
+
+	method fill_rect (x, y, w, h, col)
+		$dpy.qdraw ($dpy.fill_rect, x, y, w, h, col)
+
+	method flush (area)
+	{
+		if (!area)
+			area = 0, 0, $width, $height
+		$dpy.flush (area)
+	}
+
+	method show_image (im, x, y, sx=0, sy=0, w=3200, h=3200)
+		$dpy.qdraw ($dpy.put_image, im, x, y, sx, sy, w, h)
+
+	method DirectFrameBuffer (w, h)
+		return WFrameBuffer (w, h, $dpy)
+
+	method where ()
+	{
+		xy = array ('i', 2)
+		sdl.where (xy)
+		return tuple (xy)
+	}
+
+	method move_mouse (x, y)
+		sdl.move_mouse (x, y)
+
+	method block_until_event ()
+		if (!$CURRENT_KEY)
+			sdl.block_until_event ($dpy.dpy)
+		else {
+			tt = max ($KEY_REPEAT_MS - (now () - $CURRENT_KEY_T), 0)
+			if (tt) sleep (tt)
+		}
+
+	CURRENT_KEY = None
+	CURRENT_KEY_T = 0
+	KEY_REPEAT_MS = 1.0 / 25	# 25 keys per sec
+	KEY_REPEAT_DL = 1.0 / 4.2	# 1000/4.2 microseconds idle to start auto-repeating
+
+	method get_event ()
+	{
+		ee = array ('i', 4)
+		if (!sdl.get_event ($dpy.dpy, ee)) {
+			# SDL does not auto-repeat keys. We do this here
+			if ($CURRENT_KEY) {
+				if ($CURRENT_KEY_T) {
+					if (now () - $CURRENT_KEY_T > $KEY_REPEAT_MS) {
+						$CURRENT_KEY_T = now ()
+						return "PRESS", $CURRENT_KEY
+					}
+				} else # Initial delay before we enter repeating
+					$CURRENT_KEY_T = now () + $KEY_REPEAT_DL
+			}
+			return None
+		}
+
+		$CURRENT_KEY = ""
+
+		if (ee [0] in (2, 3)) {
+			ee, bt, xx, yy = ee
+			if (bt == 4)
+				return "WHEEL", "up"
+			if (bt == 5)
+				return "WHEEL", "down"
+			return (ee == 2 ? "CLICK" : "UNCLICK"), bt, xx, yy
+		}
+
+		if (ee [0] == 4)
+			return "REDRAW", 0, 0, $dpy.w, $dpy.h
+
+		if (ee [0] == 5)
+			raise Exit
+
+		n = ee [1]
+		try n = Translate [n] ?? chr (n)
+		except { print "SKIP:", n; return None; }
+
+		if (ee [0] == 0) {
+			if (n in $MODS)
+				$MODS [n] = True
+
+			if (len (n) == 1) {
+				if ($MODS ["CAPS"]) n = n.upper ()
+				if ($MODS ["SHIFT"]) n = Shift (n)
+			}
+
+			if (n not in $MODS) {
+				$CURRENT_KEY = n
+				$CURRENT_KEY_T = 0
+			}
+
+			return "PRESS", n
+		}
+
+		if (ee [0] == 1) {
+			if (n in $MODS) {
+				$MODS [n] = False
+				if (n in ("SHIFT", "CTRL", "ALT"))
+					return "RELEASE", n
+			}
+
+			return None
+		}
+	}
+
+	method set_wm_name (name)
+		sdl.set_wm_name (name)
+
+	method shutdown ()
+		$dpy.shutdown ()
+}
+
+#
+#
+#
+
+if (__name__ == '__main__')
+{
+	F = Display (600, 400)
+	from graphics.framebuffer import test_fb, image
+	test_fb (F)
+	F.flush ()
+	from graphics import ImageFile
+	x = ImageFile (HOME + "Stuff/Demo/bfract.gif")
+	im = image (*x.read_rgb ())
+	def f ()
+		for (x in xrange (10000))
+		F.put_image (im, 0, 0)
+	from time import timeit
+	print timeit (f)
+	F.flush ()
+	sleep (3)
+}

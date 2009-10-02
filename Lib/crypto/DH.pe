@@ -1,0 +1,64 @@
+##  Diffie-Hellman Key Exchange
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Overview:
+# `G` and `P` are two known numbers.
+# We generate a random number `x1`.
+# The other peer generates a random number `x2`.
+# We send to other:        pow (G,x1) mod P
+# The other sends to us:   pow (G,x2) mod P
+# We calculate:    pow (pow (G,x2) mod P, x1) mod P
+# They calculate:  pow (pow (G,x1) mod P, x2) mod P
+# We both have the same number which is
+# 	pow (pow (G, x1), x2) mod P == pow (pow (G, x2), x1) mod P
+# An eavesdropper cannot calculate this number.
+# A man-in-the-middle can forge it.
+
+# This is the basic maths of diffie-hellman.
+# Now we have various schemas for the numbers `G` and `P, the
+# number of bits and the representation of long numbers.
+# This module implements such schemas.
+
+from cryptorand import randstr;
+
+# SSH DH, the method diffie-hellman-group1-sha1
+
+from longs import MPIToLong, LongToMPI;
+
+class SSH_group1
+{
+	G = 2;
+	P = unhexlify ("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF");
+	P = MPIToLong (P);
+
+	method __init__ ()
+	{
+		x = randstr (128);
+		x = chr (ord (x [0]) & 0x7f) + x [1:];
+		$X = MPIToLong (x);
+		# we send `E`
+		$E = LongToMPI (pow ($G, $X, $P));
+	}
+
+	method received ($F)
+	{
+		# We have received `F` from the other
+		f = MPIToLong ($F);
+		k = pow (f, $X, $P);
+		del $X;
+		# This is the common key.
+		$K = LongToMPI (k);
+	}
+}
+
+if (__name__ == __main__) {
+	Bob = SSH_group1 ();
+	Alice = SSH_group1 ();
+	Bob.received (Alice.E);
+	Alice.received (Bob.E);
+	print "diffie-hellman-group1-sha1:", Bob.K == Alice.K;
+}

@@ -1,0 +1,1788 @@
+##  Style Sheet parser & cascader
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# TODO: intern selectors into common dictionary with the lexer!
+
+__autosem__
+
+# Big picture
+#
+# Input:
+#	An HTML page. We scan <meta link> and <style> tags, parse their
+#	css, possibly download more @import() styles and recursively
+#	parse their css.
+#	In the end we have the "Global" list of selectors/properties
+#	which includes all the relevant styles (including the default
+#	base UA stylesheet).
+#	parsing does validation, expanding of shorthand properties,
+#	separation of !important rules, calculation of "specificity", etc.
+#
+# Output:
+#	A "cascader" object that has the main method "cascade (node, ancestor, slibing)"
+#	that when called for a given node of the DOM tree will return
+#	a dict with the style, the new ancestor and slibing rules for the given
+#	node.
+#	The cascader uses any "style" attributes of the node.
+#	The cascader is placed on the `dom.url.css.cascader` attribute
+
+from wwwlib.basic import FontManager, wwdatafile
+from wwwlib.dom import Content
+
+__bind__ = ["class_match"]
+#__constant__ 
+DO_PREDEFS = True
+
+namespace DEBUGS __constant__
+{
+	SANITY_CHECK = 0
+}
+
+## Todo
+##  pass [node, node.tag, node.id, node.class] to match() functions
+
+Randstr = @md5.digest (str (@random.random ())).hexlify () [:7]
+
+namespace R
+{
+	import re
+	rc = re.compile
+	DOTALL = re.DOTALL
+	I = re.I
+
+	Replaced = rc (r'''""|''|'.*?[^\\](:?\\\\)*'|".*?[^\\](:?\\\\)*"'''+
+				r'''|/\*.*?\*/|url\(\s*(.*?)\s*\)|//.*?\n|<!--|-->''', DOTALL|I).sub
+	Media    = rc (r"@media\s*(.*?)\s*\{((?:[^}]*?\{.*?\}|[^}])*)\}", DOTALL|I).sub
+	Charset  = rc (r"^[\s\n]*@charset.*?;", DOTALL|I).sub
+	Import   = rc (r"@import\s+(\$\d+)(.*?);", DOTALL|I).sub
+	Expand   = rc (r"\$(\d+)").sub
+	Rules    = rc (r"\s*([^{]+?)\s*\{(.*?)\}", DOTALL)
+	Attrib   = rc (r"\s*([_a-zA-Z-][_a-zA-Z0-9-]*)\s*:\s*(.*?)\s*$", DOTALL).match
+
+	# converting rgb(x,x,x) to #rrggbb
+	def rgbsubst (m)
+	{
+		v = []
+		for (i in (m [1], m [2], m [3]))
+			if (i.ew ("%"))
+				v << int (255 * int (i [:-1]) / 100.0)
+			else v << int (i)
+		return "#" + "".join (["%02x"%i for (i in v)])
+	}
+	RGB = rc (r"rgb\s*\(%s,%s,%s\)" % (3*(r"\s*(\d+%?)\s*",)), I).subwith (rgbsubst)
+	# removal of @rules
+	AtRules  = rc (r"@\S+\s*(?:\{.*?\}|.*?;)", DOTALL).subwith ("")
+	# normalization !important
+	Important= rc (r"!\s+important", I).subwith ("!important")
+
+	# selector normalization: remove extra whitespace, lowercase tag names and attributes
+	S1 = rc (r"\s*\+\s*|\s*>\s*|\s+").subwith (def (r) r [0].strip () or " ")
+	S2 = rc (r"(:?^|[ +>])([\w\d]+)").subwith (def (r) r [0].lower ())
+	def normattr (r)
+		if (!r [2]) return "[%s]" %r [1].lower ()
+		else return "[%s%s%s]" %(r [1].lower (), r [3], r [4])
+	S3 = rc (r"\[\s*([^\s=\$^~|\*]+)\s*(([\*\$^~|]?=)\s*(\S+))?\s*\]").subwith (normattr)
+	S4 = rc (r":([^[$\.]+)").subwith (def (r) r [0].lower ())
+	def norm_selector (s, f1=S1, f2=S2, f3=S3, f4=S4)
+		return f4 (f3 (f2 (f1 (s)))).replace ("\n", " ")
+	tagonly = rc (r"[^\.#[ +>:]+$").match
+
+	selector_split = rc (r"[+> ]").splitsep
+	attr_split = rc (r"[|*\^\$~]?=").splitsep
+
+	namespace G
+	{
+		namstart = "[_a-z]"
+		namchar = "[_a-z0-9-]"
+		hex = "[a-f0-9]"
+		ident = "-?{namstart}{namchar}*"
+		name = "{namchar}+"
+		rgb = "#{hex}{hex}{hex}({hex}{hex}{hex})?"
+		number = r"(?:[-]?\d+|[-]?\d*\.\d+)"
+		length = r"[-]?{number}(em|ex|px|in|cm|mm|pt|pc|)"
+		length2 = r"[-]?0|{number}(em|ex|px|in|cm|mm|pt|pc)"
+		percentage = "{number}%"
+		border_style = "none|hidden|dotted|dashed|solid|groove|ridge|inset|outset"
+		font_style = "normal|italic|oblique|inherit"
+		font_weight = "normal|bold|bolder|lighter|[1-9]00|inherit"
+		absolute_size = "(x?x-)?(small|large)|medium"
+		relative_size = "smaller|larger"
+		font_size = "{absolute_size}|{relative_size}|{length2}|{percentage}|inherit"
+		line_height = "normal|{length}|{percentage}|{number}|inherit"
+		font_sandlh = "{font_size}(/{line_height})?"
+		builtin_family = "caption|icon|menu|message-box|small-caption|status-bar"
+		element_selector = r"{ident}|\*{TRAIL}"
+		other_selector = r"#{name}|\.{ident}|\[.+?\]|:{ident}{TRAIL}"
+	}
+
+	G.__dict__.update (re.Grammar ([(k, v) for (k, v in G) if (k != "__module__")]))
+
+	# random escaping. We want to escape some things like "\." in the
+	# selectors. A hack to do this is, generate a random string and
+	# replace "\." with this randomstring, process, and then replace
+	# back, assuming it is totally unlikely that this string will
+	# be part of the real text.
+
+	def escsave_s (g)
+		return Randstr + "%02x" %ord (g [0][1])
+	escsave = re.compile (r"\\[,\\,#[=\]\.]").subwith (escsave_s)
+	def escrestore_s (g)
+		return chr (int (g [0][-2:], 16))
+	escrestore = re.compile (Randstr + "..").subwith (escrestore_s)
+}
+
+# extended css colors
+csscolors = {k:int(v,16) for (k, v in [i.split ()
+		 for (i in open (wwdatafile ("csscolors.txt")))])}
+
+## Part 1
+##
+## @imports and @urls fetched. css parsed, validated and acceptable properties are
+## computed.  This results in a list `ruleset` with selector instances.
+
+def media_ok (ml)
+	for (x in ml.split (","))
+		if (x.strip ().lower () in ("all", "screen"))
+			return True
+
+def parse_style_sheet (offset, txt, url, download, options, authoritative, ud=None)
+{
+	s = style_sheet (offset, txt, url, download, options, authoritative, ud)
+	return s.ruleset, s.offset
+}
+
+from wwwlib.basic import INTERN_VALUES as INTERNS
+
+def Intern (s)
+	try return INTERNS [s]
+	except return INTERNS [s] = intern (s)
+
+def rrand (x)
+	return Randstr in x ? R.escrestore (x) : x
+
+class style_sheet
+{
+	method __init__ (offset, txt, url, $download, options, $authoritative, ud)
+	{
+		$uta = ud ? ud.uta.setdefault : None
+		$uv = ud ? ud.uv : None
+
+		$strzap = s = strzap (url)
+		$strsubst, $expand = s.strsubst, s.expand
+		txt = $preproc (txt, url)
+
+		$validate = validator (url, $authoritative, $expand, **options).validate
+		tonly = R.tagonly
+
+		rules = []
+		dups = {}
+		for (s, a in R.Rules.findall (txt)) {
+			d1, d2 = $parse_properties (a)
+
+			# none validates
+			if (!d1 and !d2)
+				continue
+
+			if ("\\" in s)
+				s = R.escsave (s)
+
+			# split comma separated selectors,
+			# join selectors with same specificity (latest declaration wins)
+			for (s in s.split (",")) {
+				offset += 1
+				if !(s = s.strip ())
+					continue
+				s = R.norm_selector (s.strip ())
+				if (s in dups) {
+					x = dups [s]
+					x [0].update (d1)
+					if (x [1] and d2)
+						x [1].update (d2)
+					else if (d2)
+						x1 = dict (d2)
+				} else {
+					x = [dict (d1), d2 ? dict (d2) : d2]
+					rules << (offset, s, x)
+					if (tonly (s))
+						dups [s] = x
+				}
+			}
+		}
+
+		$offset = offset
+		$ruleset = sr = []
+		for (offset, selector, (props1, props2) in rules) {
+			if (props1 and (sl = $parse_selector (selector))) {
+				pri = sl.calcspec () + offset
+				lv = authoritative ? 0 : 1
+				pri += lv<<24
+				sl.set_props ((pri, props1))
+				sr << sl
+			}
+			if (props2 and (sl = $parse_selector (selector))) {
+				pri = sl.calcspec () + offset
+				lv = authoritative ? 4 : 3
+				pri += lv<<24
+				sl.set_props ((pri, props2))
+				sr << sl
+			}
+		}
+	}
+
+	method parse_properties (propstr)
+	{
+		# Given a string of properties like " { color: red; font: medium }"
+		# 1) expand shorthand properties
+		# 2) validate properties -- filter out unimplemented
+		# 3) compute properties (convert to types expected by layout)
+		# 4) split into two dictionaries, normal and !important
+		attr, attri = [], []
+		for (i in propstr.split (";")) {
+			if (!i or i.isspace ())
+				continue
+			if.continue !(A = R.Attrib (i.lower ()))
+				print "css: BADATTR [%s]" %i.strip ()
+			n = Intern (A [1])
+			v = A [2]
+			if (v.ew ("!important"))
+				attri << (n, v [:-10].strip ())
+			else attr << (n, v)
+		}
+
+		validate = $validate
+		d1 = {}
+		d2 = {}
+		for (d, a in [(d1, attr), (d2, attri)])
+			for (k, v in expand_shorthands (a).items ())
+				if ((r = validate (k, v)) is not None)
+					d [k] = r
+
+		return d1, (d2 or ())
+	}
+
+	method parse_selector (s)
+	{
+		ss, sp = R.selector_split (s)
+		if (!sp)
+			if (x = $parse_simple_selector (ss [0]))
+				return Selector (*x)
+			else {
+				if (x is None)
+					print "1. FAIL SELECTOR:", ss [0]
+				return
+			}
+
+
+		sp.append ("")
+		for (s0, sep in zip (ss, sp).reverse ()) {
+			if !(x = $parse_simple_selector (s0)) {
+				if (x is None)
+					print "2. FAIL SELECTOR:", s0
+				return
+			}
+			if (!sep) {
+				parx = Selector (*x)
+			} else {
+				S = sep == " " ? DescendantSelector :
+				    sep == ">" ? ChildSelector : SlibingSelector
+				parx = S (Selector (*x), parx)
+			}
+		}
+
+		return parx
+	}
+
+	# the names in a selector like: TAG.CLASS#ID[ATTR=VALUE]
+	# are "interned" into the dictionaries used by lex so they
+	# are the same strings and comparison may get away with
+	# pointer comparison
+
+	method interntag (x)
+		return $uta ? $uta (x) : x
+	method internval (x)
+		return $uv ? $uv (x) : x
+
+	method parse_simple_selector (r)
+	{
+		G = R.G
+		if (m = G.element_selector (r)) {
+			TAG = $interntag (m [0])
+			r = r [len (TAG):]
+			if (TAG == "*") TAG = ""
+		} else TAG = ""
+
+		CLASS = ID = ATTR = PSEUDO = ""
+		while (r) {
+			m = G.other_selector (r)
+			if (!m)
+				return
+			x = m [0]
+			if (x [0] == "#") ID = $internval (x [1:])
+			else if (x [0] == '.') CLASS = $internval (x [1:])
+			else if (x [0] == '[') ATTR = x [1:-1]
+			else PSEUDO = x [1:].lower ()
+			r = r [len (x):]
+		}
+
+		if (PSEUDO in ("link", "visited"))
+			if (!TAG) TAG = "a"
+			else if (TAG != "a") PSEUDO = "bad"
+
+		# not implemented
+		if (PSEUDO == "hover")
+			return False
+
+		if (ATTR)
+			ATTR = AttrMatch (ATTR, $expand, $interntag)
+
+		return rrand (TAG), rrand (ID), rrand (CLASS), ATTR, rrand (PSEUDO)
+	}
+
+	method preproc (txt, url)
+	{
+		uu = $strzap.url
+		$strzap.url = url
+
+		# zap strings and urls (conver to $1, $2, etc), remove comments
+		txt = R.Replaced ($strsubst, txt)
+
+		# remove @charset, fetch/expand preprocessed @imports
+		txt = R.Charset ("", txt)
+		def importsubst (args)
+		{
+			m = args [2].strip ()
+			if (m and !media_ok (m))
+				return ""
+			u = $expand (args [1])
+			if (u.sw ("url("))
+				u = u [4:-1]
+			if (!$download)
+				return ""
+			u = $download (url.generate (u))
+			try text = u.readfile ()
+			except {
+				print "Couldn't load:", u
+				return ""
+			}
+			return $preproc (text, u)
+		}
+		txt = R.Import (importsubst, txt)
+
+		# expand or remove @media
+		def mediasubst (args)
+			return media_ok (args [1]) ? args [2] : ""
+		txt = R.Media (mediasubst, txt)
+
+		$strzap.url = uu
+
+		# remove unknown at-rules, replace rgb() with #rrggbb
+		return R.Important (R.RGB (R.AtRules (txt)))
+	}
+}
+
+class strzap
+{
+	method __init__ ($url)
+	{
+		$strn = strn = []
+		def expandsubst (r)
+			return strn [int (r [1])]
+		E = R.Expand
+		def $expand (s)
+			return "$" not in s ? s : E (expandsubst, s)
+	}
+
+	method strsubst (args)
+	{
+		x = args [0]
+		# C++ comments allowed apparently!
+		if (x.sw ("/*") or x.sw ("//") or x in ("<!--", "-->"))
+			return ""
+		if (x [0] in ''''"''')
+			x = x [1:-1].replace ("\A", "\n")
+		else {
+			if !(url = args [3])
+				return ""
+			if (url [0] == url [-1] and url [0] in ''''"''')
+				url = url [1:-1]
+			x = "url("+$url.generate (url).url+")"
+		}
+		$strn << x
+		return "$%i" % (len ($strn) - 1)
+	}
+}
+
+# a parser for style="...." attributes
+class style_props
+{
+	method __init__ (page_url, options)
+	{
+		s = strzap (page_url)
+		$strsubst, $expand = s.strsubst, s.expand
+
+		$validate = validator (page_url, False, $expand, **options).validate
+		$scache = {}
+	}
+
+	method parse_style (txt)
+	{
+		if (txt in $scache)
+			return $scache [txt]
+
+		txt0 = txt
+		txt = R.RGB (R.Replaced ($strsubst, txt))
+		attr = []
+		for (i in txt.split (";")) {
+			if (!i or i.isspace ())
+				continue
+			if.continue !(A = R.Attrib (i.lower ()))
+				print "css: BADATTR [%s]" %i
+			n = Intern (A [1])
+			v = $expand (A [2])
+			if (v.ew ("!important"))
+				v = v [:-10].strip ()
+			attr.append ((n, v))
+		}
+		d = {}
+		for (k, v in expand_shorthands (attr).items ())
+			if ((r = $validate (k, v)) is not None)
+				d [k] = r
+
+		$scache [txt0] = d
+
+		return d
+	}
+}
+
+## --- Expand shorthand properties ---
+
+def tblr_props (d, P, v)
+{
+	v = v.split ()
+
+	if (len (v) == 1)
+		ll = rr = tt = bb = v [0]
+	else if (len (v) == 2) {
+		tt = bb = v [0]
+		ll = rr = v [1]
+	} else if (len (v) == 3) {
+		tt = v[0]
+		ll = rr = v [1]
+		bb = v [2]
+	} else if (len (v) == 4)
+		tt, rr, bb, ll = v
+	else {
+		print "BAD shorthand:", v
+		return
+	}
+
+	for (k, v in zip (["top", "bottom", "left", "right"], [tt, bb, ll, rr]))
+		d [Intern (P % k)] = v
+}
+
+
+def border_props (d, target, v)
+{
+	if (v == "inherit")
+		width = color = style = "inherit"
+	else {
+		width = color = style = None
+		for (i in v.split ())
+			if (R.G.border_style (i)) style = i
+			else if (R.G.length (i) or i in ("thin", "medium", "thick")) width = i
+			else color = i
+	}
+
+	if (style == "none" and width is None)
+		width = 0
+
+	if (target -> str) target = [target]
+	if (width) for (t in target) d [Intern (t + "-width")] = width
+	if (color) for (t in target) d [Intern (t + "-color")] = color
+	if (style) for (t in target) d [Intern (t + "-style")] = style
+}
+
+def font_props (d, v)
+{
+	if (R.G.builtin_family (v)) {
+		print "Uses builtin family:", v
+		return
+	}
+
+	L = {}
+	FL = "font-style", "font-variant", "font-weight", "font-size", "line-height", "font-family"
+	for (i in FL) L [i] = None
+
+	v = v.split ()
+	while (v) {
+		x = v.pop (0)
+		if.break (R.G.font_sandlh (x)) {
+			if ("/" in x)
+				L ['font-size'], None, L ['line-height'] = x.partition ("/")
+			else {
+				L ['font-size'] = x
+				if (v and v [0][0] == "/") {
+					x = v.pop (0)
+					if (x == "/")
+						try L ['line-height'] = v.pop (0)
+					else L ['line-height'] = x [1:]
+				}
+			}
+		}
+		# so what does: "font: normal inherit 80% serif" mean?
+		if (x in ("normal", "inherit"))
+			for (i in ("font-style", "font-variant", "font-weight"))
+				L [i] = L [i] or x
+		else.if if (R.G.font_style (x))
+			L ['font-style'] = x
+		else if (x in ("normal", "small-caps", "inherit"))
+			L ['font-variant'] = x
+		else if (R.G.font_weight (x))
+			L ['font-weight'] = x
+		else print "Bad property in font:", x
+	}
+
+	# if font family is missing, this is a bad rule!
+	if (!v or L ["font-size"] is None)
+		return
+
+	L ['font-family'] = " ".join (v)
+
+	# everything not provided is reset to initial
+	for (i in ("font-style", "font-variant", "font-weight", "line-height"))
+		L [i] = L [i] or "normal"
+
+	for (i in FL)
+		d [i] = L [i]
+}
+
+def bg_props (d, v)
+{
+	other = ""
+	if (v == "inherit") {
+		d ["background-color"] = d ["background-image"] = v
+		return
+	}
+	for (v in v.split ())
+		if (v in csscolors or R.G.rgb (v) or v == "transparent")
+			d ["background-color"] = v
+		else if (v.sw ("$") or v == "none" or v.sw ("url"))
+			d ["background-image"] = v
+		else if (v in ("repeat", "repeat-x", "repeat-y", "no-repeat"))
+			d ["background-repeat"] = v
+		else if (v in ("scroll", "fixed"))
+			d ["background-attachment"] = v
+		else if (v in ("top", "bottom", "left", "right", "center")
+		     or R.G.length (v) or R.G.percentage (v)) {
+			if (other) other += " " + v
+			else other = v
+		}
+	if (other) d ["background-position"] = other
+}
+
+def expand_shorthands (d)
+{
+	SHORTHAND4 = {
+		"margin":"margin-%s",
+		"padding":"padding-%s",
+		"border-width":"border-%s-width",
+		"border-color":"border-%s-color",
+		"border-style":"border-%s-style"
+	}
+	BSH = "border-top", "border-bottom", "border-left", "border-right"
+	ad = {}
+
+	for (n, val in d)
+		if (n in SHORTHAND4)
+			tblr_props (ad, SHORTHAND4 [n], val)
+		else if (n in BSH)
+			border_props (ad, n, val)
+		else if (n == "border")
+			border_props (ad, BSH, val)
+		else if (n == "font")
+			font_props (ad, val)
+		else if (n == "background")
+			bg_props (ad, val)
+		else ad [n] = val
+
+	return ad
+}
+
+## --- Validate/compute/prepare supported properties ---
+# Not speed critical unless in style="..."
+
+display0 = {"block", "inline", "none", "inherit"}
+display1 = {"list-item", "run-in", "inline-block", "table", "inline-table",
+	    "table-row-group", "table-header-group", "table-footer-group",
+	    "table_row", "table-colun-group", "table-column", "table-cell",
+	    "table-caption"}
+whitespaces = {"pre", "normal", "nowrap", "pre-wrap", "pre-line"}
+
+def isbgposkw (v)
+	return v in ("top", "bottom", "left", "right", "center")
+
+class validator
+{
+	report = 0#True
+	report_ignored = 0
+
+	method error ()
+		if ($report)
+			print "Bad validation:", $pn, $pv
+
+	method oneof (v, *args)
+		for (a in args)
+			if ((r = a (v)) is not None)
+				return r
+		else.for
+			return $error ()
+
+	method length (v, positive=False)
+		if (R.G.length (v)) {
+			# according to std, lengths without unit are forbidden but in practice
+			# their' ok as px (quirks mode). (must be careful with stuff like
+			# "font: 900 12px sans", and not take 900 as a length, etc)
+			if (v [-1] in "0123456789") {
+				u = "px"
+			} else {
+				u = v [-2:]
+				v = v [:-2]
+			}
+			n = float (v)
+			if (positive and n < 0)
+				return None
+			if (u in ("em", "ex"))	# (adjust to DPI)
+				return n
+			return "%i" %int ($PIXEL_SIZES [u] * n * $XSCALE)
+		}
+
+	method percentage (v, positive=False)
+		if (R.G.percentage (v)) {
+			r = int (float (v [:-1]))
+			if (positive and r < 0)
+				return None
+			return r
+		}
+
+	method p_length (v)      return $length (v, True)
+	method p_percentage (v)  return $percentage (v, True)
+
+	# box model
+
+	method box_length (v, positive=False)
+		if ((v = $length (v, positive)) is not None) {
+			if (v -> str) return int (v)
+			return v
+		}
+	method box_percentage (v, positive=False)
+		if ((v = $percentage (v, positive)) is not None)
+			return "%c" %v
+
+	method p_boxlength (v)      return $box_length (v, True)
+	method p_boxpercentage (v)  return $box_percentage (v, True)
+
+	method margin (v)
+		if (v == "auto") return "auto"
+		else return $oneof (v, $box_length, $box_percentage)
+
+	method padding (v)
+		if (v == "auto") return None
+		else return $oneof (v, $p_boxlength, $p_boxpercentage)
+
+	method borderw (v)
+		if (v in ("thin", "medium", "thick"))
+			return ("thin", "medium", "thick").index (v) + 1
+		else return $oneof (v, $p_boxlength)
+
+	method borderst (v)
+		if (v == "none") return False
+		else if (v == "none") {
+			print "Hidden border"
+			return False
+		} else if (R.G.border_style (v)) return v
+		else return $error ()
+
+	method border_spacing (v)
+	{
+		if (" " in v) {
+			v1, v2 = v.split ()
+			v1 = $length (v1)
+			v2 = $length (v2)
+			if (v1 is None or v2 is None)
+				return $error ()
+			b = [v1, v2]
+		} else if ((x = $length (v)) is not None)
+			b = [x, x]
+		else return $error ()
+		return [i -> str ? int (i) : i for (i in b)]
+	}
+
+	method width (v)
+		# integer means absolute (px)
+		# float means percentage (relative to containing width)
+		# negative float means 'em' and is computed from font-size in the cascade
+		if (v == "auto") return v
+		else if (v == "inherit") return v
+		else if ((x = $p_length (v)) is not None)
+			return x -> float ? -x : x -> str ? int (x) : x
+		else if ((x = $p_percentage (v)) is not None) return x / 100.0
+		else return $error ()
+
+	method min_height (v)
+		if (v == "auto") return $error ()
+		else return $width (v)
+
+	method max_height (v)
+		if (v == "none") return "none"
+		else return $min_height (v)
+
+	method display (v)
+		# atm, we accept only `inline` and `block` values (and none, inherit).
+		# messing with tables is not impl. values intern strings
+		if (v in display0) return display0.key (v)
+		else if (v in display1) return $auth ? display1.key (v) : $error ()
+		else return $error () 
+
+	method whitespace (v)
+		# integers from 0..4
+		if (v in whitespaces)
+			return ("normal", "pre", "nowrap", "pre-wrap", "pre-line").index (v)
+		else return $error () 
+
+	method font_size (v)
+		# unlike other elements, 90%==0.9em since both refer to the computed font-size of
+		# the parent element. Float means absolute, integer means relative/100.0
+		if (v in $FONTSIZES) return $FONTSIZES [v]
+		else if (v in ("larger", "smaller")) return v
+		else if (v == "inherit") return 100
+		else if ((x = $p_length (v)) is not None)
+			return x -> str ? int (x) / 1.0 : x-> float ? int (x * 100) : 0
+		else return $oneof (v, $p_percentage)
+
+	method font_family (v)
+		for (x in v.split (",")) {
+			x = $expand (x.strip ())
+			if (x in ("serif", "monospace", "inherit"))
+				return x
+			if (x in ("sans serif", "sans-serif", "arial"))
+				return "sans"
+			if (x in ("fantasy", "cursive"))
+				return "serif"
+			if (x == "-pyvm-fixed" and $auth)
+				return x
+		} else return $error ()
+
+	method font_style (v)
+		# maps to the "Italic" boolean.
+		if (v in ("italic", "oblique")) return True
+		else if (v == "normal") return False
+		else if (v == "inherit") return v
+		else return $error ()
+
+	method font_weight (v)
+		# The css system with values 100..900 that are increased/descreased with "bolder"
+		# and "lighter" is somewhat stupid. Boldness uses a different font and is not
+		# about the "blackness" of text. ATM: bolder==bold, lighter==normal and the
+		# value maps to the "bold" boolean.
+		if (v in ("bold", "bolder", "600", "700", "800", "900")) return True
+		else if (v in ("normal", "lighter", "100", "200", "300", "400", "500")) return False
+		else if (v == "inherit") return v
+		else return $error ()
+
+	method color (v)
+		if (v in csscolors) return csscolors [v]
+		else if (R.G.rgb (v)) {
+			if (len (v) == 7)
+				r, g, b = v [1:3], v [3:5], v [5:7]
+			else r, g, b = 2*v[1], 2*v[2], 2*v[3]
+			return (int (r, 16) << 16) | (int (g, 16) << 8) | int (b, 16)
+		} else return v == "inherit" ? v : $error ()
+
+	method background_color (v)
+		if (v == "transparent") return False
+		else return $color (v)
+
+	method gen_url (v)
+		return $base_url.generate (v [4:-1])
+
+	method background_image (v)
+	{
+		if (v == "none") return v
+		v = $expand (v)
+		if (v.sw ("url(") and v.ew (")")) return $gen_url (v)
+		return $error ()
+	}
+
+	method background_repeat (v)
+		if (v in ("repeat", "repeat-x", "repeat-y", "no-repeat")) return v
+		else return $error ()
+
+	method background_position (v)
+	{
+		# float: percentage, int: px, string: em
+		v = v.split ()
+		if (len (v) > 2 or !v) return $error ()
+		if (len (v) == 1) v<< "center"
+		if (isbgposkw (v [0]) and isbgposkw (v [1])) {
+			xp = yp = "center" in v ? 0.5 : None
+			for (vv in v)
+				if (vv == "left") xp = 0
+				else if (vv == "right") xp = 1.0
+				else if (vv == "top") yp = 0
+				else if (vv == "bottom") yp = 1.0
+			if (xp is None or yp is None)
+				return $error ()
+			return (xp, yp)
+		}
+		vv = []
+		for (i in v)
+			if ((x = $percentage (i)) -> int)
+				vv<< x / 100.0
+			else if ((x = $length (i)) is not None) {
+				if (x -> str) vv<< int (x)
+				else vv<< "%.1f" %x
+			} else if (i == "center") vv<< 0.5
+			else if (i == "left" or i == "top" )vv << 0
+			else if (i == "right" or i == "bottom" )vv << 1.0
+			else vv<<0.5	# error case
+		return tuple (vv)
+	}
+
+	method text_decoration (v)
+		if (v in ("none", "overline", "line-through", "blink")) return False
+		else if (v in ("underline", "inherit")) return v
+		else return $error ()
+
+	method position (v)
+		return v in ("static", "relative", "absolute") ? v :
+			 v == "fixed" ? "absolute" : $error ()
+
+	method tblr (v)
+		if (v in ("auto", "inherit")) return v
+		else return $oneof (v, $length, $percentage)
+
+	method text_align (v)
+		if (v in ("left", "right", "center", "justify", "inherit", "-moz-center"))
+			return v
+		else return $error ()
+
+	method float (v)
+		if (v in ("left", "right", "none", "inherit"))
+			return v
+		else return $error ()
+
+	method clear (v)
+		try return ("none", "left", "right", "both").index (v)
+		except if (v == "inherit") return v
+		else return $error ()
+
+	method overflow (v)
+		if (v == "visible") return v
+		else if (v in ("hidden", "scroll", "auto")) return v
+		else return $error ()
+
+	method visibility (v)
+		if (v in ("visible", "hidden")) return v
+		else if (v == "collapse") return "hidden"
+		else return $error ()
+
+	method content (v)
+		if (v == "none") return False
+		else if (v.sw ("$")) {
+			v = $expand (v)
+			# (xx: can't distinguish between "url()" and url(), iow
+			# a string containing the text url(..) and a real url)
+			if (v.sw ("url(") and v.ew (")"))
+				return $gen_url(v)
+			return v
+		} else return $error ()
+
+	# * * * * * * * * * * * * * * * *
+
+	# Suppse the default font is 16px and a web page designer specifies a font
+	# of 13px with an absolute size length. What should happen when the user
+	# switches to a larger 17px default font? Should the css specified 13px
+	# also be scaled up? And then what about a width of 140px?
+	# This is the XSCALE factor! All lengths that may be specified in a style
+	# sheet are scaled accordingly if the user changes the "magnification"
+
+	DPI = 96.0
+	PIXEL_SIZES = {
+		"px": 1,
+		"pt": DPI / 72,
+		"pc": DPI / 6,
+		"in": DPI,
+		"cm": DPI / 2.54,
+		"mm": DPI / 25.4,
+	}
+	DEFAULT_BASE_SIZE = 17.0 # (in px)
+	BASE_SIZE = 17.0
+	XSCALE = BASE_SIZE / DEFAULT_BASE_SIZE
+	FONTSIZES = { k:BASE_SIZE*v for (k, v in [
+			("xx-large", 2), ("x-large", 1.5), ("large", 1.17),
+			("medium", 1.0), ("small", .83), ("x-small", .67), ("xx-small", .58)])}
+
+	method __init__ ($base_url, $auth, $expand, Fonts=True, Margins=True, Floats=True)
+	{
+		# depending on what mode we want some properties are filtered out
+		# here at validation. For example if we don't want to perform css
+		# positioning, remove the relevant properties from the stylesheet.
+
+		VALIDATE_ALWAYS = {
+			# must have
+			"display"		:$display,
+			"white-space"		:$whitespace,
+			# can be computed after the layout -- don't affect positions
+			"color"			:$color,
+			"text-decoration"	:$text_decoration,
+			"text-align"		:$text_align,
+			"background-color"	:$background_color,
+			"background-image"	:$background_image,
+			"background-repeat"	:$background_repeat,
+			"background-position"	:$background_position,
+			"border-top-color"	:$background_color,
+			"border-bottom-color"	:$background_color,
+			"border-left-color"	:$background_color,
+			"border-right-color"	:$background_color,
+			# borders
+			"border-left-width"	:$borderw,
+			"border-top-width"	:$borderw,
+			"border-bottom-width"	:$borderw,
+			"border-right-width"	:$borderw,
+			"border-left-style"	:$borderst,
+			"border-top-style"	:$borderst,
+			"border-bottom-style"	:$borderst,
+			"border-right-style"	:$borderst,
+			"border-spacing"	:$border_spacing,
+		}
+		$VALIDATE = VALIDATE_ALWAYS
+
+		VALIDATE_FONT = {
+			"font-size"		:$font_size,
+			"font-family"		:$font_family,
+			"font-style"		:$font_style,
+			"font-weight"		:$font_weight,
+		}
+
+		VALIDATE_MARGINS = {
+			"margin-left"		:$margin,
+			"margin-top"		:$margin,
+			"margin-bottom"		:$margin,
+			"margin-right"		:$margin,
+			"padding-left"		:$padding,
+			"padding-top"		:$padding,
+			"padding-bottom"	:$padding,
+			"padding-right"		:$padding,
+			"width"			:$width,
+		}
+
+		VALIDATE_POSITION = {
+			"float"			:$float,
+			"position"		:$position,
+			"clear"			:$clear,
+			"top"			:$tblr,
+			"right"			:$tblr,
+			"bottom"		:$tblr,
+			"left"			:$tblr,
+			"overflow"		:$overflow,
+			"height"		:$width,
+			"min-height"		:$min_height,
+			"max-height"		:$max_height,
+			"visibility"		:$visibility,
+			"content"		:$content,
+		}
+
+		if (Fonts or auth) $VALIDATE.update (VALIDATE_FONT)
+		if (Margins or auth) $VALIDATE.update (VALIDATE_MARGINS)
+		if (Floats) $VALIDATE.update (VALIDATE_POSITION)
+	}
+
+	method validate ($pn, $pv)
+		if (pn in $VALIDATE)
+			return $VALIDATE [pn](pv)
+		else if ($report_ignored)
+			print "css: Skipped property:", pn
+}
+
+def get_base_font_size ()
+	return int (validator.BASE_SIZE)
+
+def set_base_font_size (s)
+{
+	if (s == int (validator.BASE_SIZE))
+		return False
+	s = 1.0 * s
+	validator.BASE_SIZE = s
+	validator.XSCALE = s / validator.DEFAULT_BASE_SIZE
+	validator.FONTSIZES = { k:s*v for (k, v in [
+			("xx-large", 2), ("x-large", 1.5), ("large", 1.17),
+			("medium", 1.0), ("small", .83), ("x-small", .67), ("xx-small", .58)])}
+	return True
+}
+
+########### attribute matcher for [attr=value] selector ############
+
+class AttrMatch
+{
+	# it seems that the matching of value is case-insensitive
+	method __init__ ($spec, exp, uv)
+	{
+		if ('=' not in spec) {
+			m = uv (spec.lower ())
+			def $match (node)
+				return node.hasattr (m)
+			return
+		}
+		if !(m = R.attr_split (spec)) {
+			print "unimplemented attribute selector:", spec
+			return
+		}
+		try (attr, value), (eq,) = m
+		except {
+			print "unimplemented attribute selector:", spec
+			return
+		}
+		# note: the dom's getattr() method which uses the tupdict
+		# structure compares strings by *identity* only. So the
+		# only way to get a match is to ensure that the same strings
+		# are also the same python object. The function `uv` below
+		# is doing that as it's the same thing that was used by
+		# the lexer to intern tags and attribute names.
+		attr = uv (rrand (attr.lower ()))
+		value = rrand (exp (value).lower ())
+		if (eq == "=") {
+			def $match (node)
+				if (node = node.getattr (attr))
+					return node.lower () == value
+		} else if (eq == "^=") {
+			def $match (node)
+				if (node = node.getattr (attr))
+					return node.lower ().sw (value)
+		} else if (eq == "$=") {
+			def $match (node)
+				if (node = node.getattr (attr))
+					return node.lower ().ew (value)
+		} else if (eq == "*=") {
+			def $match (node)
+				if (node = node.getattr (attr))
+					return value in node.lower ()
+		} else if (eq == "~=") {
+			def $match (node)
+				if (node = node.getattr (attr))
+					for (node in node.lower ().split ())
+						if (node == value)
+							return True
+		} else print "|= rule XXXXXXXXXXXXXXXXXX:", eq
+	}
+
+	method match (node)
+	{
+		print "NOT IMPLEMENTED:", $spec
+		return False
+	}
+}
+
+#
+#
+
+##  * * * * * * * * * * * *  Selectors * * * * * * * * * * * * *
+##
+## We have various specializations for fast matching on some very common
+## types of selectors.  This generates many nested functions that use outer
+## scope locals attached to instances.
+
+def Selector (TAG, ID, CLASS, ATTR, PSEUDO)
+{
+	if (PSEUDO or ATTR)
+		return Selector_all (TAG, ID, CLASS, ATTR, PSEUDO)
+
+	if (TAG and not (ID or CLASS))
+		return Selector_t (TAG)
+	if (CLASS and not ID)
+		return TAG ? Selector_tc (TAG, CLASS) : Selector_c (CLASS)
+	if (ID and not CLASS)
+		return TAG ? Selector_ti (TAG, ID) : Selector_i (ID)
+	if !(TAG or CLASS or ID)
+		return Selector_matchany ()
+
+	return Selector_all (TAG, ID, CLASS, ATTR, PSEUDO)
+}
+
+def class_match (node, cclass)
+{
+	aclass = node.getattr ("class")
+	if (!aclass)
+		return False
+	if (" " not in aclass)
+		return cclass == aclass
+	for (aclass in aclass.split ())
+		if (aclass == cclass)
+			return True
+	return False
+}
+
+class Selector_all
+{
+	is_root = True
+	flags = 0
+	Simple = True
+	Once = False
+	Slibing = False
+	id = clas = attr = pseudo = tag = ""
+
+	method __init__ ($tag, $id, $clas, $attr, $pseudo)
+		if (attr) {
+			$AM = attr.match
+			$attr = attr.spec
+		}
+
+	method set_props ($pp) ;
+
+	method calcspec ()
+	{
+		# "Specificity" is an integer so that we have fast sorting in the cascade.
+		# bits 0..12 store the 'order of appearance' of the rule in the css.
+		# bits 12..16 store the number of tags
+		# bits 16..20 store the number of classes
+		# bits 20..24 store the number of IDs
+		# bits 24,25 store the UA/important flags
+		i = 0
+		if ($id) i += 1<<20
+		if ($clas) i += 1<<16
+		if ($attr) i += 1<<16
+		if ($tag) i += 1<<12
+		if ($pseudo) {
+			i += 1<<12
+			# visited > link
+			if ($pseudo == "visited")
+				i += 1<<12
+		}
+		return i
+	}
+
+	method match (node)
+	{
+		if ($tag and node.tag != $tag)
+			return False
+		if ($id and node.getattr ("id") != $id)
+			return False
+		if ($clas)
+			if (!class_match (node, $clas))
+				return False
+		if ($attr and !$AM (node))
+			return False
+		if (!$pseudo)
+			return True
+		return $pseudo_match (node)
+	}
+
+	method pseudo_match (node)
+	{
+		p = $pseudo
+		if (p == "link")
+			return node.hasattr ("href")
+		if (p == "visited")
+			return node.hasattr ("href") and node.isvisited ()
+		if (p in ("before", "after")) {
+			if (node.kids -> tuple)
+				node.kids = list (node.kids)
+			i = p == "before" ? 0 : -1
+			if (node.kids and node.kids [i].tag == ":" and node.kids [i].getattr ("t") == p)
+				n = node.kids [i]
+			else {
+				n = node.common.Node (":", ["t", p, "c", []], node)
+				if (i == 0)
+					node.kids.insert (0, n)
+				else node.kids.append (n)
+			}
+			n.getattr ("c").append ($pp)
+		}
+		return False
+	}
+
+	method tagonly () return $tag and not ($clas or $id or $attr or $pseudo) ? $tag : None
+	method havid () return $id
+	method havclass () return $clas
+	method havtag () return $tag
+
+	method __str__ ()
+	{
+		s = $tag
+		if ($id)     s += "#"+$id
+		if ($clas)   s += "."+$clas
+		if ($attr)   s += "[" + $attr + "]"
+		if ($pseudo) s += ":" + $pseudo
+		return s or "*"
+	}
+}
+
+class Selector_matchany (**Selector_all)
+	method __init__ ()
+		$match = TrueFunc
+
+class Selector_t (**Selector_all)
+	method __init__ ($tag)
+		if (DEBUGS.SANITY_CHECK)
+			def $match (node)
+			{
+				if (node.tag != tag)
+					print "Error! tag should always be equal!"
+				return node.tag == tag
+			}
+		else $match = TrueFunc
+
+class Selector_c (**Selector_all)
+	method __init__ ($clas)
+		if (DEBUGS.SANITY_CHECK)
+			def $match (node)
+			{
+				if (!class_match (node, clas)) {
+					print "Error! class should always be equal!"
+					return False
+				}
+				return True
+			}
+		else $match = TrueFunc
+
+class Selector_tc (**Selector_all)
+	method __init__ ($tag, $clas)
+		if (DEBUGS.SANITY_CHECK)
+			def $match (node)
+			{
+				if (!class_match (node, clas)) {
+					print "Error! class should always be equal!"
+					return False
+				}
+				return node.tag == tag
+			}
+		else def $match (node)
+			return node.tag == tag
+
+class Selector_i (**Selector_all)
+	method __init__ ($id)
+		if (DEBUGS.SANITY_CHECK)
+			def $match (node)
+			{
+				if (node.getattr ("id") != id) {
+					print "Error! id should always be equal!"
+					return False
+				}
+				return True
+			}
+		else $match = TrueFunc
+
+class Selector_ti (**Selector_all)
+	method __init__ ($tag, $id)
+		if (DEBUGS.SANITY_CHECK)
+			def $match (node)
+			{
+				if (node.getattr ("id") != id) {
+					print "Error! id should always be equal!"
+					return False
+				}
+				return node.tag == tag
+			}
+		else def $match (node)
+			return node.tag == tag
+
+class ChildSelector
+{
+	is_root = True
+	Simple = False
+	Once = Slibing = False
+	REL = " > "
+	method __init__ ($this, $child)
+	{
+		$flags = 0
+		$is_root = True
+		tm = this.match
+		$child.Once = $REL == " > "
+		def $match (node)
+			if (tm (node))
+				return child
+	}
+	method set_props (pp)
+		$child.set_props (pp)
+	method calcspec ()
+		return $this.calcspec () + $child.calcspec ()
+
+	method tagonly  () return False
+	method havid    () return $this.havid ()
+	method havclass () return $this.havclass ()
+	method havtag   () return $this.havtag ()
+	method subs ()
+	{
+		l = []
+		c = $child
+		while (1) {
+			l.append (c)
+			if (c.Simple)
+				break
+			c = c.child
+		}
+		return l
+	}
+	method __str__ ()
+		return str ($this) + $REL + str ($child)
+}
+
+class DescendantSelector (**ChildSelector)
+	REL = " "
+
+class SlibingSelector (**ChildSelector)
+{
+	REL = " + "
+	method __init__ ($this, $child)
+	{
+		$flags = 0
+		$is_root = True
+		$child.Slibing = True
+		tm = this.match
+		def $match (node)
+		{
+			if (tm (node))
+				return $child
+			return False
+		}
+	}
+}
+
+## Part 2
+##
+## The cascader: produce the final rules for a node of the document tree
+
+# optimized lookup. We have a huge list of selectors and matching each and
+# every one of them against every node of the document tree is not practical.
+# The current optimization removes the selectors that use an ID, CLASS or
+# TAG into dictionaries; this means that we'll have at least 3 dict lookups
+# per node, plus `N` lookups for the rest of the selectors that don't have
+# any ID/CLASS/TAG matches.
+
+def optimize_selectors (rules)
+{
+	withclass = {}
+	withid    = {}
+	withtag   = {}
+	rest = []
+	for (r in rules)
+		if (c = r.havid ())
+			withid.gather (c, r)
+		else if (c = r.havclass ())
+			withclass.gather (c, r)
+		else if (c = r.havtag ())
+			withtag.gather (c, r)
+		else rest.append (r)
+	for (d in (withclass, withid, withtag))
+		for (k, v in d.items ())
+			d [k] = tuple (v)
+	return withclass, withid, withtag, tuple (rest)
+}
+
+# after the final css dictionary has been cascaded, do some further processing that
+# make it more convenient for use by the layout engine (the same css dict may be used
+# multiple times, this is a kind of preprocessing optimization)
+
+def prepdict (d)
+{
+	l = []
+	d = dict (d)
+	g = d.get
+
+	# "special" are the elements that: float, position (rel or abs) and overflow != hidden.
+
+	# relation of float-position-display
+	if ("float" in d) {
+		# can't be float AND absolute
+		if (d ["float"] == "none" or d ["display"] == "none" or g ("position") == "absolute")
+			del d ["float"]
+		else {
+			d ["special"] = True
+			if (d ["display"] != "table")
+				d ["display"] = "block"
+		}
+	}
+
+	# positioned: set display, enable special
+	if ("position" in d and d ["position"] in ("relative", "absolute") and d ["display"] != "none") {
+		d ["special"] = True
+		if (d ["position"] == "absolute" and d ["display"] != "table")
+			d ["display"] = "block"
+	}
+
+	# overflow != visible, enable special
+	if ("overflow" in d) {
+		if (d ["overflow"] == "visible")
+			del d ["overflow"]
+		else d ["special"] = True
+	}
+
+	# optimization 1: put the below properties in the '#' key. used with tuple_or
+	for (p in ("display", "white-space", "font-size", "font-family", "font-weight", "font-style"))
+		l.append (((x = g (p, "inherit")) == "inherit") ? None : x)
+	d ["#"] = tuple (l)
+
+	# optimization 2: put margin/padding/border x4 in the key "m"
+	l = []
+	for (p in ("margin-top", "margin-bottom", "margin-left", "margin-right"))
+		l.append (((x = g (p, "inherit")) == "inherit") ? None : x == "auto" ? True : x)
+	for (p in ("padding-top", "padding-bottom", "padding-left", "padding-right"))
+		l.append (((x = g (p, "inherit")) == "inherit") ? None : x)
+	for (p, p1 in ( ("border-top-style", "border-top-width"),
+			("border-bottom-style", "border-bottom-width"),
+			("border-left-style", "border-left-width"),
+			("border-right-style", "border-right-width")))
+		if (g (p) in (False, "inherit")) l.append (0)
+		else l.append ( ((x = g (p1, "inherit")) == "inherit") ? None : x)
+	d ["m"] = l.count (0) == 12 ? None : tuple (l)
+
+	for (rr in ("width", "height"))
+		if (rr in d and d [rr] == "auto")
+			del d [rr]
+
+	if ("height" in d or "min-height" in d or "max-height" in d) {
+		if (d.get ("max-height") == "none")
+			del d ["max-height"]
+		d ["h"] = [d.get (p) for (p in ("min-height", "height", "max-height"))]
+	}
+
+	return d
+}
+
+class cascader
+{
+	method __init__ (page_url, rules, options, $use_styles)
+	{
+		$STDSIZES = validator.FONTSIZES.values ().sort ()
+		$BASESIZE = validator.BASE_SIZE
+
+		ee = []
+		for (r in rules)
+			if (!r.Simple)
+				ee.extend (r.subs ())
+		for (e in ee)
+			e.is_root = False
+
+		withclass, withid, withtag, $simple = optimize_selectors (rules + ee)
+		$withclass = withclass.get
+		$withid    = withid.get
+		$withtag   = withtag.get
+
+		print "oPTAbS:", [len (withclass), len (withid), len (withtag), len ($simple)]
+
+		$sp = use_styles ? style_props (page_url, options).parse_style : None
+		$cc_cache = {}
+		$ucache = {}
+		$prepdict = $prepdict
+		$bgi = set ()
+	}
+
+	method done ()
+		del $cc_cache, $ucache, $sp
+
+	method cascade (node, ancestor, slibing)
+	{
+		# This function is called foreach node, iow, many, many times.
+		# Optimization matters but not when it violates correctness.
+		tag  = node.tag
+
+		# :before and :after generated nodes
+		if (tag is ":") {
+			d = dict (node.basecss)
+			l = node.getattr ("c")
+			l.sort ()
+			for (None, prop in l)
+				d.update (prop)
+
+			# if no content the properties don't apply
+			if ("content" in d) {
+				l = d ["content"]
+				if (l -> str)
+					node.kids.append (Content (l))
+				else if (l is not False)
+					node.new_kid ("img", ["src", l.url])
+			} else d = dict (node.basecss)
+
+			return $prepdict (d), [], ()
+		}
+
+		clas = node.getattr ("class")
+		id   = node.getattr ("id")
+
+		# Match.
+		# flags&1 means that a rule is activated and it's not a root rule
+		# (all root rules are active).
+		# flags&2 means that a rule will be active for child matches.
+		match = []
+		np2 = []
+		newslibing = ()
+		newancestor = []
+
+		for (r in ancestor)
+			if (r.Once) r.flags = 1
+			else {
+				newancestor.append (r)
+				r.flags = 3
+			}
+		if (slibing)
+			for (r in slibing)
+				r.flags = 1
+
+		# collect candidates from with-tag, with-id and with-class fast dicts
+		ext = []
+		if (r = $withtag (tag))
+			for (r in r) if (r.is_root or r.flags)
+				ext.append (r)
+
+		if (id) if (r = $withid (id))
+			ext.extend (r)
+		if (clas)
+			if (r = $withclass (clas)) {
+				ext.extend (r)
+			} else if (" " in clas) {
+				if (clas not in $cc_cache)
+					cc = $cc_cache [clas] = tuple (set (clas.split ()))
+				else cc = $cc_cache [clas]
+				for (cc in cc)
+					if (r = $withclass (cc))
+						ext.extend (r)
+			}
+
+		# Do a match() on all of them. Simple rules add a new set of properties
+		# to the `match` list. Complex rules will be active for descendants or
+		# slibing nodes.
+		for (ll in ($simple, ext))
+			for (r in ll) {
+				if (!r.is_root)
+					if !(r.flags & 1)
+						continue
+
+				if (r.Simple) {
+					if (r.match (node))
+						match.append (r.pp)
+				} else if (r = r.match (node))
+					if (r.Slibing) {
+						if (newslibing -> tuple)
+							newslibing = []
+						newslibing.append (r)
+					} else if !(r.flags & 2) {
+						np2.append (r)
+						r.flags |= 2
+					}
+			}
+
+		for (r in ancestor) r.flags = 0
+		for (r in np2)   r.flags = 0
+		if (slibing)
+			for (r in slibing) r.flags = 0
+		newancestor.extend (np2)
+
+		# Have all the matching property dictionaries (and a priority/specificity for each).
+		# Sort, cascade. The $ucache is very important because not only it avoids N update()
+		# but also "interns" the property dictionaries, which is extremely important
+		# for memory.
+		if (!match) {
+			uk = tag
+			d = node.basecss
+		} else {
+			match.sort ()
+			uk = tag + "".join (["%ai"%i for (i, None in match)])
+			if (uk in $ucache)
+				d = $ucache [uk]
+			else {
+				d = dict (node.basecss)
+				for (None, prop in match)
+					d.update (prop)
+				d = $ucache [uk] = $prepdict (d)
+			}
+		}
+
+		# <tag style="...">
+		if ((st = node.getattr ("style")) and $use_styles) {
+			uk = uk + st
+			if (uk in $ucache)
+				d = $ucache [uk]
+			else {
+				if (st = $sp (st)) {
+					d = dict (d)
+					d.update (st)
+				}
+				d = $ucache [uk] = $prepdict (d)
+			}
+		}
+
+		return d, newancestor, newslibing
+	}
+
+	method prepdict (d)
+	{
+		# collect used image url()s
+		d = prepdict (d)
+		if (bi = d.get ("background-image"))
+			if (bi == "none") del d ["background-image"]
+			else $bgi.add (bi)
+		if (bi = d.get ("content"))
+			if !(bi -> str)
+				$bgi.add (bi)
+		return d
+	}
+}
+
+###################################################################################
+## base builtin stylesheets
+
+def mkcss (f, **kw)
+{
+	scss = readfile (wwdatafile (f))
+	for (k, v in kw.items ())
+		scss = scss.replace ("$"+k, v)
+	rules, None = parse_style_sheet (0, scss, None, void, {}, True)
+
+	if (!DO_PREDEFS)
+		return rules, {"*":{}}
+
+	pred = {}
+	all = {}
+	r2 = []
+	for (r in rules)
+		if (r.tagonly ())
+			pred.gather (r.tag, r.pp [1])
+		else if (r => Selector_matchany)
+			all.update (r.pp [1])
+		else r2.append (r)
+
+	for (k, v in pred.items ()) {
+		dd = dict (all)
+		for (x in v)
+			dd.update (x)
+		
+		pred [k] = prepdict (dd)
+	}
+	pred ["*"] = prepdict (all)
+
+	return r2, pred
+}
+
+if (__name__ != __main__) {
+	UA              = mkcss ("base.css", TABLEDISPLAY="table")
+	UAnotables      = mkcss ("base.css", TABLEDISPLAY="block")
+	UAfixed         = mkcss ("base-fixed.css", TABLEDISPLAY="table")
+	UAfixednotables = mkcss ("base-fixed.css", TABLEDISPLAY="block")
+	del mkcss
+}
+
+###################################################################################
+
+# full page parse
+
+import thread
+
+CSS_URL_CACHED = set ()
+
+class page_css
+{
+	# Upon completion it sets `url.css`
+
+	method __init__ ($browser, $url, $dom, $caching, $options)
+	{
+		$fixed = $options.pop ("fixed")
+		$use_external = $options.pop ("use_external")
+		$do_tables = $options.pop ("do_tables")
+		$offset = 0
+		$run ()
+	}
+
+	method run ()
+		try {
+			$do_parse ()
+		} except (thread.Interrupt) {
+			$url.css = None
+			print "interrupted"
+		} except {
+			print "!! Abnormal page_css_parser termination", sys.exc_info ()
+			return
+		}
+
+	method parse_stylesheet (text=None, url=None)
+	{
+		if (url) text = url.readfile ()
+		s, $offset = parse_style_sheet ($offset, text, url or $url, $download,
+						$options, False, $dom.ud)
+		return s
+	}
+
+	method do_parse ()
+	{
+		if($fixed) x = $do_tables ? UAfixed : UAfixednotables
+		else x = $do_tables ? UA : UAnotables
+		$ruleset = ruleset = list (x [0])
+		predef = x [1]
+		$apply_predefs (predef)
+
+		if ($use_external) for (l in $dom.styles)
+			if (l.tag == "style") {
+				if (l.lattr ("type", "text/css") != "text/css")
+					continue
+				code = l.cdata ().strip ()
+				if (code.sw ("<!--") and code.ew ("-->"))
+					code = code [4:-3]
+				ruleset.extend ($parse_stylesheet (code))
+			} else if (l.tag == "link") {
+				if (l.lattr ("rel") != "stylesheet")
+					continue
+				if (!media_ok (l.lattr ("media", "all")))
+					continue
+				if !(href = l.getattr ("href"))
+					continue
+				url = $download ($url.generate (href))
+				##print "##### CSS: DOWNLOADED:", $url, url, url.Status
+				if (url.Status == "OK" and !url.content_type ().sw ("text/html"))
+					ruleset.extend ($parse_stylesheet (url=url))
+			}
+		$url.css = cascader ($url, ruleset, $options, $use_external)
+	}
+
+	method apply_predefs (p)
+		# each node *class* has a dict of the base UA css
+		for (k, v in $dom.common.nodes_dict.items ())
+			v.basecss = k in p ? p [k] : p ["*"]
+
+	method download (url)
+	{
+		# stylesheets are cached permanently until browser shutdown
+		# (there should be option to flush them but this works much
+		# better for some sites that use 5-10 different stylesheets
+		# per page and don't do pipelining, so whatever...)
+
+		##print "==================>>>>", url
+
+		if (url.uid in CSS_URL_CACHED)
+			try if (rez = url.load_cached ())
+				return rez
+
+		# requires a network query (maybe if-modified, but non-instant nontheless)
+		L = thread.xlock (False)
+		l = [url]
+		def ready (u)
+		{
+			l [0] = u
+			L.release ()
+		}
+
+		print "css: fetch", url
+		$browser.Fetch.doget (url, ready, caching=$caching, high_pri=True)
+		L.acquire ()
+		end_url = l [0]
+		if (end_url.Status == "OK")
+			CSS_URL_CACHED.add (url.uid)
+		return end_url
+	}
+}
+
+def parse_page_css (browser, url, dom, caching, **opts)
+	page_css (browser, url, dom, caching, opts)
+
+if (__name__ == __main__)
+	style_sheet (0, readfile (sys.argp.filename_ex ()), None, void, {}, False)

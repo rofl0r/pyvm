@@ -1,0 +1,367 @@
+##  thread facilities
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from _thread import *;
+import _thread
+
+#
+# `thread` is the preferred module to use, instead of `threading`.
+#
+# We can implement our own stuff from threading in here.
+#
+
+def start_new (f, *args, **kwargs)
+{
+	if (kwargs) raise "start_new can't take keyword arguments"
+	return start_new_thread (f, args)
+}
+
+class Interrupt;
+
+def interrupt (thread_id, exc=None, if_running=0)
+{
+	if (exc is None)
+		exc = Interrupt
+##	print "interrupt thread:", thread_id, exc, if_runnning
+	_thread.interrupt (thread_id, exc, if_running)
+}
+
+class xlock
+{
+	method __init__ (released=True, $debug=False)
+	{
+		$lock = allocate_lock ()
+		if (!released)
+			$lock.acquire ()
+		if (debug)
+			$__enter__, $__exit__ = $denter, $dexit
+	}
+
+	method locked ()
+		return $lock.locked ()
+
+	method release ()
+		$lock.release ()
+
+	method acquire (timeout=None)
+	{
+		if (!timeout)
+			return $lock.acquire ()
+
+		X = [1]
+		def wake_me_up (me)
+		{
+			try sleep (timeout)
+			except (Interrupt) return
+			if (X [0])
+				interrupt (me, Interrupt)
+		}
+		s = start_new (wake_me_up, get_ident ())
+
+		try $lock.acquire ()
+		finally X [0] = 0
+
+		try interrupt (s, Interrupt)
+	}
+
+	method ack (timeout=None)
+	{
+		$acquire (timeout)
+		$release ()
+	}
+
+	# with
+	method __enter__ ()
+		$acquire ()
+
+	method __exit__ (*x)
+		$release ()
+
+	method __context__ () return  self
+
+	method denter ()
+	{
+		if ($debug) print "to acquire:", $debug
+		$acquire ()
+		if ($debug) print "acquired:", $debug
+	}
+
+	method dexit (*x)
+	{
+		$release ()
+		if ($debug) print "released:", $debug
+	}
+}
+
+class rlock (**xlock)
+{
+	method __init__ (debug=False)
+	{
+		$owner = None
+		$count = 0
+		xlock.__init__ (self, debug=debug)
+	}
+
+	method release ()
+	{
+		if ($owner is None)
+			return
+		if ($owner is not get_ident ())
+			raise Error ("Rlock can be released only by owner")
+		$count -= 1
+		if (!$count) {
+			$owner = None
+			xlock.release (self)
+		}
+	}
+
+	method acquire (timeout=None)
+	{
+		if ($owner is get_ident ()) {
+			$count += 1
+			return
+		}
+		xlock.acquire (self, timeout)
+		$owner = get_ident ()
+		$count = 1
+	}
+}
+
+class sem
+{
+	method __init__ ($v = 0)
+	{
+		L = xlock ()
+		$La, $Lr = L.acquire, L.release
+		$W = xlock (False)
+		$WN = 0
+	}
+
+	method down (timeout=None)
+	{
+		$La ()
+		if ($v) {
+			$v -= 1
+			$Lr ()
+			return
+		}
+		$WN += 1
+		$Lr ()
+
+		# Block
+		try {
+			$W.acquire (timeout)
+			$La ()
+			$Lr ()
+		} except {
+			# Timed out
+			$La ()
+			$WN -= 1
+			$Lr ()
+			raise
+		}
+	}
+
+	method try_down ()
+	{
+		$La ()
+		if (ret = $v)
+			$v -= 1
+		$Lr ()
+		return ret
+	}
+
+	method zero ()
+	{
+		$La ()
+		$v = 0
+		$Lr ()
+	}
+
+	method up ()
+	{
+		$La ()
+
+		if ($WN) {
+			$W.release ()
+			$WN -= 1
+		} else {
+			$v += 1
+		}
+
+		$Lr ()
+	}
+
+	method ack ()
+	{
+		$down ()
+		$up ()
+	}
+
+	# with
+	method __enter__ ()
+		$down ()
+
+	method __exit__ (*x)
+		$up ()
+
+	method __context__ () return  self
+}
+
+class fifo
+{
+	method __init__ ()
+	{
+		$q = []
+		$s = sem ()
+	}
+
+	method ack ()
+		$s.ack ()
+
+	method put (*c)
+	{
+		$q.append (len (c) == 1 ? c [0] : c)
+		$s.up ()
+	}
+
+	method put_first (*c)
+	{
+		$q.insert (0, len (c) == 1 ? c [0] : c)
+		$s.up ()
+	}
+
+	method get (timeout=None)
+	{
+		$s.down (timeout)
+		return $q.pop (0)
+	}
+
+	method getn (n=1000000)
+	{
+		q, $q = $q [:n], $q [n:]
+		for (None in q)
+			$s.down ()
+		return q
+	}
+
+	method peek ()
+		return $q [0]
+
+	method __nonzero__ ()
+		return bool ($q)
+
+	method drop ()
+	{
+		$s.zero ()
+		$q = []
+	}
+
+	method drop_last ()
+		if ($s.try_down ())
+			$q.pop ()
+
+	method __iter__ ()
+		while (1)
+			yield $get ()
+
+	method len ()
+		return len ($q)
+}
+
+class bgtask
+{
+	state = 1
+
+	method interrupt (if_running=False)
+	{
+		if ($state == 0)
+			try {
+				interrupt ($thid, Interrupt, if_running)
+##				sched_yield ($thid)
+			}
+	}
+
+	method run (action, callback)
+	{
+		try {
+			$thid = get_ident ()
+			$state = 0
+			rez = action ()
+			$state = 1
+			callback (rez)
+		} except (Interrupt) { }
+	}
+
+	method run_after (dt, func)
+	{
+		def action ()
+			sleep (dt)
+		def callback (x)
+			func ()
+		start_new ($run, action, callback)
+	}
+}
+
+# a time limiter.  with "lim (10)" we schedule an interrupt for the thread that
+# called this method after 10 seconds, unless stop() is called or another limit
+# is set
+
+class in_time
+{
+	method __init__ ()
+		$tid = None
+
+	method lim (t)
+	{
+		if ($tid) $stop ()
+		$tid = start_new ($int_after, t, get_ident ())
+	}
+
+	method stop ()
+		if ($tid) {
+			try interrupt ($tid, Interrupt, 0)
+			$tid = None
+		}
+
+	method int_after (t, main_id)
+	{
+		try {
+			sleep (t)
+			interrupt (main_id, Interrupt, 0)
+		}
+		$tid = None
+	}
+}
+
+######################################################
+if (__name__ == '__main__')
+{
+	L = sem ()
+
+	def t ()
+	{
+		for (i in range (3)) {
+			L.down (1)
+			print "Got one:", get_ident ()
+		}
+	}
+
+	def t2 ()
+	{
+		for (i in range (5)) {
+			sleep (0.3)
+			L.up ()
+		}
+	}
+
+	start_new (t)
+	start_new (t)
+	start_new (t2)
+	sleep (6)
+}

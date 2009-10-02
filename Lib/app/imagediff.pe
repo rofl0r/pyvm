@@ -1,0 +1,23 @@
+__autosem__
+
+from graphics import ImageFile as I
+
+i1 = I (sys.argv [1]).read_image ()
+i2 = I (sys.argv [2]).read_image ()
+
+if (i1.w != i2.w or i1.h != i2.h) {
+	print "Images have different dimensions!!"
+	exit ()
+}
+
+idif = @DLL.Clib ("idif", "-O3", pelf=1)["imagediff"]
+
+out = array ("d", 6)
+idif (i1.data, i2.data, i1.w*i1.h, out)
+from math import sqrt
+def pc (d, t)
+	return "%.2f%%" % (sqrt(d/t) * 100.0)
+print "RED:\t", pc (out [0], out [3])
+print "GREEN:\t", pc (out [1], out [4])
+print "BLUE:\t", pc (out [2], out [5])
+print "TOT:\t", pc (out[0]+out[1]+out[2], out[3]+out[4]+out[5])

@@ -1,0 +1,84 @@
+##  Implementation of the RSA asymmetric cryptosystem
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# The PKCS1 standard for RSA (RFC3447)
+
+__autosem__
+
+from longs import OS2IP, I2OSP
+from cryptorand import randstr
+import sha
+
+def ToLong (x)
+	return x -> str ? OS2IP (x) : x
+
+class PKCS1
+{
+	method __init__ (modulo, exponent)
+	{
+		$modulo = ToLong (modulo)
+		$exponent = ToLong (exponent)
+		$keylen = len (str ($modulo).replace ("-", "")) / 2
+	}
+
+	# encrypt/decrypt.  This is method RSAES-PKCS1-v1_5 (probably)
+
+	method encrypt (p)
+	{
+		padl = $keylen - len (p) - 3
+		if (padl < 0)
+			raise Error ("Too much data for RSA!")
+		do pad = [x for (x in randstr (2 * padl)) if (x != "\0")]
+		while (len (pad) < padl)
+		pad = "".join (pad [:padl])
+		plaintext = OS2IP ("\2" + pad + "\0" + p)
+		return I2OSP (pow (plaintext, $exponent, $modulo))
+	}
+
+	method decrypt (p)
+		return I2OSP (pow (OS2IP (p), $exponent, $modulo)).partition ("\2")[2].partition ("\0")[2]
+
+	method emsa_pkcs1 (data, hf)
+	{
+		if (hf == "sha1") {
+        		DI = '\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14'
+			data = sha.digest (data)
+		} else raise "UnsupportedEMSA/RSA"
+
+		flen = $keylen - len (DI) - len (data) - 3
+		if (flen < 0)
+			return None # as good as False
+		return "\0\1" + flen * "\xff" + "\0" + DI + data
+	}
+
+	method verify (data, sig, hf="sha1")
+		return I2OSP (pow (OS2IP (sig), $exponent, $modulo)) == $emsa_pkcs1 (data, hf)
+
+	method sign (data, hf="sha1")
+		return I2OSP (pow (OS2IP ($emsa_pkcs1 (data, hf)), $exponent, $modulo))
+
+	method fast_sign (data, P, Q, DMP, DMQ, U)
+		return I2OSP (sign_fast (OS2IP ($emsa_pkcs1 (data, "sha1")), None, P, Q, U, DMP, DMQ))
+}
+
+# instead of pow (data, D, N)
+
+def sign_fast (data, D, P, Q, U, DMP=None, DMQ=None)
+{
+	if (P > Q) {
+		P, Q = Q, P
+		DMP, DMQ = DMQ, DMP
+	}
+	if (!DMP) DMP = D % (P - 1)
+	if (!DMQ) DMQ = D % (Q - 1)
+	m1 = pow (data, DMP, P)
+	m2 = pow (data, DMQ, Q)
+	h = m2 - m1
+	if (h < 0) h += Q
+	h = (U * h) % Q
+	return m1 + h * P
+}

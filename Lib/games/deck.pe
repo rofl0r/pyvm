@@ -1,0 +1,34 @@
+# load the card images for a standard 52-card deck.
+# The card images were taken from the PySolFC project. thanks!
+#	- each image is 71x96 pixels
+#	- color 0x0000ff is the colorkey for transparent round edges
+#	- images are loaded on `Deck` which is a dict with keys "c", "d", "h", "s"
+#	  for club, diamond, heart, spade
+#	- values are lists.  item "0" is the Ace, item "12" is the King
+
+__autosem__
+
+Deck = {}
+
+def import_cards ()
+{
+	CARDFILE = HOME + "Lib/games/CARDS.gif"
+	I = @graphics.ImageFile (CARDFILE).read_as_fb ()
+	W = I.w / 13
+	H = I.h / 4
+
+	y = 0
+	for (s in 'cdhs') {
+		x = 0
+		Deck [s] = S = []
+		for (i in *13) {
+			c = I.sub_image (x, y, W, H)
+			c.colorkey = 0xff
+			S << c
+			x += W
+		}
+		y += H
+	}
+}
+
+import_cards ()

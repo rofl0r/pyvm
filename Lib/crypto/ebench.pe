@@ -1,0 +1,26 @@
+# stupid program to benchmark the various ciphers
+
+E = [
+	("SHAENC", @shaenc),
+	("AES   ", @AES),
+	("RC4   ", @RC4),
+#	("TEA   ", @tea),
+];
+
+N = 10;
+S = 128 * 1024;
+data = _buffer (S);
+time = @time.time;
+digest = @md5.digest;
+for (n, m in E) {
+	f = m.encryptor (digest ("passwd"));
+	t0 = time ();
+	for (i in *N)
+		f (data);
+	dt = time () - t0;
+	print "%s %.2f KB/sec" %(n, (S / dt) / 1024);
+	f = m.encryptor (digest ("passwd"));
+	d = m.decryptor (digest ("passwd"));
+	if (d (f (data)) != data)
+		print "%n is BROKEN!!!!!" %n;
+}

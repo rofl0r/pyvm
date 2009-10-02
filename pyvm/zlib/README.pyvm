@@ -1,0 +1,32 @@
+zlib is generally a useful library:
+	- pyvm freezing
+	- graphics (PNG, etc)
+	- reading gzip files
+	- internet content type compressed
+	- perhaps we can do bzip with blocksorting+zlib?
+	- compressing parts of the vm itself
+	- used when marshalling big string objects
+	- etc
+
+For correct integration into pyvm we should:
+Hack compress2() and uncompress() at the pyvm level.
+These two functions have something like:
+
+	initialize -- mallocs
+	do the job
+	finalize -- frees
+
+We should do initialization and finalization with the GIL
+so we can use our own dl-malloc / seg-malloc. 
+
+	initialize -- mallocs
+	# RELEASE_GIL
+	do the job
+	# ACQUIRE_GIL
+	finalize -- frees
+
+But, on the other hand, if the data is very little, the 
+thread switch may not be worth it.
+
+Alternatively, we could provide a crc32file() which is the
+GIL-releasing variant which does files.

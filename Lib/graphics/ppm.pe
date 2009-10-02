@@ -1,0 +1,9 @@
+def store (name, data, w, h)
+{
+	f = open (name, 'w');
+	f.write ("P6\n%i %i\n255\n" %(w, h));
+	f.write (data);
+	f.close ();
+	if (len (data) != w * h * 3)
+		print "PPM: data size does not match dimensions";
+}

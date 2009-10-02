@@ -1,0 +1,41 @@
+Technical
+---------
+
+libfuse belongs in the category of libraries that must take over the
+calling program's main() loop in order to work.  pyvm doesn't like that
+as it is.  There can be three solutions:
+
+1) Implement support for callbacks in pyvm and use libfuse normally.
+
+   This is not a very good idea because doing this just for libfuse
+   isn't worth it.  Moreover, if libfuse takes over main the callbacks
+   will operate in "preemption" and that will make the vm operate in
+   a completely different mode that is not well tested.
+
+2) Forget about libfuse and -in a way- reimplement it as a Clib. Talk
+   directly to the kernel, use /dev/fuse, etc.
+
+   This would be the best solution.  The problem is that a big part
+   of libfuse is about ABI compatibility on /dev/fuse.  That will be
+   harder to implement properly.
+
+3) Bridge over a fifo.  Just like libfuse uses /dev/fuse to communicate
+   with the kernel, we use a set of pipes to communicate with a minimal
+   fuse application.  This is "FUSE in userspace".
+
+   The disadvantage is a small performance hit and the fact that
+   FUSE cannot multithread.
+
+At the moment, the implementation is using (3).  The file ufuse.c
+is a generic fuse filesystem that uses two pipes to communicate with
+an external application that provides the implementation of the new
+filesystem through those pipes.
+
+Long term goal is to make a file fuse.c in Clib with an ABI like
+
+	i get_request s
+	i put_reply s
+
+where both take a suitable struct/array. The first would fill it with
+proper values and the latter will use supplied stuff to send back to
+dev/fuse.

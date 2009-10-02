@@ -1,0 +1,80 @@
+from widget import widget;
+
+def intersect (sx, sy, sw, sh, x, y, w, h)
+{
+	# sx,sy,sw,sh is the screen
+	# x,y,w,h is the box we want to draw
+	sxx = sx + sw;
+	syy = sy + sh;
+	xx = x + w;
+	yy = y + h;
+	if (xx < sx or yy < sy or x > sxx or y > syy)
+		return None;
+	if (x < sx) x = sx;
+	if (xx > sxx) xx = sxx;
+	if (y < sy) y = sy;
+	if (yy > syy) yy = syy;
+	return x, y, xx-x, yy-y;
+}
+
+class chopper (widget)
+{
+	method intersect (x, y, w, h)
+		return intersect (0, 0, $w, $h, x, y, w, h);
+
+	method show_image (image, x, y, sx=0, sy=0, w=1000, h=1000, c=None)
+	{
+		sw = min (w, image.w - sx);
+		sh = min (h, image.h - sy);
+		box = $intersect (x, y, sw, sh);
+		if (!box) return;
+		bx, by, bw, bh = box;
+		if (bx != x) sx += bx - x;
+		if (by != y) sy += by - y;
+		$p.show_image (image, $x + bx, $y + by, sx, sy, bw, bh, self);
+	}
+
+	method fill_rect (x, y, w, h, col=None, c=None)
+	{
+		box = $intersect (x, y, w, h);
+		if (!box) return;
+		bx, by, bw, bh = box;
+		$p.fill_rect ($x + bx, $y + by, bw, bh, col, self);
+	}
+
+	method draw_line (x0, y0, x1, y1, col=None, c=None)
+	{
+		if (max (x0, x1) < 0 or min (x0, x1) > $w
+		 or max (y0, y1) < 0 or min (y0, y1) > $h)
+			return;
+		if (x0 == x1) {
+			y0, y1 = min (y0, y1), max (y0, y1);
+			y0 = max (y0, 0);
+			y1 = min (y1, $h);
+		} else if (y0 == y1) {
+			x0, x1 = min (x0, x1), max (x0, x1);
+			x0 = max (x0, 0);
+			x1 = min (x1, $w);
+		} else;
+		$p.draw_line ($x + x0, $y + y0, $x + x1, $y + y1, col, self);
+	}
+
+	method draw_string (s, x, y, fg=None, font=None, bg=None, c=None)
+	{
+		if (!s) return;
+		w = font.isizeof (s);
+		h = font.maxh;
+		box = $intersect (x, y, w, h);
+		if (!box) return;
+		if (box == (x, y, w, h))
+			return $p.draw_string (s, $x + x, $y + y, fg, font, bg, self);
+		img = $wm.B.image_string (s, fg, font, bg);
+		if (img)
+			return $show_image (img, x, y);
+		# if vertically the entire string is visible we can
+		# remove characters from the start/end until we have only
+		# visible ones
+		print "X11 fonts can't be chopped";
+	}
+
+}

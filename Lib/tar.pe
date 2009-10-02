@@ -1,0 +1,90 @@
+##  Tar creator
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Basic code for creating tar archives.  The main use of this code
+# is to create the tarball of pyvm itself from the git listing.
+
+__autosem__
+
+def zpad (n, d)
+{
+	n = oct (n)
+	d -= 1
+	if (len (n) < d)
+		n = "0" * (d - len (n)) + n
+	return n + "\0"
+}
+
+linkid = {
+	"regular":"0",
+	"directory":"5",
+	"symlink":"2",
+}
+
+def tar_entry (filename, data, mode, uid, gid, mtime, filetype, linkname="")
+{
+	if (len (filename) > 99 or len (linkname) > 99)
+		raise Error ("Need USTAR")
+	if (filetype not in linkid)
+		raise Error ("Unimplemented file type")
+	hdr = ""
+	filename = filename + "\0" * (100 - len (filename))
+	hdr += filename
+	hdr += zpad (mode, 8)
+	hdr += zpad (uid, 8)
+	hdr += zpad (gid, 8)
+	hdr += zpad (len (data), 12)
+	hdr += zpad (mtime, 12)
+	hdr += "        "
+	hdr += linkid [filetype]
+	hdr += linkname
+	hdr += "\0" * (512 - len (hdr))
+	hdr = hdr [:148] + zpad (sum ([ord (x) for (x in hdr)]), 8) + hdr [156:]
+	if (data and len (data) % 512)
+		data += "\0" * (512 - len (data) % 512)
+	return hdr + data
+}
+
+
+class Create
+{
+	method __init__ (tarfile)
+		$F = open (tarfile, "w")
+
+	method add_entry (filename, data, mode, uid, gid, mtime, filetype, linkname="")
+		$F.write (tar_entry (filename, data, mode, uid, gid, mtime, filetype, linkname))
+
+	method done ()
+	{
+		$F.write (1024 * "\0")
+		$F.close ()
+	}
+}
+
+def tar_create (directory, outfile)
+{
+	from os import walk, stat, getmtime, path_isdir as isdir, path_isfile as isreg
+	from os import path_islink as islink, readlink
+
+	C = Create (outfile)
+
+	for (f in walk (directory)) {
+		filetype = isreg (f) ? "regular" : islink (f) ? "symlink" : "directory"
+		linkname = filetype == "symlink" ? readlink (f) : ""
+		data = filetype == "regular" ? readfile (f) : ""
+		C.add_entry (f, data, stat (f) [0] & 07777, 0, 0, getmtime (f), filetype, linkname)
+	}
+
+	C.done ()
+}
+
+USAGE = """pyvm tar <directory>
+create a tarball `tar.tar` of the directory
+"""
+
+if (__name__ == __main__)
+	tar_create (sys.argp.one (), "tar.tar")

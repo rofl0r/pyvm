@@ -1,0 +1,20 @@
+__autosem__
+
+lib = @DLL.Clib ("bezier", "-O3", pelf=1);
+cbezier3 = lib ["cubic_bezier"];
+cbezier2 = lib ["conic_bezier"];
+
+def bezier3 (x0, y0, x1, y1, x2, y2, x3, y3, np)
+{
+	rez = array ('i', 2 * np);
+	cbezier3 (x0, y0, x1, y1, x2, y2, x3, y3, np, rez);
+	return rez;
+}
+
+
+def bezier2 (x0, y0, x1, y1, x2, y2, np)
+{
+	rez = array ('i', 2 * np);
+	cbezier2 (x0, y0, x1, y1, x2, y2, np, rez);
+	return rez;
+}

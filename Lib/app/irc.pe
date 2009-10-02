@@ -1,0 +1,139 @@
+#
+# extremely simple proof-of-concept curses based irc client.
+# This can be used to make something better eventually.
+#
+
+__autosem__
+
+from time import sleep
+from net.ircbase import irc
+from re import re
+import pcurses as pc
+import thread
+
+# subclass of irc which sends received messages to the apropriate
+# channel
+
+class circ (irc)
+{
+	method printw (*s)
+	{
+		wout.printw (' '.join (s) + '\n')
+		wout.refresh ()
+	}
+
+	method do_noprefix (msg)
+		CurrentChannel.addmsg ("*********** [%s] **********" %msg)
+
+	method do_generic (by, cmd, params, trail)
+		if (cmd != '372')
+			CurrentChannel.addmsg ("SOMETHING ELSE: %s %s %s %s" 
+				% (by, cmd, ' '.join (params), trail))
+
+	method do_msg (by, cmd, params, trail)
+	{
+		try C = Channels [params [0]]
+		except C = Channels ['#default']
+		C.addmsg ("[%s]: %s" % (by.partition ('!')[0], trail))
+	}
+
+	method do_action (by, cmd, params, trail)
+		;#$printw ("%s has left (%s)" % (by.partition ('!')[0], trail));
+}
+
+USRRe = re (r'\[(.*?)\]')
+
+def printm (msg)
+	try u = USRRe (msg) [1]
+	except wout.printw (msg)
+	else {
+		wout.printw ('[')
+		wout.printa (pc.consts.A_BOLD, u)
+		wout.printw (']' + msg.partition (']')[2])
+	}
+
+# each channel collects messages
+# if a channel is the current, its message is also print
+# at the output window
+
+class channel
+{
+	method __init__ ($name)
+		$msgs = []
+
+	method addmsg (m)
+	{
+		$msgs.append (m)
+		if (CurrentChannel is self) {
+			printm (m + '\n')
+			wout.refresh ()
+		}
+	}
+
+	method say (m)
+	{
+		if ($name != '#default')
+			IRC.msg ($name, m)
+		$addmsg (m)
+	}
+
+	method redraw ()
+	{
+		wout.clear ()
+		wout.move (0, 0)
+		for (i in $msgs [-25:])
+			printm (i + '\n')
+		wout.refresh ()
+	}
+}
+
+CurrentChannel = channel ('#default')
+Channels = { '#default' : CurrentChannel }
+
+##### main #####
+
+USAGE = "usage: irc <server> <nickname>"
+serv, nick = sys.argp.nargs (2)
+
+with (pc.ENTER)
+{
+	pc.noecho ()
+	pc.keypad (pc.stdscr (), True)
+	wout = pc.win (pc.LINES () - 2, pc.COLS (), 0, 0, scrolling=True)
+	win = pc.win (1, pc.COLS (), pc.LINES () - 1, 0)
+	IRC = circ (serv, nick)
+	# start message receiver thread
+	thread.start_new_thread (IRC.run, ())
+	rl = win.readline (0, prompt = "> ")
+	rl.draw ()
+
+	while (1) {
+		if (!(r = rl.readone ().strip ()))
+			continue
+		if (r [0] == '/') {
+			if (r.sw ('/msg ')) {
+				to, None, msg = r [5:].partition (' ')
+				IRC.msg (to, msg)
+			} else if (r.sw ('/join ')) {
+				r = r [6:]
+				if (r not in Channels) {
+					IRC.join (r)
+					CurrentChannel = Channels [r] = channel (r)
+					rl.setprompt (r + '> ')
+				}
+			} else if (r.sw ('/lc')) {
+				CurrentChannel.addmsg ('Open channels:' + ' '.join (Channels.keys()))
+			} else if (r.sw ('/#')) {
+				r = r [1:]
+				try {
+					CurrentChannel = Channels [r]
+					rl.setprompt (r + '> ')
+					CurrentChannel.redraw ()
+				}
+			} else if (r.sw ('/quit'))
+				break
+		} else
+			CurrentChannel.say (r)
+		rl.clear ()
+	}
+}

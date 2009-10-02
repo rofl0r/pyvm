@@ -1,0 +1,17 @@
+from container import vcontainer;
+
+class encapsulator (vcontainer)
+{
+	method add_child (w)
+	{
+		vcontainer.add_child (self, w);
+		$pack ();
+	}
+
+	method arrange ()
+	{
+		w, = $c;
+		w.rebase (0, 0);
+		$w, $h = w.w, w.h;
+	}
+}

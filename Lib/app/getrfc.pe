@@ -1,0 +1,7 @@
+__autosem__
+USAGE = """usage: getrfc 2068
+will dowload RFC2068 and save it as rfc2068.txt"""
+nostdin ()
+rfc = "rfc"+sys.argp.one ()+".txt"
+F = @net.ftp.ftp ("www.ietf.org")
+F.RETR ("rfc/"+rfc, open (rfc, "w").write)

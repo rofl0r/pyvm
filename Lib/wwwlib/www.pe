@@ -1,0 +1,1462 @@
+##  Main browser control, (c) Efin Prost
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+LOCKFILE = @lockfile.lockfile ("www")
+if (!LOCKFILE.get ()) {
+	print "Web browser is apparently already running."
+	exit ()
+}
+
+WWWIPC = @ipc.Server ("WWW")
+WWWIPC.run_bg ()
+
+import thread, os, socket, gui, time, serialize, meminfo, misc, htmlgen
+from graphics import ImageFile
+from graphics.framebuffer import FrameBuffer
+from fonts import render as FontLib
+from wwwlib import webnet, layout1, css, bundle, bookmarks
+from wwwlib.pagew import page_widget
+from wwwlib.downloader import Downloader
+from wwwlib.basic import fixfont, fixfont_utf8, printer
+from wwwlib.wcache import WCACHE_HOME as WHOME
+from wwwlib.webnet import BASEURL
+import profile
+
+(@graphics.jpeg).PRFAIL = False
+
+# automatic garbage collection is disabled because we have some huge
+# structures that take some time to traverse and this results in small
+# annoying pauses during scrolling. Instead, gc is called on some
+# specific times (before layout, for example). Note that gc necessary
+# because the huge structures contain circular references.
+sys.gc.disable ()
+
+if (@app.df.avail_at (WHOME) < 100 * 1024)
+{
+	print "The disk on which the webcache (%s) is has less than 100MB of free space!" %WHOME
+	print "The webcache grows quickly and currently in pyvm the webcache is immutable"
+	print "(for debugging the web offline).  50MB of content is not uncommon for an"
+	print "everyday web surfing session."
+	print
+	print "The web browser is configured to refuse to run in this case."
+	print "Either move the webcache to another partition with more space (and use"
+	print "`pyvm sysconfig set webcache <new-path>` to point to it) or hack the source."
+	exit ()
+}
+
+Home = "file://" + HOME + "user/home.html"
+if (!havefile (Home [7:]))
+	Home = "file://" + HOME + "Lib/wwwlib/data/home.html"
+
+# Generally, the application moving the mouse pointer is considered the #1 fatal
+# error of UI design, taught in the first lesson of the first semester in the
+# "Desktop Architects" school.  This browser will move the pointer in some
+# cases to remain at the same "hyperlink" or point in the webpage. This happens
+# when we type "BACKSPACE" to go back (the pointer will be over the link that
+# was clicked). It also happens on PAGE-UP, PAGE-DOWN in near the end of the
+# scrolling direction.
+# If annoying, set to False.
+MOVING_POINTER = True
+
+#
+
+def kbytes (x)
+{
+	if (x < 1000)
+		return "%i" %x
+	r = x % 1000
+	x = x / 1000
+	if (x < 1000)
+		return "%i.%03i" %(x, r)
+	return "%i.%03i.%03i" %(x/1000, x%1000, r)
+}
+
+class netstatus (gui.widget)
+{
+	method Init ($sfunc, s, $c, **kw)
+	{
+		kw ["w"] = kw ["h"] = s
+		$widget_init (**kw)
+	}
+
+	colors = {
+		"r" : { True : 0xff3939, False : 0x636363 },
+		"g" : { True : 0x39ff39, False : 0x636363 },
+		"b" : { True : 0x3939ff, False : 0x636363 },
+	}
+
+	method Draw ()
+	{
+		status = $sfunc ()
+		$fill_rect (1, 1, $w, $h, $colors [$c][status])
+		$draw_rect (0, 0, $w, $h, status ? 0x888811 : 0x0)
+	}
+}
+
+class tabz (gui.widget)
+{
+	method Init ($tabhq, $thisone, **kw)
+	{
+		$elasticW = True
+		$fo = $wm.OpenFont ("sans", -4).as_utf8 ()
+		$WX = $fo.isizeof ("X") + 2
+		kw ["h"] = $fo.maxh + 2
+		$widget_init (**kw)
+		$areaz = []
+	}
+
+	method Draw ()
+	{
+		W = 150
+		x = 1
+		$draw_blank (0xa4a4c4)
+		$areaz = []
+		for (t in $tabhq.Tabs) {
+			this = t is $thisone
+			f = FrameBuffer (W - 2, $h - (this ? 1 : 2), 3)
+			f.clear (this ? 0xffffff : 0xd0d0e0)
+			if (t.net_status)
+				f.fill_rect (f.w - 10, 1, 8, f.h - 4, 0xff5555)
+			$fo.render_to (f, 1, 0, t.Title, 0)
+			$show_image (f.as_image (), x, 1)
+			if (not this)
+				$areaz<< (x, x+W, t)
+			x += W
+		}
+		f = FrameBuffer ($WX, $h - 3, 3)
+		f.clear (0x5555dd)
+		$fo.render_to (f, 1, 0, "X", 0)
+		$show_image (f.as_image (), $w - $WX, 1)
+	}
+
+	method onClick (x, y)
+	{
+		if ($w - $WX < x)
+			$tabhq.Close ()
+		else for (sx, ex, t in $areaz)
+			if.break (sx < x < ex)
+				$tabhq.SwitchTo (t)
+		return True
+	}
+}
+
+class urlbar (gui.textin)
+{
+	method Init ($www, **kw)
+		$textin_init (**kw)
+
+	method rMenu ()
+		return [
+			["Paste", 1, $clipboard.paste],
+			["Paste'n go", 1, $pngo],
+			["clear", 1, $clear],
+			["Copy",  $clipboard.can_copy, $clipboard.copy],
+			["Cut",   $clipboard.can_copy, $clipboard.cut],
+		]
+
+	method onEnter ()
+		return $www.URLEnter ()
+
+	method pngo ()
+	{
+		$clipboard.paste ()
+		$onEnter ()
+	}
+}
+
+# The most important thing in the making of a web browser is the
+# main browser loop.  It may seem -wrongly- that we should start from
+# a proper html/css parser layout engine.  In this case we may discover
+# that some complex/huge html+css pages may take up to seconds to produce
+# a layout!  This is for no other reason but the design of cascading style
+# sheets, since for every dom node we have need to do MxN things to
+# find out the final parameters.
+#
+# Instead of trying to micro optimize the css engine, we may discover
+# that the bad performance can be compensated with a decent asynchronous
+# browser engine: get *part* of a page, show *part* of the page and in
+# the background download more of it and do layouts; the user is not
+# annoyed by the horrible performance if there is part of the content
+# on-screen to distract him.  Time passes quicker in the presence of action.
+#
+# A proper main browser loop has a view which is updated by the reception
+# of asynchronous events: the arrival of pages, the arrival of css, the
+# arrival of images (even partial), user clicks, timers and timeouts, etc.
+# If this is done correctly, not only the browsing experience is acceptable
+# by the user, but it is also possible to have proper debugging of our
+# browser. And that is something we must have because of the fact that
+# really, there are no standards for Web 2.0.  Some say that this is
+# exactly the definition of it.
+
+#######################################################################################
+
+from ttycolor import color
+
+# page modes: page modes are, for one inherited. if a page "A" is in mode "5" then, following
+# links from "A" remains to mode "5".  When on a page the user changes the Mode, then this
+# is *saved* so the said page is always at this mode initially no matter what the originating
+# page's mode was.  Going back always uses the last used mode.
+Modes = serialize.load (WHOME + "Modes") or {}
+
+ViewModes = (
+	# !fixed fonts
+	# external css
+	# tables
+	# external css fonts
+	# external css margins
+	# floats
+	# overflows
+	("plain html", 1, 0, 1, 0, 0, 0, 0),
+	("fixed html", 0, 0, 1, 0, 0, 0, 0),
+	("no tables",  1, 0, 0, 0, 0, 0, 0),
+	("css color",  1, 1, 1, 0, 0, 0, 0),
+	("css style",  1, 1, 1, 1, 0, 0, 0),
+	("css 50%",    1, 1, 1, 1, 1, 0, 0),
+	("css 80%",    1, 1, 1, 1, 1, 1, 0),
+	("Full CSS",   1, 1, 1, 1, 1, 1, 1),
+)
+
+class ShutDown {}
+
+class main_browser_loop
+{
+	Alive = True
+
+	# There is the "main browser thread" which receives events through a fifo.
+	# Other threads, whether be they events from the GUI, arrival of stuff from
+	# network or timers, must only send an Event to the main fifo.
+	# Event are "versioned". Upon "Reset" the version increases and events
+	# that target a previous state are discarded.
+
+	method __init__ ($wm, $tabs, $firsturl)
+	{
+		$Title = "home"
+		$re_run_browser = False
+		$url = None
+		$version = 1
+		$History = []
+		$FHistory = []
+		$Interrupts = []
+		$BrowserEvent = thread.fifo ()
+		$BrowserLock = thread.rlock ()
+		$yoffset = None
+		$xoffset = 0
+		$L = None
+		$Mode = 7
+		$raw = False
+		$FavIcon = None
+		$net_status = False
+		$wrap_pre = False
+		$lthid = None
+		$bundle_time = now () - 10
+		thread.start_new ($mainloop)
+		$iQLock = thread.xlock (False)
+		$iQList = []
+		$iQid = thread.start_new ($imageQueue)
+
+		###
+		$main_widget_set ()
+	}
+
+	method imageQueue ()
+		while (1) {
+			try {
+				$iQLock.acquire ()
+				sleep (0.23)
+			} except (thread.Interrupt) {
+				$iQList = []
+				continue
+			} except (ShutDown) break
+			$AddEvent ("IMGQUEUE", $version)
+		}
+
+	method BookmarkMenu ()
+	{
+		def bkm (cat)
+		{
+			url = $url
+			def f ()
+				bookmarks.add (cat, url)
+			return [cat + " (%i)"%bookmarks.nbooked (cat), 1, f]
+		}
+		return [["bookmark into:", -1, void],
+			bkm ("Interesting"),
+			bkm ("Revisit"),
+			bkm ("Root site"),
+			bkm ("Archive"),
+			bkm ("Broken Page"),
+			bkm ("temporaries"),
+			bkm ("Fun"),
+			]
+	}
+
+	method main_widget_set ()
+	{
+		with (gui.vcontainer ()) {
+			with (gui.hcontainer ()) {
+				back = gui.button ("Back", Action=$BBack)
+				back.rMenu = $BackMenu
+				gui.button ("Fwd", Action=$BFwd)
+				gui.button ("Reload", Action=$BReload)
+				$Stop = gui.button ("\\Stop", Action=$BStop)
+				gui.label (" ")
+				#gui.togglebutton ("AH ", state=FontLib.get_autohinting (), 
+				#		  onToggle=$SwitchAH)
+				#gui.label (" ")
+				$moder = gui.combo ([x [0] for (x in ViewModes)], 6, onChange=$modechange)
+				gui.label (" ")
+				$menubar = gui.menubar ([ ["\\Menu ", $Menu], ])
+				gui.menubar ([[" Bookmark ", $BookmarkMenu], ])
+				gui.label ("                   ")
+				gui.button ("downloads", Action=$tabs.MU.switcher (1))
+			}
+
+			with (gui.hcontainer ()) {
+				$FavWidget = gui.image (w=16, h=16, elastic=0, ClickAction=$FavClick)
+				gui.space (w=5, h=1, elastic=0)
+				$urlbar = urlbar (self, font=$wm.OpenFixedFont ("mono", -1))
+				$urlbar.setText ($firsturl -> str ? $firsturl : $firsturl.url)
+				gui.button ("Find", Action=$OnFind)
+				def get_net_status ()
+					return $net_status
+				def get_bgnet_status ()
+					return $tabs.bgnet_status
+				with (gui.vcontainer ()) {
+					$NetStatW = netstatus (get_net_status, 9, 'r')
+					gui.fspace (h=1)
+					$BgNetStatW = netstatus (get_bgnet_status, 9, 'b')
+				}
+			}
+
+			$tabz = tabz ($tabs, self)
+
+			with (gui.hcontainer ()) {
+				# * * * * * Main page fb widget * * * * * * * *
+				$wfb = page_widget (self, $scroll_throu_bar, $xscroll)
+				# * * * * * * * * * * * * * * * * * * * * * * *
+				$wfb.ybar = gui.hscrollbar ($wfb, hidebarz=True)
+			}
+
+			with (gui.hcontainer ())
+				$wfb.xbar = gui.vscrollbar ($wfb, hidebarz=True)
+
+			with (gui.hcontainer ()) {
+				$progress = gui.status (font=$wm.OpenFont ("serif", -2),
+							w='99  100000000/100000000', align='left')
+				$whereto  = gui.status (font=$wm.OpenFont ("sans", -2), align='left',
+							elastic=True)
+			}
+		}
+	}
+
+	method modechange ()
+	{
+		$Mode = Modes [$url.url] = $moder.selected
+		$reRender ()
+	}
+
+	method SwitchAH (state)
+	{
+		FontLib.switch_autohinting (state)
+		$Draw ()
+	}
+
+	LastLink = ""
+
+	method onIdle ()
+		$AddEvent ("IDLE", $version)
+
+	method idleness ()
+	{
+		# XXX: Lock THIS!!!
+		h = $wfb.pointer_href ()
+		if (h -> str and h != $LastLink) {
+			$LastLink = h
+			$ShowFollow (h)
+		}
+	}
+
+	# The main pull down menu definitions
+
+	method Menu ()
+	{
+		def DEBUGNET (a=None)
+		{
+			from net import http
+			if (!a) return http.DEBUG
+			else http.DEBUG = !http.DEBUG
+			return True
+		}
+
+		def thstatus ()
+		{
+			from builtins import thread_status
+			thread_status ()
+		}
+
+		def DoSaveAs (path)
+			print "DO THE SAVE AS:", path
+
+		def SaveAs ()
+		{
+			print "SAVE URL AS:", $url, $url.path
+			print $wm
+			filename = ""
+			if ("/" in $url.path) filename = $url.path.rpartition ("/")[2]
+			$wm.SaveAs (filename, USERHOME + "downloads/", DoSaveAs)
+		}
+
+		def PageSource ()
+			$AddEvent ("SOURCE", $version, None)
+
+		def vmstats ()
+		{
+			import vmstats
+			print "General stats:"
+			vmstats.pretty_stats ()
+			print "==================================================="
+			print "Instances:"
+			i = [(v, k) for (k, v in vmstats.instances (sloted=0))].sort ()
+			for (k, v in i)
+				print " ", k, "\t", v
+			print "Instances with slots:"
+			i = [(v, k) for (k, v in vmstats.instances (sloted=1))].sort ()
+			for (k, v in i)
+				print " ", k, "\t", v
+		}
+
+		# Font Px is actually: magnify the document so that the default
+		# base size becomes XXX px. everything is magnified accordingly
+		# including widths, margins, etc.
+		def FontPx (n, setit=False)
+		{
+			n = int (n [:2])
+			if ($Mode in "24") {
+				if (!setit) 
+					return layout1.FontManager.getsize () == n
+				if (layout1.FontManager.setsize (n))
+					$AddEvent ("RERENDER", $version)
+			} else if ($Mode in "5678") {
+				if (!setit) 
+					return css.get_base_font_size () == n
+				if (css.set_base_font_size (n))
+					$AddEvent ("RERENDER", $version)
+			}
+			return True
+		}
+
+		def FontPxCan ()
+			return $Mode in "24" ? -4 : 4
+
+		def control ()
+			return [
+				["DEBUG-HTTP",					3, DEBUGNET],
+				["THSTATUS",					1, thstatus],
+				["\\VMSTATS",					1, vmstats],
+				[" -- " + time.ltimeof (now()) + " -- ",	-1, void],
+			]
+
+		def SaveBundle ()
+		{
+			print "bundle thread started..."
+			$bundle_time = now ()
+			thread.start_new (bundle.create, $url)
+		}
+
+		def CanBundle ()
+			return $url.is_html () ? (now () - $bundle_time > 3 ? 1 : -1) : -1
+
+		def WrapPre (state=None)
+		{
+			if (state is None) return $wrap_pre
+			$wrap_pre = !$wrap_pre
+			$AddEvent ("RERENDER", $version)
+			return True
+		}
+
+		def NewTab ()
+			$tabs.Open (switch=True)
+
+		def CanCloseTab ()
+			return len ($tabs.Tabs) > 1 ? 1 : -1
+
+		def CloseTab ()
+			$tabs.Close ()
+
+		def History ()
+			$AddEvent ("PAGE", $version, HistoryPage ())
+		def viewcat (cat)
+			$AddEvent ("PAGE", $version, BookmarkPage (cat))
+		def booksub ()
+			return [[cat, 1, def () viewcat (cat)] for (cat in bookmarks.categories ())]
+
+		def isHtml ()
+			return $url.is_html () ? 1 : -1
+		def DumpText (color=False)
+		{
+			try t = @wwwlib.wvisitor.Dumper ($L.dom, 80, color).plaintext
+			except {
+				print "Text Dumping fail.", sys.exc_info ()
+				return
+			}
+			f = WHOME + "downloads/PLAINTEXT.txt"
+			open (f, "w").write (t)
+			print "Saved plaintext into:", f
+			$Message ("saved to " + f)
+		}
+		def DumpText2 ()
+			DumpText (True)
+
+		# see Lib/gui/pulldown.pe for the Menu HOWTO
+		ML = [
+			["New tab",		1, NewTab],
+			["Close tab",		CanCloseTab, CloseTab],
+			None,
+			["Save As",		1, SaveAs],
+			["Save Bundle",		CanBundle, SaveBundle],
+			["Dump as plaintext",		isHtml, DumpText],
+			["Dump as plaintext col",	isHtml, DumpText2],
+			None,
+			["Toggle View \\Source",1, PageSource],
+			["Wrap pre",		3, WrapPre],
+			["\\Control",		2, control],
+#			["Fonts",		2, [
+#				["%ipx" %x, FontPxCan, FontPx] for (x in xrange (14, 22))
+#			]],
+			None,
+			["History",		1, History],
+			["Bookmarks",		2, booksub],
+			None,
+			["\\Quit",		1, $Quit],
+			#["Quit & rerun",	1, $Quit2],
+		]
+
+		def YouTuber ()
+		{
+			tmp = misc.tmpfile (cleanup=False)
+			tmp.write ("cd %s/tubes; pyvm youtube -i %s"%(WHOME, $url.url))
+			os.system ("pyvm xterm -rc %s &" %tmp.fnm)
+		}
+
+		try if ($url.url.sw ("http://www.youtube.com/watch?v=")) {
+			ML.insert (0, ["Open with youtube downloader", 1, YouTuber])
+		}
+
+		return ML
+	}
+
+	# ------- ------ ------- ------- ------- ------- ------- ------- -------
+
+	method AddEvent (*args)
+		$BrowserEvent.put (args)
+
+	method versioned (meth)
+	{
+		version = $version
+		return def (*args, **kwargs) meth (version, *args, **kwargs)
+	}
+
+	# From the GUI thread
+
+	method BReload ()
+		$AddEvent ("REFRESH", $version, None)
+
+	method BStop ()
+		$AddEvent ("STOP", $version)
+
+	method BBack ()
+		$AddEvent ("BACK", $version)
+
+	method BFwd ()
+		$AddEvent ("FWD", $version)
+
+	method URLEnter ()
+	{
+		t = $urlbar.getText ()
+		if (t == "home") t = Home
+		if (t) $AddEvent ("GO-URL", $version, t)
+		else $urlbar.setText ($url.url)
+	}
+
+	method OnFind ()
+	{
+		t = $urlbar.getText ()
+		if (t) $AddEvent ("FIND", $version, t)
+	}
+
+	method FavClick ()
+		# clicking on the favicon restores the urlbar
+		try $urlbar.setText ($url.url)
+
+	# 
+	bkeys = {"1", "2", "3", "4", "5", "6", "7", "8", "BACKSPACE", "ESC", "LEFT", "RIGHT",
+		 "UP", "DOWN", "PAGEUP", "PAGEDOWN", "m", "M", "s", "\t", "HOME", "END" }
+
+	method on_key (k)
+	{
+		if (k not in $bkeys)
+			return False
+
+		if (k in "mM")
+			$menubar.Open ("\\Menu")
+		else if (k == "s")
+			$Stop.Action ()
+		else if (k == "\t")
+			$tabs.Next ()
+		else $AddEvent ("KEY", $version, k)
+
+		return True
+	}
+
+	# from the page widget thread
+
+	method DynChange ()
+		$AddEvent ("DCHANGE", $version)
+
+	method follow_href (href, x=None, y=None)
+		if($wm.key_shift) $AddEvent ("GODLD", $version, href)
+		else $AddEvent ("GO", $version, href, x, y)
+
+	method Submit (action, values, meth)
+	{
+		if (action is None)
+			action = $url.paramless ()
+
+		encvalues = webnet.urlencodev (values)
+
+		if (meth == "get") {
+			$follow_href (action + "?" + encvalues)
+		} else if (meth == "post") {
+			href = action, encvalues
+			$follow_href (href)
+		} else print "Unknown Form Method:", meth
+	}
+
+	method Message (text, color=0)
+		$whereto.async_msg (text, color)
+
+	method ShowFollow (text)	# doesn't need the lock
+	{
+		visited = False
+		if (text and text [0] != " ")
+			try visited = $url.generate (text).is_visited ()
+		$Message (text, visited ? 0x2244cc : 0)
+	}
+
+	# from webnet agents
+
+	method progress_report (left, have, total)	# doesn't need the lock
+	{
+		# "The gas pump progress reporter"
+		if (!left and !have and !total)
+			msg = ""
+		else if (left > 1)
+			msg = "%s/%s::%i " %(kbytes (have), kbytes (total), left)
+		else msg = "%s/%s " %(kbytes (have), kbytes (total))
+
+		$progress.async_msg (msg)
+	}
+
+	method active_report ($net_status)
+	{
+		print "Network Activity:", net_status ? "on" : "off\n"
+		Downloader.setQoS (net_status)
+		$progress.async_msg ("")
+		$wm.async ($NetStatW.Draw)
+		$tabs.nschange ()
+	}
+
+	# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+	# initialization
+	method haveWfb ()
+	{
+		$Fetch = webnet.Fetcher ($progress_report, $active_report)
+		$url = webnet.START_URL (Home)
+
+		url = $firsturl -> str ? webnet.START_URL ($firsturl) : $firsturl
+		$Fetch.get_main (url, $versioned ($evHavePage), 1)
+
+		$scrollkey = {
+			"UP":-fixfont.maxh,
+			"DOWN":fixfont.maxh,
+			"PAGEUP":-($wfb.h-fixfont.maxh),
+			"PAGEDOWN":$wfb.h-fixfont.maxh
+		}
+	}
+
+	# WITH the main browser lock
+
+	method mainloop ()
+		while (1) {
+			cmd = $BrowserEvent.get ()
+			cmd, args = cmd [0], cmd [1:]
+			version, args = args [0], args [1:]
+			if (version != $version)
+				continue
+			try with ($BrowserLock) {
+				if (cmd == "PAGE") 
+					$havePage (*args)
+				else if (cmd == "IMAGE")
+					$haveImage (*args)
+				else if (cmd == "SCROLL")
+					$scroll (*args)
+				else if (cmd == "GO")
+					$do_follow (*args)
+				else if (cmd == "GODLD")
+					$dld_follow (*args)
+				else if (cmd == "GO-URL")
+					$go_url (*args)
+				else if (cmd == "SOURCE")
+					$PageSource ()
+				else if (cmd == "KEY")
+					$do_key (*args)
+				else if (cmd == "REFRESH") {
+					rurl = args [0]
+					if (!rurl) $Reload ()
+					else $do_follow (rurl)
+				} else if (cmd == "STOP")
+					$Reset ()
+				else if (cmd == "BACK")
+					$Back ()
+				else if (cmd == "FWD")
+					$Fwd ()
+				else if (cmd == "DCHANGE") {
+					$xoffset = $yoffset = 0
+					$Draw ()
+				} else if (cmd == "RERENDER")
+					$reRender ()
+				else if (cmd == "FIND")
+					$DoFind (args [0])
+				else if (cmd == "IMGQUEUE")
+					$UpdateImages ()
+				else if (cmd == "IDLE")
+					$idleness ()
+				else if.break (cmd == "XXX")
+					$shutdown_this_tab ()
+				else print "UNKNOWN COMMAND:", cmd
+			} except (SystemExit) raise
+			except {
+				print "-----!!!| WWW unexpected exception:", cmd
+				print sys.exc_info ()
+				print
+			}
+		}
+
+	method UpdateImages ()
+	{
+		redraw = $L.have_images ($iQList)
+		$iQList = []
+		if (redraw)
+			$Draw ()
+	}
+
+	method close_tab ()
+		$AddEvent ("XXX", $version)
+
+	method evHavePage (version, url)
+		$AddEvent ("PAGE", version, url)
+
+	method evHaveImage (version, url)
+		$AddEvent ("IMAGE", version, url)
+
+	method set_mode (mode, cb=1)
+	{
+		mode, $Mode = $Mode, mode
+		if (mode != $Mode)
+			$moder.set_selected ($Mode, 0)
+	}
+
+	method Back (restore_xy=False)
+		if ($History) {
+			$FHistory<< ($url, $yoffset, $Mode)
+			print "www: BACK !", $History
+			$Reset ()
+			# (xxx: image sizes?)
+			url, offset, xy, mode = $History.pop ()
+			$set_mode (mode, cb=0)
+			if (url is None) {
+				# same page, other offset
+				$yoffset = offset
+				$xoffset = 0
+				$Draw ()
+				return
+			}
+			$havePage (url, offset, 1)
+			if (MOVING_POINTER and xy and restore_xy)
+				$wm.async ($wm.move_mouse, *xy)
+		}
+
+	method BackMenu ()
+	{
+		M = []
+		for (n, H in enumerate ($History [1:])) {
+			if (H [0]) {
+				u = H [0]
+				def f ()
+					$JumpBack (n)
+				M << [u.Title (), 1, f]
+			}
+		}
+		M.reverse ()
+		return M
+	}
+
+	method JumpBack (n)
+	{
+		$Reset ()
+		last = $url, $yoffset, $Mode
+		for (None in *(len ($History) - n - 1)) {
+			$FHistory<< last
+			url, offset, xy, mode = $History.pop ()
+			last = url, offset, mode
+		}
+		$set_mode (mode, cb=0)
+		if (url is None) {
+			# same page, other offset
+			$yoffset = offset
+			$xoffset = 0
+			$Draw ()
+			return
+		}
+		$havePage (url, offset, 1)
+		if (MOVING_POINTER and xy)
+			$wm.async ($wm.move_mouse, *xy)
+	}
+
+	method Fwd ()
+	{
+		if (!$FHistory)
+			return
+		url, yoffset, mode = $FHistory.pop ()
+		$havePage (url, yoffset, -1)
+	}
+
+	method set_favicon (furl)
+	{
+		url = furl.load_cached ()
+		try im = ImageFile (url.File)
+		except im = None
+
+		if (im) try {
+			if (im.size () != (16, 16))
+				im = im.read_image ((16, 16))
+			else im = im.read_image ()
+		} except {
+			print "Error reading the favicon:", sys.exc_info ()
+			im = None
+		}
+
+		if (im) $wm.async ($FavWidget.load_image, im)
+		else $wm.async ($FavWidget.no_image)
+		$wm.async ($FavWidget.Draw)
+	}
+
+	method change_title ($Title)
+	{
+		$wmtitle ()
+		$wm.async ($tabz.Draw)
+	}
+
+	method wmtitle ()
+		$wm.set_title ("www: " + $Title)
+
+	page_stdout = None
+
+	method havePage (url, yoffset=None, back=0, node_offset=None)
+	{
+		# do the layout in a background thread because it may need to
+		# fetch stylesheets and take a lot of time and we want the
+		# browser to be responsive in the meantime.
+		if ($lthid)
+			thread.interrupt ($lthid, thread.Interrupt, 1)
+		$lthid = thread.start_new ($havePageT, url, yoffset, back, node_offset)
+	}
+
+	method havePageT (url, yoffset=None, back=0, node_offset=None)
+	{
+print "www: HAVE PAGE!", url.content_type (), url
+print "www: status [%s]"% url.Status, url.url
+		version = $version
+		url.mark_visited ()
+
+		if ($page_stdout)
+			$page_stdout.close ()
+		$page_stdout = printer ()
+
+		try $set_mode (Modes [url.url])
+
+		# workaround for broken servers that send 99% of a page and then
+		# close the connection. Make it seem as properly downloaded using
+		# what we have so far, but only for text/html.  This should eventually
+		# be fixed when the new "progressive page" code is implemented.
+		if (url.Incomplete and url.is_html ())
+			url.File = url.TMPFile.fnm
+
+		if (!url.File)
+			return
+
+		reloaded = url is $url
+		if (back != 1 and $url and !reloaded)
+			$History.append (($url, $yoffset, url.xy, $Mode))
+
+		L = layout1.do_layout (url, $wfb, ViewModes [$Mode][1:], $wrap_pre, back, reloaded)
+		if (!L) return
+
+		with ($BrowserLock) {
+			if (version != $version) {
+				# while we were doing the layout, user clicked on another
+				# link, so this whole deal is invalid
+				print "outdated layout"
+				return
+			}
+
+			if (url.want_images)
+				$get_images (url.want_images, back ? 2 : reloaded ? 0 : 1)
+
+			if (!back and url.protocol == "http")
+				$tabs.track (url)
+
+			$iq = 0
+			$wm.async ($FavWidget.no_image)
+			$url = url
+			$wm.async ($urlbar.setText, $url.url)
+
+			if ($L) $L.shutdown ()
+			$wfb.Free ()
+			$L = L
+			$raw = False
+
+			if ($L.favicon) 
+				$set_favicon ($L.favicon)
+
+			$change_title ($L.Title)
+
+			if ($L.Refresh is not None) {
+				secs, rurl = $L.Refresh
+				secs = max (secs, 0.5)
+				# (xxx: don't refresh local files to their self)
+				print "AUTO REFRESH AFTER:", secs, rurl
+				T = thread.bgtask ()
+				version = $version
+				def func ()
+					$AddEvent ("REFRESH", version, rurl)
+				T.run_after (secs, func)
+				$register_interrupt (T.interrupt)
+			}
+
+			if (yoffset is not None)
+				$yoffset = yoffset
+			else if (node_offset)
+				$yoffset = $L.goto_nth_node (node_offset) or 0
+			else if (url.label) {
+				offset = $L.Goto (url.label)
+				$yoffset = offset or 0
+			} else $yoffset = 0
+			$xoffset = 0
+
+			$Draw ()
+		}
+	}
+
+	method get_images (img_list, caching)
+		$Fetch.get_images (img_list, $versioned ($evHaveImage), caching)
+
+	method PageSource ()
+	{
+		if ($raw) {
+			$reRender ()
+			return
+		}
+		if (!$url.content_type ().sw ("text/html"))
+			return
+		if ($L) $L.shutdown ()
+		$L = layout1.do_layout ($url, $wfb, ViewModes [$Mode][1:], $wrap_pre, raw=True)
+		$raw = True
+		$xoffset = $yoffset = 0
+		$Draw ()
+	}
+
+	method haveImage (url)
+	{
+		if (url.original ().layout_token == 1) {
+			$set_favicon (url)
+			return
+		}
+
+		$iQList.append (url)
+		$iQLock.release ()
+	}
+
+	method Draw (scroll=None)
+	{
+		doscroll = scroll -> int and abs (scroll) < 50
+		with (time.wTimer ("view+draw: ", 0, ms=1))
+			with ($wfb.GLOCK) {
+				$L.ViewAt ($yoffset, $xoffset, scroll)
+			}
+		$wfb.RenderPage ()
+	}
+
+	method scroll (dy)
+	{
+		# for page up/down, we also move the pointer to remain at the
+		# same hyperlink in some cases.
+		mm = None
+		if (dy -> str) {
+			if (MOVING_POINTER and 0)
+				if (dy == "PAGEDOWN") {
+					y = $wfb.wherein () [1]
+					if (y > $wfb.h / 2)
+						mm = dy = y - 10
+				} else if (dy == "PAGEUP") {
+					y = $wfb.wherein () [1]
+					if (y < $wfb.h / 2)
+						mm = dy = 10 + y - $wfb.h
+				}
+
+			if (dy -> str)
+				dy = $scrollkey [dy]
+		}
+
+		if ($yoffset is None)
+			return
+		o, $yoffset = $yoffset, minmax (0, $yoffset + dy, $L.height - $wfb.h)
+		dof = $yoffset - o
+		if (mm) {
+			mx, my = $wm.where ()
+			my -= dof
+		}
+		if (dof) {
+			$Draw (dof)
+##			$wm.flush_inqueue ()
+		}
+		if (mm) $wm.async ($wm.move_mouse, mx, my)
+	}
+
+	method scroll_throu_bar (d=None, o=None)
+		with ($BrowserLock) {
+			if (d == 1) $scroll (15)
+			else if (d == -1) $scroll (-15)
+			else if (d == 2) $scroll ($wfb.h)
+			else if (d == -2) $scroll (-$wfb.h)
+			else if (o is not None) {
+				if ($yoffset != o) {
+					$yoffset = o
+					$Draw ()
+				}
+			}
+		}
+
+	method xscroll (d=None, o=None)
+	{
+		if ($L.width is None)
+			return
+
+		ol = $xoffset
+		if (o is not None)
+			$xoffset = o
+		else {
+			dx = [None, 15, $wfb.w/2, -$wfb.w/2, -15][d]
+			$xoffset = minmax (0, $xoffset + dx, $L.width - $wfb.w)
+		}
+		if (ol != $xoffset)
+			$Draw ()
+	}
+
+	method scrollview (x)
+	{
+		amount = $wm.key_ctrl ? $wfb.h/3 : 50
+		if (x == "up") amount = -amount
+		$AddEvent ("SCROLL", $version, amount)
+	}
+
+	method reRender ()
+	{
+		$Reset ()
+		$havePage ($url, None, True, node_offset=$L.get_node_offset ())
+	}
+
+	method do_key (k)
+		if (k in $scrollkey) {
+			$scroll (k)
+		} else if (k == "END") {
+			$scroll ($L.height)
+		} else if (k == "HOME") {
+			$scroll (-$L.height)
+		} else if (k == "BACKSPACE") {
+			$Back (True)
+		} else if (k in "12345678") {
+			k = int (k) - 1
+			Modes [$url.url] = k
+			$set_mode (k)
+			$reRender ()
+		} else if (k == "ESC") {
+			$Quit ()
+		} else if (k in ("LEFT", "RIGHT")) {
+			$xscroll (k == "LEFT" ? -1 : 1)
+		}
+
+	method go_url (url)
+	{
+		$Reset ()
+		url = webnet.START_URL (url)
+#		print "www: GO FOR:", color (str (url), "b")
+		$Fetch.get_main (url, $versioned ($evHavePage), 1)
+		$wfb.setKeyWidget ()
+	}
+
+	method dld_follow (href)
+	{
+		Downloader.add_url ($url.generate (href))
+		$iq += 1
+		$Message ("%i queued for download" %$iq)
+	}
+
+	method do_follow (href, x=None, y=None)
+	{
+		$Reset ()
+		$FHistory = []
+
+		if (href -> str)
+			url = $url.generate (href)
+		else url = $url.generate (href [0], postdata=href[1])
+
+		if (x and y)
+			url.xy = x, y
+
+		if ($url.same_resource (url)) {
+			url.mark_visited ()
+			offset = $L.Goto (url.label)
+			if (offset is not None) {
+				$History.append ((None, $yoffset, url.xy, $Mode))
+				$yoffset = offset
+				$Draw ()
+			}
+			$xoffset = 0
+			return
+		}
+		print "www: GO FOR:", color (str (url), "b")
+
+		if (url => BookmarkPage) {
+			$AddEvent ("PAGE", $version, url)
+			return
+		}
+
+		# start a fetch on the url, unless it is already "in progress"
+		# in the background downloader
+		if (!Downloader.want (url))
+			$Fetch.get_main (url, $versioned ($evHavePage), 1)
+		else $Message ("Item already in progress by the Downloader")
+	}
+
+	method Reload ()
+	{
+		$Reset ()
+		$Fetch.get_main ($url, $versioned ($evHavePage), 0)
+	}
+
+	method BgDownload (href)
+		Downloader.add_url ($url.generate (href))
+
+	method NewTab (href, referer=True)
+		$tabs.Open ($url.generate (href, referer=referer))
+
+	method DoFind (text)
+	{
+		# ATM, we scroll so that the text containing the word is at the top line
+		# of the view. Todo: highlight, wrap around, search backwards...
+		# Rule: if the search term is all lower case then we have a case insensitive
+		# search, otherwise it's case sensitive
+		text = text.strip ()
+		try rez = $L.Find (text, text != text.lower (), $yoffset)
+		except {
+			print "The Find operation failed unexpectedly:", sys.exc_info ()
+			return
+		}
+
+		if (rez -> int) {
+			$yoffset = rez
+			$xoffset = 0
+			$Draw ()
+		}
+		# else gen message
+	}
+
+	# An important function.  supposed to stop everything as downloads in progress
+	# queued downloads, refresh page timers, animated gifs, layouting, etc...
+
+	method Reset ()
+	{
+		if ($lthid) {
+			thread.interrupt ($lthid, thread.Interrupt, 1)
+			$lthid = None
+		}
+		thread.interrupt ($iQid, thread.Interrupt, 0)
+		for (i in $Interrupts)
+			i ()
+		$Interrupts = []
+		$Fetch.interrupt ()
+		$version += 1
+		$progress.async_msg ("")
+	}
+
+	method register_interrupt (i)
+		$Interrupts.append (i)
+
+	method Quit ()
+		with ($BrowserLock) {
+			try open (WHOME + "Last", "w").write ($url.serialize ())
+			$Reset ()
+			$wm.exit ()
+		}
+
+	method Quit2 ()
+	{
+		$re_run_browser = True
+		$Quit ()
+	}
+
+	method shutdown_this_tab ()
+	{
+		$Alive = False
+		$Reset ()
+		sleep (0.01)
+		thread.interrupt ($iQid, ShutDown, 0)
+		try $Fetch.shutdown ()
+		try {
+			del $Fetch
+			$wfb.Shutdown ()
+			del $wfb, $L
+		}
+	}
+}
+
+class multitabed
+{
+	# What a fraud! :)
+
+	method __init__ ($surf_history)
+	{
+		# "__last__" is a special url that load the last url before browser
+		# shutdown. useful for retrying broken pages...
+		arg = sys.argp.one () ?? None
+		
+		if (!arg) arg = Home
+		else if (arg == "__last__") arg = readfile (WHOME + "Last").strip ()
+		else if ("://" not in arg) arg = "file://" + os.abspath (arg)
+
+		$wm = gui.Wm (0, 0, CaptureStdout="fb")
+		$Tabs = []
+
+		with ($MU = gui.union ()) {
+			with ($U = gui.union ())
+				$Tabs<< main_browser_loop ($wm, self, arg)
+			with (gui.vcontainer ()) {
+				gui.button ("Back to browsing", Action=$MU.switcher (0))
+				$DList = gui.List ()
+			}
+		}
+		$current_tab = 0
+
+		$bgnet_status = False
+		$bgpoll = thread.xlock (False)
+		$pId = thread.start_new ($downloader_loop)
+		Downloader.activity = $bgactive_report
+	}
+
+	method track (url)
+		if (!$surf_history or $surf_history [-1] != url.url) {
+			$surf_history.append (url.url)
+			serialize.save (WHOME + "History", $surf_history)
+		}
+
+	method Next ()
+	{
+		$current_tab += 1
+		if ($current_tab == len ($Tabs))
+			$current_tab = 0
+		$switch ($current_tab)
+	}
+
+	method Open (url=Home, switch=False)
+	{
+		$U.begin_add1 ()
+		bro = main_browser_loop ($wm, self, url)
+		$Tabs<< bro
+		$U.end_add1 ()
+		$Tabs [$current_tab].tabz.Draw ()
+		if (switch)
+			$SwitchTo (bro)
+	}
+
+	method SwitchTo (t)
+		$switch ($Tabs.index (t))
+
+	method Close ()
+	if (len ($Tabs) > 1) {
+		t = $Tabs [$current_tab]
+		t.close_tab ()
+		del $Tabs [$current_tab]
+		del $U.c [$current_tab]
+		if ($current_tab == len ($Tabs))
+			$current_tab -= 1
+		$switch ($current_tab)
+	}
+
+	method switch ($current_tab)
+	{
+		$U.Switch (current_tab)
+		$Tabs [$current_tab].wmtitle ()
+	}
+
+	method onIdle ()
+		return $Tabs [$current_tab].onIdle ()
+
+	# background downloads
+	method downloader_loop ()
+		try while (1) {
+			$bgpoll.ack ()
+			for (i in (1, 2)) {
+				ip, td = Downloader.get_listing ()
+				L = []
+				for (u in ip) {
+					try {
+						have, total = u.Progress
+						p = "%s/%s" %(kbytes (have), kbytes (total))
+					} except p = "in progress"
+					L.append (u.url + "      " + p)
+				}
+				if (td)
+					L.append ("Not started")
+				for (u in td)
+					L.append (u.url)
+				$wm.async ($DList.setItems, L)
+				if (i == 1) sleep (0.38)
+			}
+		}
+		except (ShutDown) ;
+
+	method update_bgns ()
+		for (t in $Tabs)
+			t.BgNetStatW.Draw ()
+
+	method bgactive_report ($bgnet_status)
+	{
+		if (bgnet_status) $bgpoll.release ()
+		else $bgpoll.acquire ()
+		$wm.async ($update_bgns)
+	}
+
+	method update_tabz () for (t in $Tabs) t.tabz.Draw ()
+	method nschange () $wm.async ($update_tabz)
+}
+
+class HistoryPage (**BASEURL)
+{
+	url = "history"
+	is_visited = mark_visited = void
+	File = "HELLO"
+
+	method content_type ()
+		return "text/html"
+
+	method readfile ()
+	{
+		h = htmlgen.HTML ()
+		h.title ("History")
+		h.style ("a:visited { color: #11e }")
+		with (h.body ()) {
+			h.h1 ("History")
+			with (h.ul ())
+				for (x in reversed (www_history))
+					if (x) h.li (h.a (x, href=x))
+					else h.li ("--")
+		}
+		return h.dogen ()
+	}
+}
+
+class BookmarkPage (**BASEURL)
+{
+	is_visited = mark_visited = void
+	Protocol = "bk"
+	File = "HELLO"
+
+	method __init__ ($cat)
+		$url = "bookmars://%s"%cat
+
+	method content_type ()
+		return "text/html"
+
+	same = void
+
+	method readfile ()
+	{
+		h = htmlgen.HTML ()
+		h.title ("Bookmarks")
+		h.style ("a:visited { color: #11e } a.remove { color: #f55 }")
+		with (h.body ()) {
+			for (cat in bookmarks.categories ()) {
+				h ("[")
+				h.a (cat, href="bookmarks://"+cat)
+				h ("]")
+			}
+			h.h1 ($cat)
+			with (h.ul ())
+				for (n, (url, title) in enumerate (bookmarks.cat ($cat)))
+					h.li (h.a (title, href=url), h.br (), url)
+		}
+		return h.dogen ()
+	}
+
+	method generate (u)
+		if (u.sw ("bookmarks://"))
+			return BookmarkPage (u [12:])
+		else return BASEURL.generate (self, u)
+}
+
+####################################
+
+www_history = serialize.load (WHOME + "History") or []
+
+def WWWIPC.domsg (x)
+	if (x.sw ("GO: ")) # async
+		M.Open (webnet.START_URL (x [4:]), True)
+
+M = multitabed (www_history)
+try M.wm.Start (onIdle=M.onIdle)
+except print sys.exc_info ()
+
+webnet.wcache.save_visited ()
+serialize.save (WHOME + "Modes", Modes)
+WWWIPC.stop ()
+
+	# print socket statistics in entire browser lifetime.
+	# extra kludge because 2GB can be passed and our 32-bit ints wrap
+
+import llong as LL
+s, r = socket.socket.NetStats
+from misc import GMKnum
+print
+print "%s bytes sent, %s bytes received" % (GMKnum (s), GMKnum (r))
+try {
+	totsend, totrecv = [LL.fromstring (x) for (x in readfile (WHOME + "TotBytes").split ())]
+	totsend += s
+	totrecv += r
+	print "(%s bytes sent, %s bytes received in entire browser lifetime)" % (
+		LL.tostring (totsend), LL.tostring (totrecv))
+} except {
+	totsend = Long (s)
+	totrecv = Long (r)
+}
+open (WHOME + "TotBytes", "w").write ("%s %s\n" %(LL.tostring (totsend), LL.tostring (totrecv)))
+www_history.append ("")
+serialize.save (WHOME + "History", www_history)
+LOCKFILE.leave ()

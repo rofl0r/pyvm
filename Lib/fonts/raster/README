@@ -1,0 +1,86 @@
+Freeraster
+----------
+
+	``Fonts are very important.  Users spend most of their time in front
+	of a screen, so it your fonts look ugly and hurt the user's eyes,
+	the user will use an alternative operating system with pleasant
+	fonts, even if the other operaring system does not offer too
+	many features'' -- Independent Desktop Architects
+
+
+The rasterizer is the code that takes a scallable font and produces a small
+bitmap with tones of grey.
+
+This code has support for rasterizing TrueType fonts and Type1 (pfb, pfa, cff)
+fonts.
+
+TrueType
+--------
+
+TTF is a very complicated format with MTOWTDI (multiple ways to store the
+same data).  At the moment the rasterizer cares only for the files of the
+ms fonts which are used by the web browser, are international and support
+all the combinations of sans/serif/mono - regular/bold/italic/bold-italic.
+
+An alternative ttf font (vera, luxi, whatever) will possibly fail to load!
+
+Type1
+-----
+
+There is a standard family of Type1 fonts the urw fonts which are used as
+the "Builtin PDF" fonts.  These work. URW can also be used in the browser
+if the ms fonts are not available, but they are not international.
+
+Type1 fonts were designed for laser printers with very high DPI value and
+thus they don't look very good in computer screens.
+
+Type1 fonts are also found embedded in PDF documents.  For PDFs generated
+from TeX it usually works perfectly.
+
+
+Good looking rasterization
+--------------------------
+
+First the glyph is rasterized on an image that is MPPxMPP pixels bigger
+(MPP: Mega Pixel).  Then the bitmap is created by calculating the average
+of each mega pixel.  This produces nicely anti-aliased bitmaps.
+
+The program "fontlab <font-file>" shows what is really going on with the
+megapixels.
+
+The value of MPP depends on the requested bitmap pixel size.  For example,
+when we want to make a bitmap of 32x32 pixels, the result is usually pretty
+good and low values of MPP (beteen 4-8) suffice.  The problem is smaller
+glyphs and especially below 16x16 pixels.  For them MPP up to 14 may be
+needed.
+
+
+Auto-hinting
+------------
+
+The rasterizer can perform auto-hinting which usually gives *very* good
+results!
+
+The problem: suppose we have to raster the glyph "I".  The vertical line
+of "I" could be such that in the bitmap we have one line of pixels that
+are 100% black, or two lines of pixels that each is 50% black.  This is
+the case where the raster is mis-aligned, the result looks flat and blurry
+and which "hinting" is supposed to correct by shifting the raster slightly
+so that the 50-50 case will be converted to a 100-0 case.
+
+If the auto-hinter is enabled, the rasterizer will try some shifts looking
+for the bitmap with the highest sum of squares of blackness.
+
+Again, if the auto-hinter should be enabled and how many shifts it will
+attempt is a function of the requested "px" size of the bitmap.
+
+
+Jittering
+---------
+
+jittering is not implemented yet, it's just an idea for further improving
+glyphs at very small px sizes (<14px).  The idea is to work on the mega
+pixel image and shift it slightly up and down with a lighter color, so as
+to create something like a "shade".  Then normally proceed into generating
+the bitmap.  The goal of this would be to intensify some likes that are
+too thin and end up invisible in the small bitmap.

@@ -1,0 +1,260 @@
+##  readline utility
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+class readline
+{
+	# By default, readline reads from sys.pty_stdin and writes
+	# to sys.stdout with line width from sys.tty_size()
+
+	method __init__ ($outfile=None, $outwidth=None, $inchar=None, $have_history=True)
+	{
+		if (!outfile)
+			$outfile = sys.stdout
+		if (!outwidth)
+			$outwidth = sys.tty_size ()[0]
+		$charbuf = ""
+		if (have_history)
+			$history = []
+	}
+
+	method show ()
+	{
+		b = ""
+		if ($cmd_buf != $cmd_buf_last) {
+			n = $cmd_idx_last + $pl
+			lines_up = n / $outwidth
+			if (lines_up)
+				b += "\033[%iA" %lines_up
+			b += "\r"
+
+			buf = $prompt + ($hidden ? len ($cmd_buf) * "*" : $cmd_buf)
+			while (1)
+				if (len (buf) >= $outwidth) {
+					b += buf [:$outwidth] + "\r\n"
+					buf = buf [$outwidth:]
+				} else {
+					b += buf
+					break
+				}
+			b += "\033[K"
+			$cmd_buf_last = $cmd_buf
+			$cmd_idx_last = len ($cmd_buf)
+		}
+
+		# move cursor to place
+		if ($cmd_idx != $cmd_idx_last) {
+			p1 = $cmd_idx_last + $pl
+			p2 = $cmd_idx + $pl
+			l1, o1 = p1 / $outwidth, p1 % $outwidth
+			l2, o2 = p2 / $outwidth, p2 % $outwidth
+			if (l1 < l2)
+				b += "\033[%iB" % (l2 - l1)
+			else if (l2 < l1)
+				b += "\033[%iA" % (l1 - l2)
+			if (o1 < o2)
+				b += "\033[%iC" % (o2 - o1)
+			else if (o2 < o1)
+				b += "\033[%iD" % (o1 - o2)
+			$cmd_idx_last = $cmd_idx
+		}
+
+		if (b) {
+			$outfile.write (b)
+			$outfile.flush ()
+		}
+	}
+
+	method start ($prompt, $cmd_buf="", $cmd_idx=None, $hidden=False)
+	{
+		if (cmd_idx is None)
+			$cmd_idx = len (cmd_buf)
+		$cmd_buf_last = ""
+		$cmd_idx_last = 0
+		$outfile.write (prompt)
+		$outfile.flush ()
+		$pl = len ($prompt)
+		esc = 0
+		escp = ""
+
+		if (!$inchar)
+			sys.pty_stdin (True)
+
+		if ($have_history) {
+			$tmp_history = list ($history) + [""]
+			$tmp_history_idx = len ($history)
+		}
+
+		while (1) {
+			c = $get_char ()
+			if.continue (esc == 1)
+				esc = c == "[" ? 2 : 0
+			if.continue (esc == 2) {
+				if.continue (c in "0123456789")
+					escp += c
+				if (c == "D") {
+					if ($cmd_idx)
+						$cmd_idx -= 1
+				} else if (c == "C") {
+					if ($cmd_idx < len ($cmd_buf))
+						$cmd_idx += 1
+				} else if (c == "~") {
+					if (escp == "1") $cmd_idx = 0
+					else if (escp == "4") $cmd_idx = len ($cmd_buf)
+					else if (escp == "3") $delete ()
+				} else if (c in "AF") {
+					if ($have_history and $tmp_history_idx) {
+						$tmp_history [$tmp_history_idx] = $cmd_buf
+						$tmp_history_idx -= 1
+						$cmd_buf = $tmp_history [$tmp_history_idx]
+						$cmd_idx = len ($cmd_buf)
+					}
+				} else if (c in "BE") {
+					if ($have_history and $tmp_history_idx < len ($tmp_history) - 1) {
+						$tmp_history [$tmp_history_idx] = $cmd_buf
+						$tmp_history_idx += 1
+						$cmd_buf = $tmp_history [$tmp_history_idx]
+						$cmd_idx = len ($cmd_buf)
+					}
+				}
+				# A/F up, B/E down
+				$show ()
+				esc = 0
+				escp = ""
+			}
+			if (c in "\n\r") 
+				break
+			if (32 <= ord (c) <= 126)
+				$insert (c)
+			else if (c in "\x08\x7f")
+				$backspace ()
+			else if (c == "\033")
+				esc = 1
+			else if (c == "\x01")
+				$cmd_idx = 0
+			else if.break (c == "\x04")
+				$cmd_buf = None
+			else if (c == "\x05")
+				$cmd_idx = len ($cmd_buf)
+			else if (c == "\x9b")
+				esc = 2
+			# tab, ctrl, alt
+			$show ()
+		}
+
+		if ($have_history and $cmd_buf)
+			if (!$history or $history [-1] != $cmd_buf)
+				$history << $cmd_buf
+
+		if (!$inchar)
+			sys.pty_stdin (False)
+		$outfile.write ("\n")
+		return $cmd_buf
+	}
+
+	method insert (c)
+	{
+		i = $cmd_idx
+		$cmd_buf = $cmd_buf [:i] + c + $cmd_buf [i:]
+		$cmd_idx += 1
+	}
+
+	method backspace ()
+	{
+		i = $cmd_idx
+		if (i) {
+			$cmd_buf = $cmd_buf [:i-1] + $cmd_buf [i:]
+			$cmd_idx -= 1
+		}
+	}
+
+	method delete ()
+		if ($cmd_idx < len ($cmd_buf)) {
+			$cmd_idx += 1
+			$backspace ()
+		}
+
+	method get_char ()
+	{
+		if ($charbuf) {
+			r = $charbuf [0]
+			$charbuf = $charbuf [1:]
+			return r
+		}
+
+		r = $inchar ? $inchar () : sys.pty_getchar ()
+		if (len (r) > 1)
+			$charbuf = r [1:]
+		return r [0]
+	}
+}
+
+# TODO:
+#	save/load history file
+#	tab completions
+#	ctrl-alt stuffs
+
+# The command prompt accepts a set of valid commands specified with regular expressions.
+# commands that do not validate return false.
+# A command is a list with one or two items:
+#	if two, the return value is the second item and the match.groups ()
+#	otherwise it's just the match.groups ()
+# For example on input "foo bar" the command
+#	["(foo)\s+(\S+)"]
+# returns ("foo", "bar")
+# while the command
+#	["(foo)\s+(\S+)", 123]
+# returns (123, ("foo", "bar"))
+#
+# regeces are always adapted to accept " *$" at their end: whitespace only
+# may follow the command. If the regexp has just one group, it will be
+# returned out of a tuple, for example the command ["(help)"] will return
+# "help" upon match (and not ("help",)).  If the command is a simple string without any
+# parenthesis it will be parenthesized automatically, that is ["quit"] will
+# become ["(quit)"] and return "quit" upon match.
+# code speaks better. tweak as fit.
+
+class command_prompt
+{
+	method __init__ ($commands)
+	{
+		$rl = readline ()
+		from re import compilef
+		for (c in commands) {
+			r = c [0]
+			if ("(" not in r)
+				r = "(" + r + ")"
+			c [0] = compilef (r + " *$")
+		}
+	}
+
+	method get (prompt)
+	{
+		b = $rl.start (prompt)
+		if (b is None)	# ctrl-D
+			return
+		for (c in $commands)
+			if (M = c [0](b)) {
+				M = M.groups ()
+				if (len (M) == 1)
+					M = M [0]
+				if (len (c) == 1)
+					return M
+				return c [1], M
+			}
+		return False
+	}
+}
+
+if (__name__ == __main__)
+{
+	R = readline ()
+	reps = R.start ("Type command in prompt > ")
+	reps = R.start ("Enter password > ", hidden=1)
+	print "The password is [%s]" %reps
+}

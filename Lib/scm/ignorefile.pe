@@ -1,0 +1,96 @@
+##  ignore-files
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+readlines = @misc.readlines;
+
+# an ignorefile has the format of the .gitignore file.
+# comments that start with "#" and glob patterns or filenames.
+# The function ignore() will parse such a file and return
+# a function that when called with a filename will return
+# true if the filename is in the ignorelist.
+
+## TODO. include-lists (!), full paths (/), etc
+
+def ignore (g, ex=None)
+{
+	funcs = [];
+	ifuncs = [];
+	if (ex) funcs.append (ex);
+
+	g = readlines (g);
+	plain = [];
+	patt = [];
+	iplain = [];
+	ipatt = [];
+	for (i in g)
+		if (!i or i [0] == "#") continue;
+		else if (i [0] == "!") {
+			if ("*" in i or "?" in i or "[" in i) ipatt.append (i [1:]);
+			else iplain.append (i [1:]);
+		} else if ("*" in i or "?" in i or "[" in i) patt.append (i);
+		else plain.append (i);
+
+	if (plain) {
+		for (i in plain)
+			if ("/" in i) raise NotImplemented ("gitignore can't do [%s]" %i);
+		plain = set (plain);
+		def plainf (path)
+		{
+			if ("/" in path) path = path.rpartition ("/")[2];
+			return path in plain;
+		}
+		funcs.append (plainf);
+	}
+
+	if (patt) {
+		patt = @re.re (@fnmatch.translate (*patt));
+		def fre (path)
+		{
+			if ("/" in path) path = path.rpartition ("/")[2];
+			return patt (path);
+		}
+		funcs.append (fre);
+	}
+
+	if (iplain) {
+		for (i in iplain)
+			if ("/" in i) raise NotImplemented ("gitignore can't do [%s]" %i);
+		iplain = set (iplain);
+		def iplainf (path)
+		{
+			if ("/" in path) path = path.rpartition ("/")[2];
+			return path in iplain;
+		}
+		ifuncs.append (iplainf);
+	}
+
+	if (ipatt) {
+		ipatt = @re.re (@fnmatch.translate (*ipatt));
+		def ifre (path)
+		{
+			if ("/" in path) path = path.rpartition ("/")[2];
+			return ipatt (path);
+		}
+		ifuncs.append (ifre);
+	}
+
+	funcs = tuple (funcs);
+	ifuncs = tuple (ifuncs);
+	def f (path)
+	{
+		for (ff in funcs)
+			if (ff (path)) {
+				for (ff in ifuncs)
+					if (ff (path))
+						return False;
+				return True;
+			}
+		return False;
+	}
+
+	return f;
+}

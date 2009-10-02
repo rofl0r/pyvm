@@ -1,0 +1,541 @@
+/*
+ *  Network socket objects
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+extern "sys/socket.h" { 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/un.h>
+}
+extern "netinet/in.h" { }
+extern "arpa/inet.h" { }
+extern "sys/un.h" { }
+
+#include "dynlib.h"
+#include "funcwrapper.h"
+
+static int double_to_ms (double t)
+{
+	if (t < 0)
+		return -1;
+	return floor (t * 1000);
+}
+
+static int IntOrFloat_to_ms (__object__ *o)
+{
+	double t;
+	if (FloatObj.isinstance (o)) t = FloatObj.cast (o)->f;
+	else t = IntObj.fcheckedcast (o)->i;
+	return double_to_ms (t);
+}
+
+//
+// do something completely different: provide pointers to functions
+// and use DLL.fptr_wrapper to make py functions. Better for the
+// size of the binary and pretty good when speed is not so critical
+//
+
+extern void set_nonblocking (int);
+
+static int sock_creat (int d, int t, int p)
+{
+	int fd = socket (d, t, p);
+	if (fd != -1)
+		set_nonblocking (fd);
+	return fd;
+}
+
+static void getsockname_af_inet (int sock, int params[])
+{
+	struct sockaddr_in s;
+	uint len = sizeof s;
+	getsockname (sock, (struct sockaddr*) &s, &len);
+	params [0] = s.sin_addr.s_addr;
+	params [1] = ntohs (s.sin_port);
+}
+
+static int bind_af_inet (int sock, int addr, int port, int timeout)
+{
+	struct sockaddr_in s;
+	s.sin_family = AF_INET;
+	s.sin_addr.s_addr = addr;
+	s.sin_port = htons (port);
+	return bind (sock, (struct sockaddr*) &s, sizeof s);
+}
+
+/***************************************************************
+ * connect.  using the poller because connect is one of those
+ * things that may possibly block.
+ **************************************************************/
+
+static class connectNotify : NotifyObj
+{
+	struct sockaddr_in s;
+	int sock;
+    public:
+	connectNotify (int, sockaddr_in);
+	bool do_notify (int);
+};
+
+connectNotify.connectNotify (int _sock, sockaddr_in ss)
+{
+	NotifyObj.ctor ();
+	sock = _sock;
+	s = ss;
+}
+
+bool connectNotify.do_notify (int)
+{
+	set_retval (newIntObj (connect (sock, (struct sockaddr*) &s, sizeof s)));
+	return NotifyObj.do_notify (0);
+}
+
+_module __object__ *connect_af_inet (REFPTR argv[])
+{
+	int sock = argv [0].CheckInt ()->i;
+	int addr = argv [1].CheckInt ()->i;
+	int port = argv [2].CheckInt ()->i;
+	int timeout = IntOrFloat_to_ms (argv [3].o);
+	struct sockaddr_in s;
+	s.sin_family = AF_INET;
+	s.sin_addr.s_addr = addr;
+	s.sin_port = htons (port);
+
+	int r = connect (sock, (struct sockaddr*) &s, sizeof s);
+	if (r == -1 && errno == EINPROGRESS) {
+
+		if (CAN_VMPOLL)
+			return vmpollout (new connectNotify (sock, s), sock, timeout);
+
+		if (!wait_for_socket (sock, 1, timeout)) {
+			r = -1;
+			errno = ETIMEDOUT;
+		} else
+			r = connect (sock, (struct sockaddr*) &s, sizeof s);
+	}
+
+	return newIntObj (r);
+}
+
+/***************************************************************
+
+	Wait on a BLOCKING socket.  This is the GIL-releasing
+	version of waiting on a socket.  *Normally* we are
+	using the vmpoll event notifier so this is NOT USED.
+	(CAN_VMPOLL)
+
+***************************************************************/
+
+static int listen_gil (int sock, int n)
+{
+	/* instant? don't release GIL */
+	return listen (sock, n);
+}
+
+static int wait_for_socket (int sock, int writting, int timeout=-1)
+{
+	struct timeval T = { .tv_sec = timeout, .tv_usec = 0 };
+	struct timeval *dt = timeout == -1 ? 0 : &T;
+	int ret;
+	fd_set fds;
+	FD_ZERO (&fds);
+	FD_SET (sock, &fds);
+
+	RELEASE_GIL
+	if (writting)
+		ret = select (sock+1, 0, &fds, 0, dt);
+	else
+		ret = select (sock+1, &fds, 0, 0, dt);
+	ACQUIRE_GIL
+
+	return ret;
+}
+
+/***************************************************************
+ * accept.  
+ * using the poller for the case of multithreaded socket server
+ **************************************************************/
+
+static class acceptNotify : NotifyObj
+{
+	int sock;
+    public:
+	acceptNotify (int);
+	bool do_notify (int);
+};
+
+acceptNotify.acceptNotify (int s)
+{
+	NotifyObj.ctor ();
+	sock = s;
+}
+
+bool acceptNotify.do_notify (int tm)
+{
+	struct sockaddr_in s;
+	unsigned int client_len = sizeof s;
+	int r;
+
+	s.sin_addr.s_addr = 0;
+	s.sin_port = 0;
+
+	if (tm) r = -2;
+	else r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	if (r >= 0)
+		set_nonblocking (r);
+	set_retval (new Tuplen (newIntObj (r), newIntObj (s.sin_addr.s_addr),
+				newIntObj (s.sin_port)));
+
+	return NotifyObj.do_notify (0);
+}
+
+_module __object__ *accept_socket (REFPTR argv[])
+{
+	struct sockaddr_in s = { .sin_addr.s_addr = 0, .sin_port = 0 };
+	unsigned int client_len = sizeof s;
+	int sock = argv [0].CheckInt ()->i;
+	int timeout = argv [1].CheckInt ()->i;
+	int r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	if (r == -1 && errno == EAGAIN) {
+
+		if (CAN_VMPOLL)
+			return vmpollin (new acceptNotify (sock), sock,
+					 timeout == -1 ? -1 : timeout * 1000);
+
+		if (!wait_for_socket (sock, 0, timeout)) {
+			r = -2;
+			errno = ETIMEDOUT;
+		} else
+			r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	}
+	if (r >= 0)
+		set_nonblocking (r);
+
+	return new Tuplen (newIntObj (r), newIntObj (s.sin_addr.s_addr), newIntObj (s.sin_port));
+}
+
+/***************************************************************
+	setsockopt, etc
+	special calls.
+***************************************************************/
+
+static int setsockopt_w (int sock, int level, int opn, int val)
+{
+	return setsockopt (sock, level, opn, &val, sizeof val);
+}
+
+/***************************************************************
+ * recv
+ *  recv can use the poller to wait stacklessly
+ **************************************************************/
+
+static class recvNotify : NotifyObj
+{
+	char *buffer;
+	int sock, n, flags, timeout;
+   public:
+	recvNotify (int, int, int, int, char*);
+	bool do_notify (int);
+};
+
+recvNotify.recvNotify (int i1, int i2, int i3, int i4, char *s)
+{
+	NotifyObj.ctor ();
+	sock = i1;
+	n = i2;
+	flags = i3;
+	buffer = s;
+	timeout = i4;
+}
+
+bool recvNotify.do_notify (int timedout)
+{
+	if (timedout)
+		set_retval (newIntObj (-2));
+	else {
+		int i = recv (sock, buffer, n, flags);
+		/* We may get EAGAIN some times apparently. Two ways to handle that:
+		   1) use vmrepollin()	(rather untested)
+		   2) return -3 and have the socket module retry
+		   we do (2) at the moment
+		*/
+		if (i == -1)
+			set_retval (newIntObj (errno == EAGAIN ? -3 : -1));
+		else	set_retval (new StringObj binctor (buffer, i));
+	}
+	seg_free (buffer);
+	return NotifyObj.do_notify (0);
+}
+
+static __object__ *recv2 (REFPTR argv[])
+{
+	/* XXXX: check buffer size for -1 */
+	int sock = argv [0].CheckInt ()->i;
+	int n = argv [1].CheckInt ()->i;
+	int flags = argv [2].CheckInt ()->i;
+	if (n < 0) n = 4096;
+	char *buffer = seg_alloc (n);
+	int i = recv (sock, buffer, n, flags);
+	double timeout = -1;
+
+	if (IntObj.isinstance (argv [3].o)) timeout = argv [3].as_int->i;
+	else if (FloatObj.isinstance (argv [3].o)) timeout = argv [3].as_double->f;
+
+	if (i == -1 && errno == EAGAIN) {
+
+		if (CAN_VMPOLL)
+			return vmpollin (new recvNotify (sock, n, flags, double_to_ms (timeout),
+					 buffer), sock, double_to_ms (timeout));
+
+		if (!wait_for_socket (sock, 0, timeout)) {
+			i = -2;
+			errno = ETIMEDOUT;
+		} else
+			i = recv (sock, buffer, n, flags);
+	}
+
+	if (i < 0)
+		return newIntObj (i);
+
+	__object__ *S = i ? new StringObj binctor (buffer, i) : NILstring;
+	seg_free (buffer);
+	return S;
+}
+
+/***************************************************************
+ * send
+ *  send can use the poller to wait stacklessly
+ **************************************************************/
+
+static class sendNotify : NotifyObj
+{
+	char *buffer;
+	int sock, n, flags;
+   public:
+	sendNotify (int, int, int, char*);
+	bool do_notify (int);
+};
+
+sendNotify.sendNotify (int i1, int i2, int i3, char *s)
+{
+	NotifyObj.ctor ();
+	sock = i1;
+	n = i2;
+	flags = i3;
+	buffer = s;
+}
+
+bool sendNotify.do_notify (int timedout)
+{
+	if (timedout)
+		set_retval (newIntObj (-2));
+	else {
+		int i = send (sock, buffer, n, flags);
+		if (i == -1 && errno == ECONNRESET)
+			i = -3;
+		set_retval (newIntObj (i));
+	}
+	return NotifyObj.do_notify (0);
+}
+
+static __object__ *send2 (REFPTR argv[])
+{
+	/* XXXX: check buffer size for -1 */
+	int sock = argv [0].CheckInt ()->i;
+	char *buffer = argv [1].CheckString ()->str;
+	int n = argv [1].CheckString ()->len;
+	int flags = argv [2].CheckInt ()->i;
+	/* we don't want SIGPIPE */
+	flags |= MSG_NOSIGNAL;
+	int i = send (sock, buffer, n, flags);
+	double timeout = -1;
+
+	if (IntObj.isinstance (argv [3].o)) timeout = argv [3].as_int->i;
+	else if (FloatObj.isinstance (argv [3].o)) timeout = argv [3].as_double->f;
+
+	if (i == -1 && errno == EAGAIN) {
+
+		if (CAN_VMPOLL)
+			return vmpollout (new sendNotify (sock, n, flags, buffer),
+					 sock, double_to_ms (timeout));
+
+		if (!wait_for_socket (sock, 1, timeout)) {
+			i = -2;
+			errno = ETIMEDOUT;
+		} else
+			i = send (sock, buffer, n, flags);
+	}
+	if (i == -1 && errno == ECONNRESET)
+		i = -3;
+
+	return newIntObj (i);
+}
+/***************************************************************
+
+	----- UNIX domain sockets -----
+
+***************************************************************/
+
+static int bind_af_unix (int sock, char *name)
+{
+	struct sockaddr_un s;
+	if (strlen (name) > 107) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	s.sun_family = AF_UNIX;
+	strcpy (s.sun_path, name);
+	return bind (sock, (struct sockaddr*) &s, sizeof s);
+}
+
+static int connect_af_unix (int sock, const char *name)
+{
+	struct sockaddr_un s;
+	if (strlen (name) > 107) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	s.sun_family = AF_UNIX;
+	strcpy (s.sun_path, name);
+	return connect (sock, (struct sockaddr*) &s, sizeof s);
+}
+
+static class acceptUnixNotify : NotifyObj
+{
+	int sock;
+    public:
+	acceptUnixNotify (int);
+	bool do_notify (int);
+};
+
+acceptUnixNotify.acceptUnixNotify (int s)
+{
+	NotifyObj.ctor ();
+	sock = s;
+}
+
+bool acceptUnixNotify.do_notify (int tm)
+{
+	struct sockaddr_un s;
+	unsigned int client_len = sizeof s;
+	int r;
+
+	if (tm) r = -2;
+	else r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	if (r >= 0)
+		set_nonblocking (r);
+	set_retval (newIntObj (r));
+
+	return NotifyObj.do_notify (0);
+}
+
+_module __object__ *accept_socket_unix (REFPTR argv[])
+{
+	struct sockaddr_un s;
+	unsigned int client_len = sizeof s;
+	int sock = argv [0].CheckInt ()->i;
+	int timeout = argv [1].CheckInt ()->i;
+	int r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	if (r == -1 && errno == EAGAIN) {
+
+		if (CAN_VMPOLL)
+			return vmpollin (new acceptUnixNotify (sock), sock,
+					 timeout == -1 ? -1 : timeout * 1000);
+
+		if (!wait_for_socket (sock, 0, timeout)) {
+			r = -2;
+			errno = ETIMEDOUT;
+		} else
+			r = accept (sock, (struct sockaddr*) &s, &client_len);
+
+	}
+	if (r >= 0)
+		set_nonblocking (r);
+
+	return newIntObj (r);
+}
+
+/////////////////////////////////////////////////////////////////
+
+static __object__ *gethostname_w ()
+{
+	char tmp [256];
+	gethostname (tmp, sizeof tmp);
+	return new StringObj (tmp);
+}
+
+static void close_shutdown (int sock)
+{
+	close (sock);
+}
+
+slowcold __object__ *import__socket ()
+{
+	ModuleObj *ns;
+
+	__object__ *F = new FuncWrapperObj_fargc (4, recv2, "recv");
+	__object__ *S = new FuncWrapperObj_fargc (4, send2, "send");
+	__object__ *F2 = new FuncWrapperObj_fargc (0, gethostname_w, "gethostname");
+	__object__ *AC = new FuncWrapperObj_fargc (2, accept_socket, "accept");
+	__object__ *ACU = new FuncWrapperObj_fargc (2, accept_socket_unix, "accept");
+	__object__ *CO = new FuncWrapperObj_fargc (4, connect_af_inet, "connect");
+	ns = new ModuleObj ictor (
+		("AF_UNIX", $AF_UNIX),
+		("AF_INET", $AF_INET),
+#ifdef	AF_INET6
+		("AF_INET6", $AF_INET6),
+#endif
+#ifdef	PF_PACKET
+		("PF_PACKET", $PF_PACKET),
+#endif
+		("SOCK_STREAM", $SOCK_STREAM),
+		("SOCK_DGRAM", $SOCK_DGRAM),
+		("SOCK_RAW", $SOCK_RAW),
+#ifdef	SOCK_PACKET
+		("SOCK_PACKET", $SOCK_PACKET),
+#endif
+#ifdef  IPPROTO_UDP
+		("IPPROTO_UDP", $IPPROTO_UDP),
+#else
+#error "No UDP proto"
+#endif
+		("IPPROTO_ICMP", $IPPROTO_ICMP),
+		("SOL_SOCKET", $SOL_SOCKET),
+		("SO_REUSEADDR", $SO_REUSEADDR),
+		("socket", (long) sock_creat),
+		("inet_addr", (long) inet_addr),
+		("bind_af_inet", (long) bind_af_inet),
+		("bind_af_unix", (long) bind_af_unix),
+		("connect_af_unix", (long) connect_af_unix),
+
+		("connect_af_inet", CO),
+
+		("getsockname_af_inet", (long) getsockname_af_inet),
+
+		("accept_af_inet", AC),
+		("accept_af_unix", ACU),
+
+		("listen", (long) listen_gil),
+		("send", S),
+		("close", (long) close_shutdown),
+		("setsockopt", (long) setsockopt_w),
+		("inet_ntoa", (long) inet_ntoa),
+		("gethostname", F2),
+		("recv", F)
+	);
+	ns->GC_ROOT ();
+	return ns;
+}

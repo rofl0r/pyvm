@@ -1,0 +1,328 @@
+/*
+ *  Unicode
+ * 
+ *  Copyright (c) 2008 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/* NOTE:
+    There is no proper "invalid utf8 error handling".
+    UTF8 text is usually about some informative text and if there are invalid
+    utf glyphs what would be done is just output a "broken glyph" or something
+    instead of terminating the program!
+    So for values between 160..192 and 254,255 we return the corresponding
+    byte as if it was valid.
+    Whehter utf is "valid" or not is purely theoretical.
+*/
+#include "dynlib.h"
+
+/* Given a 'compiled' codepage table and some text written in that codepage, produce
+   UTF-8 text.  If the text does not contain any utf chars the original is returned.
+   (the codepage may not contain 5-point codes. not implemented)
+*/
+
+_module __object__ *transcode (REFPTR argv[])
+{
+	const unsigned char *tbl = (unsigned char*) argv [0].CheckString ()->str, *t;
+	const unsigned char *s = (unsigned char*) argv [1].CheckString ()->str;
+	unsigned int len = argv [1].as_string->len;
+	unsigned int i;
+
+	for (i = 0; i < len; i++)
+		if (s [i] >= 160)
+			goto tl;
+	return argv [1].o;
+tl:;
+	unsigned char *u;
+	if (len <= 42) u = alloca (4 * len);
+	else u = seg_alloc (4 * len);
+
+	unsigned char *u0 = u;
+
+	for (i = 0; i < len; i++) {
+		if (s [i] < 160) {
+			*u++ = s [i];
+			continue;
+		}
+		t = tbl + 4 * s [i];
+		if (!t [0]) *u++ = s [i];
+		else if (!t [1]) *u++ = t [0];
+		else if (!t [2]) {
+			*u++ = t [0];
+			*u++ = t [1];
+		} else if (!t [3]) {
+			*u++ = t [0];
+			*u++ = t [1];
+			*u++ = t [2];
+		} else {
+			*u++ = t [0];
+			*u++ = t [1];
+			*u++ = t [2];
+			*u++ = t [3];
+		}
+	}
+
+	__object__ *o = new StringObj binctor ((char*) u0, u - u0);
+	if (len > 42)
+		seg_free (u0);
+	return o;
+}
+
+/* Utilities for handling UTF-8 text */
+
+static const char utf8_length [] = { // for codes >= 192
+	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+	2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,5,5,0,0
+};
+
+_module __object__ *utf8_len (REFPTR argv[])
+{
+	StringObj *s = argv [0].check_string ();
+	const unsigned char *c = (unsigned char*) s->str;
+	unsigned int l = s->len;
+	unsigned int ul, i, dd;
+
+	ul = l;
+	for (i = 0; i < l; i++)
+		if (c [i] >= 192)  {
+			dd = utf8_length [c [i] - 192];
+			i += dd;
+			ul -= dd;
+		}
+
+	return newIntObj (ul);
+}
+
+static class utf8_iterator : iteratorBase
+{
+	/* XXX: should REFPTR the string!! */
+	unsigned char *s, *e, *st;
+   public:
+	utf8_iterator (unsigned char *str, unsigned int len)
+	{
+		iteratorBase.ctor (&None);
+		st = s = str;
+		e = str + len;
+	}
+	__object__ *xnext ();
+	void print ();
+};
+
+void utf8_iterator.print ()
+{
+	print_out (STRL ("utf8_iterator"));
+}
+
+extern IntObj SmallInts[];
+
+__object__ *utf8_iterator.xnext ()
+{
+	__object__ *o = getnext ();
+	if_unlikely (!o)
+		RaiseStopIteration ();
+	return o;
+}
+
+__object__ *utf8_iterator.getnext ()
+{
+	if_unlikely (s >= e)
+		return 0;
+
+	unsigned int u;
+
+	if (*s < 0x80)
+		return &SmallInts [INTTAB_MIN + *s++];
+
+	if ((*s & 0xe0) == 0xc0) {
+		u = ((((unsigned long)(s [0] & 0x1F)) << 6) |
+		      ((unsigned long)(s [1] & 0x3F)));
+		s += 2;
+		return u < INTTAB_MAX ? &SmallInts [INTTAB_MIN + u] : new IntObj (u);
+	}
+
+	if ((*s & 0xf0) == 0xe0) {
+		u = ((((unsigned long)(s [0] & 0x0F)) << 12) |
+		     (((unsigned long)(s [1] & 0x3F)) << 6) |
+		      ((unsigned long)(s [2] & 0x3F)));
+		s += 3;
+		return newIntObj (u);
+	}
+
+	if ((*s & 0xF8) == 0xF0) {
+		u = ((((unsigned long)(s [0] & 0x07)) << 18) |
+		     (((unsigned long)(s [1] & 0x3F)) << 12) |
+		     (((unsigned long)(s [2] & 0x3F)) << 6) |
+		      ((unsigned long)(s [3] & 0x3F)));
+		s += 4;
+		return newIntObj (u);
+	}
+
+	if ((*s & 0xFC) == 0xF8) {
+		u = ((((unsigned long)(s [0] & 0x03)) << 24) |
+		     (((unsigned long)(s [1] & 0x3F)) << 18) |
+		     (((unsigned long)(s [2] & 0x3F)) << 12) |
+		     (((unsigned long)(s [3] & 0x3F)) << 6) |
+		      ((unsigned long)(s [4] & 0x3F)));
+		s += 5;
+		return newIntObj (u);
+	}
+
+	if ((*s & 0xFC) == 0xFC) {
+		u = ((((unsigned long)(s [0] & 0x03)) << 30) |
+		     (((unsigned long)(s [1] & 0x3F)) << 24) |
+		     (((unsigned long)(s [2] & 0x3F)) << 18) |
+		     (((unsigned long)(s [3] & 0x3F)) << 12) |
+		     (((unsigned long)(s [4] & 0x3F)) << 6) |
+		      ((unsigned long)(s [5] & 0x3F)));
+		s += 6;
+		return newIntObj (u);
+	}
+
+	return newIntObj (*s++);
+}
+
+/* a single utf8 char in a string */
+_module __object__ *utf82int (REFPTR argv[])
+{
+	StringObj *S = argv [0].check_string ();
+	unsigned char *s = (unsigned char*) S->str;
+	unsigned int u;
+
+	if_unlikely (*s < 192 || *s > 253)
+		RaiseNotImplemented ("bad utf char");
+
+	if_unlikely (utf8_length [*s - 192] + 1 != S->len)
+		RaiseNotImplemented ("bad utf char");
+
+	if ((*s & 0xe0) == 0xc0) {
+		u = ((((unsigned long)(s [0] & 0x1F)) << 6) |
+		      ((unsigned long)(s [1] & 0x3F)));
+		return u < INTTAB_MAX ? &SmallInts [INTTAB_MIN + u] : new IntObj (u);
+	}
+
+	if ((*s & 0xf0) == 0xe0)
+		return newIntObj (((((unsigned long)(s [0] & 0x0F)) << 12) |
+		     (((unsigned long)(s [1] & 0x3F)) << 6) |
+		      ((unsigned long)(s [2] & 0x3F))));
+
+	if ((*s & 0xF8) == 0xF0)
+		return newIntObj(((((unsigned long)(s [0] & 0x07)) << 18) |
+		     (((unsigned long)(s [1] & 0x3F)) << 12) |
+		     (((unsigned long)(s [2] & 0x3F)) << 6) |
+		      ((unsigned long)(s [3] & 0x3F))));
+
+	if ((*s & 0xFC) == 0xF8)
+		return newIntObj (((((unsigned long)(s [0] & 0x03)) << 24) |
+		     (((unsigned long)(s [1] & 0x3F)) << 18) |
+		     (((unsigned long)(s [2] & 0x3F)) << 12) |
+		     (((unsigned long)(s [3] & 0x3F)) << 6) |
+		      ((unsigned long)(s [4] & 0x3F))));
+
+	return newIntObj (((((unsigned long)(s [0] & 0x03)) << 30) |
+	     (((unsigned long)(s [1] & 0x3F)) << 24) |
+	     (((unsigned long)(s [2] & 0x3F)) << 18) |
+	     (((unsigned long)(s [3] & 0x3F)) << 12) |
+	     (((unsigned long)(s [4] & 0x3F)) << 6) |
+	      ((unsigned long)(s [5] & 0x3F))));
+}
+
+_module __object__ *utf8_iter (REFPTR argv[])
+{
+	StringObj *s = argv [0].check_string ();
+	return new utf8_iterator ((unsigned char*) s->str, s->len);
+}
+
+/* Get the current position of a utf8_iterator, in bytes */
+
+_module __object__ *utf8_iter_getpos (REFPTR argv[])
+{
+	utf8_iterator *i = utf8_iterator.checkedcast (argv [0].o);
+	return newIntObj (i->s - i->st);
+}
+
+/* iterate and insert everything into a list */
+_module __object__ *utf8_list (REFPTR argv[])
+{
+	StringObj *s = argv [0].check_string ();
+	/* won't reference because we hope we don't have exceptions! */
+	ListObj *L = new ListObj ();
+	utf8_iterator U ((unsigned char*)s->str, s->len);
+	__object__ *o;
+
+	while ((o = U.getnext ()))
+		L->append (o);
+
+	return L;
+}
+
+/* given a string and and offset, return how many bytes correspond to `n`
+   utf-8 characters
+   The offset is bytes.  *not* utf glyphs.  */
+
+_module __object__ *utf8_n (REFPTR argv[])
+{
+	StringObj *s = argv [0].check_string ();
+	unsigned int offset = argv [1].check_int ()->i;
+	unsigned int n = argv [2].check_int ()->i;
+	const unsigned char *c = (unsigned char*) s->str;
+	unsigned int l = s->len;
+	unsigned int ul = 0, i;
+
+	if (offset >= l)
+		return IntObj_0;
+
+	for (i = offset; i < l && ul < n; i++, ul++)
+		if (c [i] >= 192)
+			i += utf8_length [c [i] - 192];
+
+	return newIntObj (i - offset);
+}
+
+/* is the utf len of a string more than "X"?
+   The offset is bytes.  *not* utf glyphs.  */
+
+#if 0
+_module __object__ *utf8_lenmore (REFPTR argv[])
+{
+	StringObj *s = argv [0].check_string ();
+	unsigned int offset = argv [1].check_int ()->i;
+	unsigned int N = argv [2].check_int ()->i;
+	const unsigned char *c = (unsigned char*) s->str;
+	unsigned int l = s->len;
+	unsigned int ul = 0, i;
+
+	for (i = offset; i < l; i++, ul++) {
+		if (ul >= N)
+			return &TrueObj;
+		if ((c [i] & 0x80) == 0) ;
+		else if ((c [i] & 0xe0) == 0xc0) ++i;
+		else if ((c [i] & 0xf0) == 0xe0) i += 2;
+		else if ((c [i] & 0xf8) == 0xf0) i += 3;
+		else if ((c [i] & 0xfc) == 0xf8) i += 4;
+		else if ((c [i] & 0xfc) == 0xfc) i += 5;
+	}
+
+	return &FalseObj;
+}
+#endif
+
+static bltinfunc funcs [] = {
+	{ "transcode",		SETARGC (2, 2), transcode },
+	{ "utf8_len",		SETARGC (1, 1), utf8_len },
+	{ "utf8_iter",		SETARGC (1, 1), utf8_iter },
+	{ "utf8_iter_getpos",	SETARGC (1, 1), utf8_iter_getpos },
+	{ "utf8_list",		SETARGC (1, 1), utf8_list },
+	{ "utf8_n",		SETARGC (3, 3), utf8_n },
+	{ "utf82int",		SETARGC (1, 1), utf82int },
+//	{ "utf8_lenmore",	SETARGC (3, 3), utf8_lenmore },
+	BENDITEM
+};
+
+slowcold __object__ *import__unicode ()
+{
+	return new ModuleObj BltinModule ("_unicode", funcs);
+}

@@ -1,0 +1,1190 @@
+##  BitTorrent Client
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from net import bencode
+from sha import digest as SHA
+from net import http, dns
+from geo import ip2country
+from math import sin, cos
+import os, misc, random, socket, thread, llong
+
+def quote (s)
+{
+	SAFE = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-'
+	q = ''
+	for (i in s)
+		if (i in SAFE) q += i
+		else q += '%%%02X' % ord (i)
+	return q
+}
+
+def Sum (l)
+{
+	s = Long (0)
+	for (i in l)
+		s += i
+	return s
+}
+
+def StrInt (x)
+	return x -> int ? str (x) : llong.tostringnum (x)
+
+# for obfuscated/encrypted connections
+from crypto.longs import PKCToLong, LongToPKC
+from binascii import unhexlify
+from crypto.cryptorand import xorstr, randstr
+from crypto import RC4
+
+def num2bytes (L)
+{
+	x = LongToPKC (L).hexlify ()
+	return unhexlify ("0"*(192 - len (x)) + x)
+}
+
+dh_prime = PKCToLong (unhexlify ("FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A63A36210000000000090563"))
+
+############
+
+beep = void
+
+# Do reverse ip -> hostname lookups
+REVLOOKUP = True
+
+# kilo bytes per second
+MAXUPLOAD = 32.0
+
+# keep making tracker requests as long as the download bitrate is below this value
+MIN_KBPS = 80
+
+#
+LEECH = False
+
+#
+PAUSED = False
+
+class Torrent
+{
+	method __init__ (file=None, dir=None, validate=False, info_only=False, logfile=None)
+	{
+		if (logfile) {
+			$logfile = open (logfile, "w")
+			def $log (x)
+				$logfile.writef (x + "\n")
+		} else $log = void
+
+		if (file)
+			metainfo = readfile (file)
+		else {
+			if (!dir.ew ('/')) dir += '/'
+			metainfo = readfile (dir + 'metainfo')
+		}
+
+		torrent = bencode.decode (metainfo)
+
+		$trackers = [torrent ["announce"]]
+		# Multi-tracker spec
+		if (announce_list = torrent.get ('announce-list'))
+			$trackers.extend (random.shuffle (
+				[x [0] for (x in announce_list) if (x [0].sw ("http"))]))
+
+		$info = info = torrent ['info']
+		$hashes = tuple (misc.strpart (info ['pieces'], 20))
+		$info_hash = SHA (bencode.encode (info))
+		if (!dir and !info_only) {
+			dir = $info_hash.hexlify () + '/'
+			try os.mkdir (dir)
+			open (dir + 'metainfo', 'w').write (metainfo)
+		}
+
+		$dir = dir
+		$piece_length = info ['piece length']
+		$numchunks = $piece_length / 16384
+		if ('files' in info)
+			$file_length = Sum ([i ['length'] for (i in info ['files'])])
+		else $file_length = info ['length']
+
+		$piece_number = int ($file_length / $piece_length)
+		$last_piece_length = int ($file_length % $piece_length)
+		try $piece_number = int ($piece_number)
+		try $last_piece_length = int ($last_piece_length)
+
+		if ($last_piece_length) $piece_number += 1
+		else $last_piece_length = 16384
+
+		have = []
+		if (dir)
+			for (x in $listdir (ew='.p')) {
+				ii = int (x.partition ('.')[0])
+				if (validate)	# Verify checksum of pieces?
+					if.continue (SHA ($readfile (x)) != $hashes [ii]) {
+						$debug ("BAD PIECE: [%i]!!! Removing!"% ii)
+						os.remove ($dir + x)
+					}
+				have.append (ii)
+			}
+		$have = set (have)
+		$want = set (range ($piece_number)) - $have
+
+		$peers =  {}
+		$blacklist = []
+		$got = 0
+		$gave = 0
+		$totout = 0
+		$kbps = 0
+		$pastbps = [0]
+		$kbpsavg = 0
+		$eta = "--:--:--"
+		dlsem = thread.sem ()
+		$dlsup, $dlsdown = dlsem.up, dlsem.down
+	}
+
+	method debug (x)
+	{
+		$log (x)
+		print x
+	}
+
+	# Thread that watches the bitrates
+	method bitrate ()
+		while (1) {
+			BS = 24
+			sleep (BS)
+			dbps = $got * 16.0 / BS
+			ppp = $numchunks
+			tt = $got ? ppp * len ($want) * BS / $got : -1
+			if (tt == -1)
+				$eta = "--"
+			else {
+				hh = tt / 3600
+				mm = (tt % 3600) / 60
+				ss = (tt % 3600) % 60
+				if (hh) $eta = mm < 6 ? "%ihour%s" %(hh, hh==1?"":"s")
+					        : "%ih %im" %(hh, mm)
+				else if (mm == 1)
+					$eta = "%i:%02i" %(mm, ss)
+				else if (mm) $eta = "%imins" %mm
+				else $eta = "%is" %ss
+			}
+			$got = 0
+			ubps = $gave * 16.0 / BS
+			$gave = 0
+			sys.stdout.flush ()
+			$pastbps<< $kbps
+			if (len ($pastbps) > 20)
+				$pastbps.pop (0)
+			$kbpsavg = sum ($pastbps) / len ($pastbps)
+			$kbps = dbps
+			$debug ("byterate: download %.2fk, upload %.2fk, eta %s"% (dbps, ubps, $eta))
+			$peer_stats ()
+		}
+
+	method listdir (sw=None, ew=None, sorted=False)
+	{
+		L = []
+		for (i in os.listdir ($dir)) {
+			if (sw and !i.sw (sw)) continue
+			if (ew and !i.ew (ew)) continue
+			L.append (i)
+		}
+		if (sorted)
+			L = misc.key_sort (L, def (x) ints (x.split ('.')[:-1]))
+		return L
+	}
+
+	method open (p, *x)
+		return open ($dir + p, *x)
+
+	method readfile (p)
+		return readfile ($dir + p)
+
+	# make the "bitfield" string from $have
+	method bitfield ()
+	{
+		N = $piece_number / 8 + int (bool ($piece_number % 8))
+		C = []
+		for (n in *N) {
+			I = 0
+			for (b in *8) {
+				i = n * 8 + b
+				if (i in $have)
+					I |= 128 >> b
+			}
+			C.append (chr (I))
+		}
+		return ''.join (C)
+	}
+
+	method begin_torrent_activity ($seed)
+	{
+		if (!@lockfile.get ($dir + "lock")) {
+			print "Torrent already in use"
+			exit ()
+		}
+
+		$stimer = thread.xlock (False)
+		thread.start_new ($run_stimer)
+
+		thread.start_new ($bitrate)
+		$key = SHA (str (random.random ())).hexlify () [:8]
+		# this should be the same everytime ?
+		$myid = "M4-4-0--" + SHA (str (random.random ())).hexlify () [:12]
+		$port = 6644 + random.randint (1, 100)
+		#$port = 6881 + random.randint (1, 8)
+
+		$server_soc = s = socket.Listen ($port, reusable=True)
+		thread.start_new ($runserver, s)
+
+		# 'lastreq' is a rough hint about downloads in progress. Items in lastreq
+		# have a lower probability to be requested.
+		$lastreq = []
+		sleep (0.2)
+		$getpeers (1)
+		tt = 20
+		while ($want or seed) {
+			sleep (tt)
+			if (tt < 160)
+				tt += 20
+			if ($kbps < MIN_KBPS and !PAUSED)
+				$getpeers (0)
+		}
+	}
+
+	# the stimer lock is released every "dt" seconds to have the desired MAXUPLOAD rate
+	method run_stimer ()
+	{
+		t = 1.0 / (MAXUPLOAD / 16.0)
+		while (1) {
+			sleep (t)
+			$stimer.release ()
+		}
+	}
+
+	method getpeers (first)
+	{
+		lh = len ($have)
+		if !($file_length -> int)
+			lh = Long (lh)
+		dldd = lh * $piece_length
+		for (announce in $trackers) {
+			if (reply = Request (announce, $info_hash, $myid, $port, $key, 0, dldd,
+				   $file_length - dldd, first ? "started" : None))
+				break
+		} else {
+			print "No working trackers!"
+			return
+		}
+				
+		try peers = reply ['peers']
+		except return
+
+		# found working tracker, dont bother the rest
+		if (len ($trackers) > 1)
+			$trackers = [announce]
+
+		if (peers -> str) {
+			P = []
+			for (p in misc.strpart (peers, 6)) {
+				p = [ord (x) for (x in p)]
+				ip = '.'.join (['%i'%x for (x in p [:4])])
+				port = (p [4] << 8) | p [5]
+				# (xxx: avoid connecting to self)
+				P.append ({'ip':ip, 'port':port})
+			}
+			peers = P
+		}
+
+		$debug ("peer list")
+		new = 0
+		for (p in peers [:28]) {
+			addr = p ['ip'], p ['port']
+			ip = p ['ip']
+			if ((ip, 0) in $peers or ip in $blacklist)
+				continue
+			$debug ("  " + str (ip) + ":" + str (addr [1]))
+			new += 1
+			$peers [(ip, 0)] = peerbot (self, addr)
+		}
+	}
+
+	method runserver (s)
+	{
+		$debug ("Bitserver launched at port: %i" %$port)
+		while (1) {
+			client, addr = s.accept ()
+			if.continue (len ($peers) > 110) {
+				# one reason for that is to avoid reaching the maximum open
+				# fds per proccess limit. It hasn't been measured but every
+				# client needs a couple of fds for sockets, open files, etc.
+				print "Max clients reached. Dropping client"
+				client.close ()
+			}
+			ip = addr [0]
+			if ((ip, 1) not in $peers and ip not in $blacklist)
+				$peers [(ip, 1)] = peerbot (self, addr, client)
+		}
+	}
+
+	# select a piece to be requested
+	method reserve (has, ip)
+	{
+		if !(s = list ($want & has))
+			return
+
+		# select 16 random candidate pieces
+		candies = []
+		for (None in *16) {
+			for (None in *4) {
+				# try to statistically avoid a recently requested piece
+				i = random.choice (s)
+				if (i not in $lastreq)
+					break
+			}
+			candies<< i
+		}
+
+		if (len ($want) > 10) {
+			# see how rare they are
+			cc = [0] * len (candies)
+			ips = set ([ip])
+			for (p in $peers.values ())
+				if (p.ip not in ips) {
+					ips.add (p.ip)
+					for (i in *len (candies))
+						if (candies [i] in p.has)
+							cc [i] += 1
+				}
+			# select the most rare one
+			mostrare = min (cc)
+			for (i, r in zip (candies, cc))
+				if (r == mostrare)
+					break
+		} else i = candies [0]
+
+		$lastreq.append (i)
+		ll = i < $piece_number - 1 ? $piece_length : $last_piece_length
+		w = []
+		o = 0
+		for (n in *($numchunks)) {
+			sz = 16384
+			if (sz + o > ll)
+				if ((sz = ll - o) <= 0)
+					break
+			w << (i, o, sz)
+			o += 16384
+		}
+		return w
+	}
+
+	# piece has been fetched
+	method got_one (peer, idx, piece)
+	{
+		$debug (SHA (piece).hexlify () + " " + $hashes [idx].hexlify ())
+		if (SHA (piece) == $hashes [idx]) {
+			beep ()
+			$have.add (idx)
+			$want.remove (idx)
+			try $lastreq.remove (idx)
+			$open ("%i.p" %idx, "w").write (piece)
+			for (v in $peers.values ())
+				if (v is not peer) {
+					if (idx not in v.has)
+						v.mention.append (idx)
+					if (idx == v.wid)
+						v.cancel = idx
+				}
+			return True
+		}
+		$debug ("BAD PIECE FROM:" + str (peer.ip))
+	}
+
+	method unreq (idx)
+		try $lastreq.remove (idx)
+
+	method dp ()
+	{
+		$got += 1
+		$dlsup ()
+	}
+
+	method up ()
+	{
+		$gave += 1
+		$totout += 1
+	}
+
+	method peer_stats ()
+	{
+		peers = []
+		nc = $numchunks
+		for (p in $peers.values ())
+			if (p.parts or p.ndld or p.nupld)
+				try peers<< ((p.ndld, p.nupld/nc, len (p.parts), p.hostname),
+					     p.hostname, p.ndld, p.nupld,
+					     len (p.parts), len (p.has), p.country, p.Encrypted)
+		peers.sort ().reverse ()
+		$debug (" down  up  chunks/%s peer has" %nc)
+		for (p in peers)
+			$debug (": %3i %3i {%3i} %s %s %i%% %s" %(p [2], p [3] / nc, p [4], p [6],
+				p [1], (p [5] * 100) / $piece_number, p [7] ? "*" : ""))
+	}
+
+	# watched from the UI
+	method progress_stats ()
+	{
+		bits = [False] * $piece_number
+		for (p in $peers.values ()) {
+			wid = p.wid
+			if (wid is not None) {
+				lp = len (p.parts)
+				v = bits [wid]
+				bits [wid] = v ? max (v, lp) : lp
+			}
+		}
+		for (i in list ($have))
+			bits [i] = True
+		return bits
+	}
+
+	method ackpause ()
+		for (p in $peers.values ())
+			p.iq.put ("*", 0)
+
+	# load part of piece for giving
+	method load_part (idx, offset, size)
+	{
+		f = $open ("%i.p" %idx)
+		f.seek (offset)
+		return f.read (size)
+	}
+
+	## * * * * * extract files * * * * * *
+
+	method extract (destdir, pattern=None)
+	{
+		try os.mkdir (destdir)
+		if (!destdir.ew ("/"))
+			destdir += "/"
+		have = ""
+		idx = 0
+		for (t in $info ["files"]) {
+			length = t ["length"]
+			skip = pattern and pattern not in "/".join (t ["path"])
+			if (!skip) {
+				ff = os.open_mkpath (destdir + "/".join (t ["path"]), "w")
+				print "writting:", "/".join (t ["path"])
+				write = ff.write
+			} else write = void
+			while (len (have) < length) {
+				misc.fprint (".")
+				if (have) {
+					write (have)
+					length = length - len (have)
+				}
+				have = $readfile ("%i.p" %idx)
+				idx += 1
+			}
+			length = int (length)
+			write (have [:length])
+			have = have [length:]
+			if (!skip)
+				ff.close ()
+		}
+	}
+}
+
+TYPES = {
+	0:'chocke',
+	1:'unchocke',
+	2:'interested',
+	3:'uninterested',
+	4:'have',
+	5:'bitfield',
+	6:'request',
+	7:'piece',
+	8:'cancel',
+	9:'dht'
+}
+
+RTYPES = {v:k for (k, v in TYPES.items ())}
+
+# make message
+def btmsg (tp, *a)
+{
+	tp = RTYPES [tp]
+
+	if (tp in (0,1,2,3)) pay=""
+	else if (tp == 4) pay = "%Mi" %a [0]
+	else if (tp == 5) pay = a [0]
+	else if (tp in (6,8)) pay = "%Mi%Mi%Mi" %a
+	else if (tp == 7) {
+		idx, off, data = a
+		pay = "%Mi%Mi" %(idx, off) + data
+	} else {
+		print "WHAAAAAAAAAAAAA??"
+	}
+
+	return "%Mi" %(1 + len (pay)) + chr (tp) + pay
+}
+
+def bei (s)
+	return ord32b (s [:4])
+
+def bitfield2set (bits)
+	return set ([i for (i in xrange (len (bits) * 8))
+			if (ord (bits [i >> 3]) & 128 >> (i & 7))])
+
+class BTError (Exception) { }
+
+# pipeline ahead
+WINDOW = 4
+
+class peerbot
+{
+	Encrypted = False
+	wid = None
+	parts = ()
+	cid = 0
+
+	method __init__ ($torrent, addr, s=None)
+	{
+		$peerid = $cid
+		$__class__.cid += 1
+		$ip, $port = addr
+		$hostname = $ip
+		$mention = []	# what to announce that we have
+		$wid = None	# requesting in progress
+		$cancel = None	# request to be cancelled
+		$has = set ()	# what this peer has
+		$ndld = $nupld = 0
+		$gq = thread.fifo ()
+		$sq = thread.fifo ()
+		$iq = thread.fifo ()
+		$th1 = thread.start_new ($sender)
+		thread.start_new ($runget, s)
+		$th2 = thread.start_new ($giver)
+	}
+
+	method sender ()
+		try while (p = $sq.get ()) 
+			$sock.send (p)
+
+	method send (*args)
+		$sq.put (btmsg (*args))
+	method sendhi (*args)
+		$sq.put_first (btmsg (*args))
+
+	method giver ()
+		try while (1) {
+			idx, offset, size = $gq.get ()
+			data = $torrent.load_part (idx, offset, size)
+			if (data) {
+				$torrent.up ()
+#				$debug ("giving part: %i.%i" %(idx, offset/16384))
+				$nupld += 1
+				$send ("piece", idx, offset, data)
+			}
+			# (tunable)
+			$torrent.stimer.acquire ()
+		} except (thread.Interrupt) ;
+
+	method runget (s=None)
+	{
+		try $run (s)
+		except (BTError) { }
+		except print sys.exc_info ()
+		del $torrent.peers [($ip, s ? 1 : 0)]
+		if ($wid is not None)
+			$torrent.unreq ($wid)
+		try thread.interrupt ($th1)
+		try thread.interrupt ($th2)
+		try $sock.close ()
+	}
+
+	method run (s=None)
+	{
+		pasv = s is not None
+		if (!pasv) {
+			sleep (0.1 + random.random () * 6)
+			##$debug ("connecting...")
+			try s = socket.Connect ($ip, $port, timeout=30)
+			except (socket.Timeout) {
+				$debug ("can't connect: timeout")
+				return
+			} except return
+		} else $debug ("connection accepte")
+		$sock = s
+
+		##$debug ("connected!")
+		i2c = True
+
+		$country = ip2country ($ip)
+
+		if (REVLOOKUP)
+			try {
+				hostname = dns.revlookup ($ip)
+				$debug ("hostname: " + hostname)
+				$hostname = hostname
+				i2c = False
+			}
+
+		if (i2c) try $hostname += " (%s)" %$country
+
+		try if ((rest = $handshake (s, pasv)) is None) return
+		except {
+			$debug ("handshake fail")
+			return
+		}
+		$debug ("HANDSHAKE OK:" + safestr ($ID))
+
+		if ($torrent.have)
+			$send ("bitfield", $torrent.bitfield ())
+
+		$send ("unchocke")
+		$has = have = set ()
+
+		# current pieces (for pipelining):
+		w4  = None	# parts that we don't have yet
+		w4r = None	# which parts have been requested
+		w4p = None	# which parts have not been requested
+
+		$wid = None
+		chocked = True
+		iamchocked = False
+		bad = 0
+		intr = True
+		thread.start_new ($bitsink, rest, s)
+		for (type, payload in $iq) {
+			if (type == "EOF")
+				break
+
+			# check pause state
+			if (type == "*") ;
+
+			if (PAUSED or LEECH) {
+				if (!iamchocked) {
+					$send ("chocke")
+					iamchocked = True
+				}
+			} else {
+				if (iamchocked) {
+					$send ("unchocke")
+					iamchocked = False
+				}
+			}
+
+			if (type != "have")
+				;##$debug ("Got type:" + type)
+
+			while ($mention)
+				$send ("have", $mention.pop ())
+
+			if (type in ("bitfield", "have")) {
+				if (type == "bitfield") {
+					$has = have = bitfield2set (payload)
+					$debug ("peer has %i%%" %
+						(100 * len ($has) / $torrent.piece_number))
+				} else {
+					have.add (bei (payload))
+					if (bei (payload) in $torrent.want)
+						;##$debug ("* * INTERESTING * *")
+				}
+				if (have & $torrent.want)
+					$send ("interested")
+			} else if (type == "chocke") {
+				# reset pipelines
+				w4r = []
+				if (w4)
+					w4p = list (w4)
+				chocked = True
+			} else if (type == "unchocke") {
+				chocked = False
+			} else if (type == "piece") {
+				idx, offs, data = bei (payload [:4]), bei (payload [4:8]), payload [8:]
+#				$debug ("gotpiece %i,%i" %(idx, offs/16384))
+				$torrent.dp ()
+				if (w4 and idx == w4 [0][0] and offs == w4 [0][1]) {
+					parts<< data
+					w4.pop (0)
+					try w4r.pop (0)
+					if !(w4) {
+						wid, $wid = $wid, None
+						$debug ("Complete piece fetched!")
+						if ($torrent.got_one (self, wid, "".join (parts))) {
+							$parts = parts = []
+							$ndld += 1
+						} else if.break ((bad += 1) > 5 or !$ndld) {
+							$torrent.blacklist<< $ip
+							$debug ("Blacklisted")
+						}
+					} else {
+						if ($wid == $cancel) {
+							$debug ("CANCELLED %i" %$wid)
+							$wid = $cancel = None
+							w4p = []
+							w4 = []
+						}
+					}
+				} else {
+					# unexpected part of piece can happen after chocke.
+					# other peer sends chocke while we've already sent out
+					# a couple of requests, then it unchockes and it may
+					# receive and process some of them...
+					# many of these are a sign that the host does too many
+					# chocke/unchockes. but this client can be improved too...
+					$debug ("unexpected part of piece!")
+					if.break ((bad += 0.1) > 5)
+						$debug ("too many unexpected parts. missynching")
+				}
+			} else if (type == "request") {
+				if (iamchocked)
+					continue
+				idx, offset, size = bei (payload), bei (payload [4:]), bei (payload [8:])
+				if.break ($gq.len () > 40)
+					$debug ("too many queued")
+				$gq.put ((idx, offset, size))
+			} else if (type == "cancel")
+				$gq.drop_last ()
+
+			if (!chocked) {
+				if (!w4) {
+					w4 = $torrent.reserve (have, $ip)
+					if (w4) {
+						intr = True
+						w4r = []
+						w4p = list (w4)
+						$parts = parts = []
+						$wid = w4 [0][0]
+					} else {
+						$wid = None
+						if (intr)
+							$debug ("nothing interesting for us")
+						intr = False
+					}
+				}
+				while (w4p and len (w4r) < WINDOW and w4p and !PAUSED) {
+#					$debug ("REQUEST PIECE %i (%i)" % (w4p[0][0],
+#							 len (parts) + len (w4r)))
+					$send ("interested")
+					$send ("request", w4p [0][0], w4p [0][1], w4p [0][2])
+					w4r.append (w4p.pop (0))
+				}
+			}
+		}
+	}
+
+	method handshake (sock, pasv)
+	{
+		# if we're initiating the connection, send greeting
+		if (!pasv) {
+			handshake = '\x13BitTorrent protocol' + '\0\0\0\0\0\0\0\0' +
+				    $torrent.info_hash + $torrent.myid
+			sock.send (handshake)
+			#$debug ("handshake sent")
+		}
+
+		# receive greeting
+		try t = sock.recv (timeout=60)
+		except (socket.Timeout) $error ("timeout")
+
+		if (!t) $error ("Connection closed")
+		if (!t.sw ('\x13BitTorrent protocol')) {
+			# Encrypted connection. Almost copied from BitTorrent/Connector.py
+			$debug ("attempting encrypted handshake")
+			try {
+				# Some times this fails. check it out...
+				PAD_MAX = 200
+				while (len (t) < 96)
+					if !(x = sock.recv ()) $error ("connection closed")
+					else t += x
+				dhstr = t [:96]
+				t = t [96:]
+				privkey = PKCToLong (randstr (20))
+				sock.send (num2bytes (pow (2, privkey, dh_prime)))
+				pub = PKCToLong (dhstr)
+				S = num2bytes (pow (pub, privkey, dh_prime))
+				streamid = SHA ("req1" + S)
+				while (1) {
+					if !(tt = sock.recv ())
+						$error ("Encryption handshake fail (0)")
+					t = t + tt
+					if (streamid in t)
+						break
+					if (len (t) >= 532)
+						$error ("Encryption handshake fail")
+				}
+				t = t.partition (streamid)[2]
+				while (len (t) < 34)
+					if !(x = sock.recv ()) $error ("connection closed")
+					else t += x
+				msg = t [:34]
+				t = t [34:]
+				streamid = xorstr (msg [:20], SHA ("req3" + S))
+				SKEY = $torrent.info_hash
+				decrypt = RC4.decryptor (SHA ("keyA" + S + SKEY))
+				decrypt (1024 * "x")
+				dd = decrypt (msg [20:34])
+				if (!dd.sw ("\0\0\0\0\0\0\0\0"))
+					$error ("Encryption handshake fail (rc4)")
+				if !(bei (dd [8:12]) & 2)
+					$error ("Encryption handshake fail (n1)")
+				t = decrypt (t)
+				t = t [ord16b (dd [12:14]) + 2:]
+				encrypt = RC4.encryptor (SHA ("keyB" + S + SKEY))
+				encrypt (1024 * "x")
+				sock.set_crypt (encrypt, decrypt)
+				padlen = 5
+				sock.send ("\0"*11 + "\x02\x00" + chr (padlen) + randstr (padlen))
+
+				while (len (t) < 20)
+					if !(x = sock.recv ()) $error ("connection closed")
+					else t += x
+
+				if (!t.sw ('\x13BitTorrent protocol'))
+					$error ("Encryption handshake fail (final)")
+			} except (BTError) {
+				raise
+			} except {
+				print "Encrypted FAILED:", sys.exc_info ()
+				$error ("Encryption handshake fail (exception)")
+			}
+			$debug ("Encrypted connection established")
+			$Encrypted = True
+		}
+
+		# if we're passive send the greeting now
+		if (pasv) {
+			handshake = '\x13BitTorrent protocol' + '\0\0\0\0\0\0\0\0' +
+				    $torrent.info_hash + $torrent.myid
+			sock.send (handshake)
+		}
+
+		while (len (t) < 68)
+			if !(x = sock.recv ()) $error ("connection closed")
+			else t += x
+		h, rest = t [:68], t [68:]
+		# extension bits
+		bits = h [20:28]
+		##print bits.hexlify ()
+		if (h [28:48] != $torrent.info_hash)
+			$error ("BAD INFO_HASH!")
+		$ID = h[48:]
+		if ($ID == $torrent.myid)
+			return None
+
+		return rest
+	}
+
+	# message receiver from socket
+	method bitsink (t, sock)
+	try {
+		x = "";
+		while (1) {
+			t += x
+			while (len (t) >= 4 and (len (t) - 4) >= bei (t)) {
+				i, t = bei (t), t [4:]
+				if (i < 0 or i > 16400)
+					$error ("junk")
+				if (i) {
+					try tp = TYPES [ord (t [0])]
+					except $debug ("Unimplemented TYPE: %i"%ord (t [0]))
+					else {
+						payload = t [1:i]
+						$iq.put (tp, payload)
+					}
+					t = t [i:]
+				}
+			}
+			try if !(x = sock.recv ())
+				return
+			except (socket.Timeout)
+				$error ("bitsink timeout")
+		}
+	} finally $iq.put ("EOF", 0)
+
+	method debug (x)
+		$torrent.debug ("peer [%s]: %s" %($hostname, x))
+
+	method error (*args)
+	{
+		for (i in args)
+			$debug (i)
+		raise BTError ()
+	}
+}
+
+def safestr (x)
+	return "".join ([32 < ord (x) < 128 ? x : "." for (x in x)])
+
+#*****************************************************************************
+# Tracker GET request
+#*****************************************************************************
+
+def Request (announce, info_hash, my_id, my_port, key, uploaded, downloaded, left, event=None)
+{
+	uploaded = 0
+	URL = ('%s?info_hash=%s&peer_id=%s&port=%i&key=%s'+
+	      '&uploaded=%s&downloaded=%s&left=%s&compact=1') %
+		(announce, quote (info_hash), quote (my_id),
+		my_port, key, StrInt (uploaded), StrInt (downloaded), StrInt (left))
+	if (event is not None)
+		URL += '&event='+event;
+
+	print URL;
+
+	SERVER, None, PATH = URL [7:].partition ('/');
+	SERVER, None, PORT = SERVER.partition (':');
+	if (PORT) PORT = int (PORT);
+	else PORT=80;
+
+	try {
+		s, h, b = http.http_get (SERVER, '/' + PATH, 
+				{ 'User-Agent':'BitTorrent/4.4.0' }, port=PORT, timeout=10)
+		return bencode.decode (b.read ());
+	}
+	print "Tracker request fail"
+}
+
+USAGE = "Usage:
+ torrent [-i][-s][-l][-g][-L logfile] <file.torrent>
+ torrent -x <file.torrent> <destination-dir>
+ torrent -xp <pattern> <file.torrent> <destination-dir>
+
+	<file.torrent> can be a torrent file or a <hash.directory> which
+	is created by this program to store the pieces.
+
+	-i	: print info on torrent file and exit
+	-l	: like info but also list files
+	-s	: seed. keep up the connection even if all the pieces are downloaded
+	-g	: start the graphical progress ui
+	-b	: beep every time a complete piece is fetched
+	-nr	: don't do reverse ip-to-hostname lookups
+	-L file	: save messages to logfile
+
+	-x	: extract files
+	-xp	: extract only files that contain the string <pattern>
+"
+
+if (__name__ == __main__)
+{
+	logfile = sys.argp.check_vswitch ("-L")
+	BEEP, info, seed, listfiles, x, xp, graph, norev =
+		sys.argp.check_switches ("-b", "-i", "-s", "-l", "-x", "-xp", "-g", "-nr")
+	if (norev)
+		REVLOOKUP = False
+
+	def beep ()
+		if (BEEP) {
+			sys.stdout.write ("\x07\n")
+			sys.stdout.flush ()
+		}
+
+	if (x or xp) {
+		pattern = xp ? sys.argp.pop_one_arg () : None
+		torfile, destdir = sys.argp.nargs (2)
+		tordir = None
+		if (os.path.isdir (torfile))
+			tordir, torfile = torfile, None
+		t = Torrent (torfile, tordir)
+		t.extract (destdir, pattern)
+		exit ()
+	}
+	torfile = sys.argp.filename_ex ()
+	tordir = None
+	if (os.path.isdir (torfile)) {
+		print "torrent directory:", torfile
+		tordir, torfile = torfile, None
+	} else print "opening:", torfile
+	t = Torrent (torfile, tordir, info_only=info, logfile=logfile)
+	print "valid torrent"
+	print " name:", t.info ["name"]
+	print " hash:", t.info_hash.hexlify ()
+	print " size:", misc.GMKnum (t.file_length), "bytes"
+	print " have:", len (t.have), "(%s bytes)" %misc.GMKnum (Long (t.piece_length) * len (t.have))
+	print " want:", len (t.want), "(%s bytes)" %misc.GMKnum (Long (t.piece_length) * len (t.want))
+	print " plen:", t.piece_length
+	print " trackers:", ", ".join (t.trackers)
+	if (info or listfiles) {
+		if (listfiles)
+			for (f in t.info ["files"])
+				print "/".join (f ["path"]), f ["length"]
+		exit ()
+	}
+
+	if (!graph)
+		t.begin_torrent_activity (seed)
+	else {
+		# -*-*-*-*-*-*-*- The UI -*-*-*-*-*-*-*-*-
+
+		import gui
+
+		class bitwidget (gui.widget)
+		{
+			method Init ($bits, $ppb, **kw)
+			{
+				$n = len (bits)
+				$stvals = bits.count (True), 0, "--:--:--", "0KB", 0, 0
+				w = kw ["w"] = $wm.width
+				$ps = 9
+				$ps = 7
+				$bpl = (w - 2) / $ps
+				kw ["h"] = 4 + $ps * (1 + $n / $bpl)
+				$widget_init (**kw)
+			}
+
+			method Draw ()
+			{
+				$fill_rect (0, 0, $w, $h, 0)
+				$draw_rect (0, 0, $w - 1, $h - 2, 0x223344)
+				$drawboxes ()
+				$drawstatus ()
+			}
+
+			method drawstatus ()
+			{
+				bc, kbps, eta, out, ap, kbpsavg = $stvals
+				status.setmsg ("%s (%.1f%%) |%i|  speed: %s  avg: %s  ETA: %s   out: %s" %
+						("%i/%i" %(bc, $n), bc * 100.0 / $n, ap,
+						 "%.2fkB/s" %kbps, "%.2fkB/s" % kbpsavg, eta, out))
+			}
+
+			method drawboxes (ch=True)
+				for (n, v in enumerate ($bits))
+					if (ch is True or n in ch) {
+						if (v -> int) {
+							if (v >= $ppb - 2) col = 0xffffff
+							else {
+								v = (255 * v) / $ppb
+								col = v/4 | (v/2<<8) | (v<<16)
+							}
+						} else col = v ? 0x5555ee : 0x223344
+						x = 1 + $ps * (n % $bpl)
+						y = 2 + $ps * (n / $bpl)
+						$fill_rect (x, y, $ps-1, $ps-1, col)
+					}
+
+			method watch (t)
+				while (1) {
+					bits = t.progress_stats ()
+					
+					ch = []
+					ap = 0
+					for (n, (ov, nv) in enumerate (zip ($bits, bits))) {
+						if (ov != nv) {
+							if (ov -> int and nv -> int) {
+								if (nv > ov)
+									$bits [n] = nv
+							} else $bits [n] = nv
+							ch<< n
+						}
+						if (nv -> int)
+							ap += 1
+					}
+					ds = False
+					if(ch) $wm.async_flush ($drawboxes, ch)
+					out = t.totout * 16
+					if (out > 1014) out = "%.1fMB" % (out / 1024.0)
+					else out = "%iKB" %(out)
+					stvals = bits.count (True), t.kbps, t.eta, out, ap, t.kbpsavg
+					if (stvals != $stvals) {
+						$stvals = stvals
+						$wm.async_flush ($drawstatus)
+					}
+					sleep (0.7)
+				}
+		}
+		class rotor (gui.widget)
+		{
+			P = 16
+			SZ = 19
+
+			method Init (t, **kw)
+			{
+				$A = 0
+				$ts = t.dlsdown
+				kw ["w"] = $SZ
+				kw ["h"] = $SZ
+				$R = $SZ / 2
+				$widget_init (**kw)
+				thread.start_new ($rotate)
+			}
+
+			method Draw ()
+			{
+				$draw_blank (0)
+				rad = (6.2831 * ($A % $P)) / $P
+				R = $R
+				x = int ((R-2) * cos (rad))
+				y = int ((R-2) * sin (rad))
+				$draw_line (R + x, R + y, R - x, R - y, 0x8899aa)
+			}
+
+			method rotate ()
+				while (1) {
+					$ts ()
+					$A += 1
+					$wm.async_flush ($Draw)
+					sleep (0.01)
+				}
+		}
+
+		def Pause (state)
+		{
+			global PAUSED
+			PAUSED = state
+			if (state)
+				Title.setmsg (title + " paused", col=0x555555)
+			else Title.setmsg (title, col=Title.A.color_txt)
+			t.ackpause ()
+		}
+
+		def Beep (state)
+		{
+			global BEEP
+			BEEP = state
+		}
+
+		title = t.info ["name"]
+		bits = t.progress_stats ()
+		thread.start_new (t.begin_torrent_activity, seed)
+		wm = gui.Wm (0, 100, "torrent: " + title, CaptureStdout="fb")
+		wm.avtheme ()
+		with (TLL = gui.vcontainer ()) {
+			Title = gui.status (msg=title, align="center", font=wm.OpenFont ("serif-b", 16))
+			bw = bitwidget (bits, t.numchunks)
+			with (gui.hcontainer ()) {
+				rotor (t)
+				status = gui.status (font=wm.OpenFont ("mono-b", 0),
+						     align="left", fg=0x99bb10)
+				gui.togglebutton ("beep", BEEP, onToggle=Beep)
+				gui.label (" ")
+				gui.togglebutton ("pause", False, onToggle=Pause)
+			}
+		}
+		wm.Resize (h = bw.h + Title.h + status.h)
+		thread.start_new (bw.watch, t)
+		wm.Start ()
+		# defrag rocked
+
+	}
+}
+
+# Todo:
+#  Use chocke/unchocke. It is really better to: give a full piece high speed and
+#	then chocke and give another full piece to a different peer, instead of
+#	needing 1 hour to give a full pieces to all.
+# Things that may increase bandwidth:
+#  Some slow peers may close the connection before we've managed to get a complete piece.
+#   identify those peers and use two getting chunks for the same piece from different ends
+#   and in case of bad piece, make them get everything else to test who's sending crap.
+#   (this is a MUST for torrents with very large pieces!)
+# The end-game situation can be improved.
+# Currently, chunks are kept in memory! and as a result this app uses a lot of memory
+# 50MB-200MB. Save in files...
+# For testing it may be a good idea to connect to self (two instances of same torrent)
+# Advanced: study network distance and allow higher upload rates for very near nodes.

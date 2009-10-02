@@ -1,0 +1,60 @@
+# Script to convert the Geolocation IP-2-Country database in CSV format
+# as provided by http://software77.net/geo-ip
+# to a file "geotab" in the compressed table format (which is:
+#	4 bytes:	ip address little endian
+#	2 bytes:	country code
+# meaning from the last ip address up to this one, assigned to country)
+# (can be made smaller by using deltas encoded in b127)
+
+__autosem__
+
+USAGE = "csv2tav <geolocation-db.csv>
+The csv file can be obtained from http://software77.net/geo-ip
+"
+
+lc = None
+i2 = 0
+
+def prad (x)
+{
+	B = "%MI"%x
+	return "%i.%i.%i.%i" %tuple (ords (list (B)))
+}
+
+F = open ("geotab", "w")
+w = F.write
+h = hex
+
+for (l in open (sys.argp.filename_ex ())) {
+	if (l [0] == "#")
+		continue
+	f = l.strip ().split (",")
+	ip1, ip2, None, None, country, None, None = f
+
+	i22 = i2
+	i1 = int (ip1 [1:-1])
+	if (i1 & 1)
+		i1 += 1
+	i2 = int (ip2 [1:-1])
+	if (i2 & 1)
+		i2 += 1
+	if (abs (i1 - i22) > 1) {
+		w ("%mI%s"% (i22, lc))
+		print lc, i22, prad (i22), h (i1-i22)
+		w ("%mI%s"% (i1, "**"))
+		print "**", i1, prad (i1), h (i2-i1)
+		lc = None
+
+	}
+
+	country = country [1:-1]
+	if (lc != country) {
+		if (lc) {
+			print lc, i1, prad (i1), h (i2-i1)
+			w ("%mI%s"% (i1, lc))
+		}
+		lc = country
+	}
+}
+F.close ()
+print "OK. table saved as `geotab`"

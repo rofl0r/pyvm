@@ -1,0 +1,37 @@
+syntax coloring for .pe files.
+
+vim
+===
+
+copy the file epl.vim to /usr/share/vimXX/syntax/
+
+Modify /usr/share/vimXX/filetype.vim according to this patch manually
+adding support for *.pe files to use epl.vim and for *.c+ files to use
+the C syntax coloring.
+
+========================================================================
+--- filetype.vim~	2008-09-17 09:21:55.000000000 +0300
++++ filetype.vim	2009-06-02 15:50:10.000000000 +0300
+@@ -296,7 +296,7 @@
+ au BufNewFile,BufRead /etc/blkid.tab,/etc/blkid.tab.old   setf xml
+ 
+ " C or lpc
+-au BufNewFile,BufRead *.c			call s:FTlpc()
++au BufNewFile,BufRead *.c,*.c+			call s:FTlpc()
+ 
+ func! s:FTlpc()
+   if exists("g:lpc_syntax_for_c")
+@@ -1473,6 +1473,9 @@
+ " Python
+ au BufNewFile,BufRead *.py,*.pyw		setf python
+ 
++" EPL
++au BufNewFile,BufRead *.pe			setf epl
++
+ " Quixote (Python-based web framework)
+ au BufNewFile,BufRead *.ptl			setf python
+========================================================================
+
+The file colors.vim can be installed to /usr/share/vimXX/colors/
+for a good colorscheme for .pe files. Then use some command to make
+vim use this colorscheme with .pe files.

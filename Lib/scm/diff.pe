@@ -1,0 +1,699 @@
+##  diff - patch - merge, source code control utilities
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+## diff = unified diff
+
+from os import system
+from misc import tmpfile
+
+# This module can just invoke the external "diff" command on temporary
+# files and read the output.
+
+# The *core* of this stuff is the Longest Common Subsequence problem.
+
+# There is also a custom implementation of diff.
+# Our diff is based on heuristics that are based on the heuristic that
+# diff is applied on files edited by intelligent humans and are not random data.
+#
+# In this case, given a difference, we want to find which is the _original_
+# and which is the _modification_.
+# The heuristics work *most* of the time.  In 80% of diffing the output is
+# the same as the standard GNU diff.  Even then, the heuristics produce
+# pretty good results.  In about only a 3% of times they are bad.
+#
+# There is another heuristic which tries to determine if our heuristics
+# above were badly mistaken.  This heuristic works in 99% of the times.
+# If a diff is considered mistaken, we try to fix it.
+# The fixing procedure works 70% of the times (and has some heuristics).
+#
+# The bottom line is that it's pretty good. There are some rare pathetical
+# cases but again there are rare cases where this diff produces much better
+# results than the standard diff.  So, there is no perfect diff.
+# Here are the results on diffstudy applied on the history of a big oss project:
+#
+#	14651 diffs studied (history of 947 files over 26437 commits)
+#	1228 diffs differ
+#	From them:
+#	 60 diffs differ big time
+#	 417 diffs are better!
+#	External diff 228958 insertions (+), 138877 deletions (-), patchlines 667668
+#	Custom   diff 230050 insertions (+), 139969 deletions (-), patchlines 668836
+#	0.17% bigger patches
+#	External diff time: 112.52 seconds
+#	Custom   diff time: 66.69 seconds
+#
+# Note that the timings for the external diff include the fork+exec overhead which is
+# significant.  Maybe we will include xdiff in pyvm and link to it.
+
+def lcs (l1, l2, time=0)
+{
+	i1 = i2 = 0;
+
+	# preparation. intern all lines.
+	S1 = set (l1);
+	S2 = set (l2);
+	SC = S1 | S2;
+	S2 = SC - (S1 - S2);
+	if (!time) {
+		SC = S2.key;
+		for (i in l2)
+			__SET_ITER__ (SC (i));
+	}
+
+	# preparation. count unique lines
+	D1 = {};
+	D2 = {};
+	d1inc = D1.count_inc;
+	d2inc = D2.count_inc;
+	for (i in l1)
+		d1inc (i);
+	for (i in l2)
+		d2inc (i);
+
+	d1dec = D1.count_dec;
+	d2dec = D2.count_dec;
+	# Go
+	L = [];
+	ll1 = len (l1);
+	ll2 = len (l2);
+	__prealloc__ (L, min (ll1, ll2));
+	while (i1 < ll1 and i2 < ll2) {
+		x1, x2 = l1 [i1], l2 [i2];
+		if.continue (x1 == x2) {
+			L.append (x1);
+			d1dec (x1);
+			d2dec (x2);
+			i1 += 1;
+			i2 += 1;
+		}
+		if (x2 not in D1) {
+			i2 += 1;
+			d2dec (x2);
+		} else if (x1 not in D2) {
+			i1 += 1;
+			d1dec (x1);
+		} else {
+			# We have two lines that differ and both exist below
+			# in the other file.
+			#
+			# Heuristics:
+			# If a line exists only once in both files, it's the ORIGINAL.
+			# If a line exists fewer times in the other file, it's a MODIFICATION.
+			# finally, the ORIGINAL is the longest line.
+			#
+			# This works well if we have removed some lines and added some
+			# new lines. It doesn't work well if we have rearranged/moved
+			# lines. But this case is fixed below.
+
+			d11 = D1 [x1];
+			d21 = D2 [x1];
+			d12 = D1 [x2];
+			d22 = D2 [x2];
+			if (1 == d11 == d21 == d12 == d22) a = len (x1) < len (x2) ? 0 : 2;
+			else if (d11 == d21 == 1) a = 2;
+			else if (d12 == d22 == 1) a = 0;
+			else if (d11 > d21) a = 0;
+			else if (d12 < d22) a = 2;
+			else a = len (x1) < len (x2) ? 0 : 2;
+
+			if (!a) {
+				i1 += 1;
+				d1dec (x1);
+			} else {
+				i2 += 1;
+				d2dec (x2);
+			}
+		}
+	}
+
+	# Is patch bad?
+	if (time < 4) {
+		LS = set (L);
+		if (len ((S1 - LS) & (S2 - LS)) >= 13)
+			L = fixdiff (l1, l2, L, time + 1);
+	}
+
+	return L;
+}
+
+# helper functions. used only in the bad patch fixup case, which 
+# is more rare.
+
+def fixdiff (l1, l2, L, time)
+{
+	# The diff is bad is there are many common
+	# lines in the lines removed and in the lines added.
+	# This means we had something like this:
+	#  Original:   text1 bigchunk text2 text3
+	#  Final:      text1 text2 bigchunk text3
+	#  We emited:  text1 -bigchunk text2 +bigchunk text3
+	#  We should:  text1 +text2 bigchunk -text2 text3
+
+	# find CDF. Lines that exist both in 'removed' and in 'added'.
+	CDF = set (dif (l1, L)) | set (dif (l2, L));
+
+	CH1 = bigest_moved_chunk (l1, L, CDF);
+	CH2 = bigest_moved_chunk (l2, L, CDF);
+	BC = bigest_common_chunk (CH1, CH2);
+
+	for (i in (1, 2, 3, 4)) {
+		if (len (BC) > 2) {
+			ss1 = findseq (l1, BC);
+			ss2 = findseq (l2, BC);
+			if (ss1 != -1 and ss2 != -1) {
+				# we have found a candidate 'bigchunk'.
+				# make it part of LCS and compute the
+				# LCSs above and below it.
+				lbc = len (BC);
+				L2 =   lcs (l1 [:ss1], l2 [:ss2], time)
+				     + BC
+				     + lcs (l1 [ss1+lbc:], l2 [ss2+lbc:], time);
+				if (len (L2) > len (L)) {
+					# produces a better LCS indeed!
+					#print "FIXEN";
+					return L2;
+				}
+			}
+		}
+		if (i == 1)
+			BC = bigest_common_chunk (CH1, (CH22 = bigest_moved_chunk (l2, L, CDF, [CH2])));
+		else if (i == 2)
+			BC = bigest_common_chunk ((CH11 = bigest_moved_chunk (l1, L, CDF, [CH1])), CH2);
+		else if (i == 3)
+			BC = bigest_common_chunk (CH11, CH22);
+	}
+
+	return L;
+}
+
+def dif (L, LCS)
+{
+	il = ilcs = 0;
+	ll = len (L);
+	llcs = len (LCS);
+	D = [];
+	while (il < ll and ilcs < llcs)
+		if (L [il] == LCS [ilcs]) {
+			il += 1;
+			ilcs += 1;
+		} else while (il < ll and L [il] != LCS [ilcs]) {
+			D.append (L [il]);
+			il += 1;
+		}
+	return D;
+}
+
+def bigest_moved_chunk (L, LCS, CDF, ignore=())
+{
+	il = ilcs = 0;
+	ll = len (L);
+	llcs = len (LCS);
+	MX = [];
+	CH = [];
+	while (il < ll and ilcs < llcs) {
+		if (L [il] != LCS [ilcs]) {
+			while (L [il] != LCS [ilcs]) {
+				il += 1;
+				if (L [il] in CDF) CH.append (L [il]);
+				else if (CH) {
+					if (len (CH) >= len (MX) and CH not in ignore)
+						MX = CH;
+					CH = [];
+				}
+			}
+			if (CH) {
+				if (len (CH) >= len (MX) and CH not in ignore)
+					MX = CH;
+				CH = [];
+			}
+		} else {
+			il += 1;
+			ilcs += 1;
+		}
+	}
+	return MX;
+}
+
+gen findall (L, e)
+{
+	p = 0;
+	try while (1) {
+		yield i = L.index (e, p);
+		p = i + 1;
+	}
+}
+
+def commons (L1, i1, L2, i2)
+{
+	i = i1;
+	while (i1 < len (L1) and i2 < len (L2) and L1 [i1] == L2 [i2]) {
+		i1 += 1;
+		i2 += 1;
+	}
+	return L1 [i:i1];
+}
+
+def bigest_common_chunk (L1, L2)
+{
+	if (len (L1) > len (L2)) L1, L2 = L2, L1;
+	i = 0;
+	MX = [];
+	while (i < len (L1) - 1) {
+		for (p in findall (L2, L1 [i])) {
+			m = commons (L1, i, L2, p);
+			if (len (m) > len (MX)) MX = m;
+		}
+		i += 1;
+	}
+	return MX;
+}
+
+def findseq (L, S)
+{
+	p = 0;
+	try while (1) {
+		i = L.index (S [0], p);
+		if (L [i:i+len (S)] == S)
+			return i;
+		p = i + 1;
+	}
+	return -1;
+}
+
+###
+### Hunks
+###
+### Hunks are the deltas and make up a "patch". Hunks can be obtained with
+### two ways:
+###	1. when we have the "original" and the "modified", by diffing.
+###	   this is the function `hunks_by_diff`
+###	2. by reading and parsing a patch.  the function `hunks_by_patch`
+###
+### Once we have the hunks we can:
+###	- generate a patch (a unified diff)
+###	- apply the hunks on the original to get the modified
+###	- revert from the modified to the original (or reverse a patch)
+###
+### Merging happens initially on the hunks level to produce a merged hunk.
+###
+### Note that different hunks can produce the same result when applied, iow
+### there are many representations for a patch, so comparing hunks is not
+### useful.
+
+class Lines
+{
+	method __init__ (data)
+	{
+		if ($binary = ("\0" in data))
+			return
+		$lines = data.split ("\n")
+		if ($nl = (data [-1] == "\n"))
+			$lines.pop ()
+	}
+}
+
+class Hunk
+{
+	# the end-line is *not* included.
+	# Therefore a hunk with $rmv=[1,1] and $add=["foo"]
+	# inserts "foo" at the second line and removes no lines.
+	NLo = NLm = False
+
+	method __init__ ($offset, $rmv, $add)
+		$end = offset + len (rmv)
+
+	method __str__ ()
+		return "Hunk %i\n[--%s]\n[++%s]" %($offset, "\n--".join ($rmv), "\n++".join ($add))
+}
+
+class Hunks
+{
+	# nl1 and nl2 mean if there is no newline at end of file
+	method __init__ ($hunks, nl1, nl2)
+		if ($hunks) {
+			if (nl1)
+				$hunks [-1].NLo = True
+			if (nl2)
+				$hunks [-1].NLm = True
+		}
+}
+
+PatchMarker = @re.re (r"@@ -(\d+)")
+
+def hunks_by_patch (diff)
+{
+	diff = diff.split ("\n")[:-1]
+	R = []
+	A = []
+	H = []
+	nonl = 0
+	for (l in diff [2:]) {
+		if.continue (l.sw ("@@"))
+			offset = int (PatchMarker (l)[1])
+		if (l [0] == " ") {
+			offset += 1
+			if (R or A) {
+				h = Hunk (offset - len (R) - 2, R, A)
+				H.append (h)
+##				print "A HUNK:", h
+				R = []
+				A = []
+			}
+		}
+		if (l [0] == "-") {
+			offset += 1
+			R.append (l [1:])
+		} else if (l [0] == "+") {
+			A.append (l [1:])
+		} else if (l == "\\ No newline at end of file")
+			nonl += 1
+	}
+	if (R or A) {
+		h = Hunk (offset - len (R) - 1, R, A)
+		H.append (h)
+	}
+
+	nlo = nlm = False
+	if (nonl) {
+		if (nonl == 2)
+			nlo = nlm = True
+		else {
+			nlm = diff [-1] == "\\ No newline at end of file"
+			nlo = !nlm
+		}
+	}
+
+	return Hunks (H, nlo, nlm)
+}
+
+def hunks_by_diff (original, modified)
+{
+	if (original == modified)
+		return Hunks ([], False, False)
+
+	if ("\0" in original or "\0" in modified)
+		return None
+
+	if (!original) {
+		ds = modified.split ("\n")
+		ds.pop ()
+		# xxx: newlines at eof
+		return Hunks ([Hunk (0, [], ds)], False, False)
+	}
+
+	D1 = Lines (original)
+	L1 = D1.lines
+
+	if (!modified)
+		return Hunks (Hunk (0, [D1.lines], []))
+
+	def mkhunk (offset, ll1, ll2)
+	{
+		while (ll1 and ll2 and ll1 [-1] == ll2 [-1]) {
+			ll1.pop ()
+			ll2.pop ()
+		}
+		if (ll1 or ll2)
+			return Hunk (offset, ll1, ll2)
+	}
+
+	# splitlines and check for newline at end of file (hack alert)
+	D2 = Lines (modified)
+	L2 = D2.lines
+
+	# Do the LCS
+	LCS = lcs (L1, L2)
+
+	i1 = i2 = ic = 0
+	n1, n2, nc = len (L1), len (L2), len (LCS)
+	H = []
+	while (i1 < n1 and i2 < n2 and ic < nc) {
+		x1, x2, xc = L1 [i1], L2 [i2], LCS [ic]
+		if.continue (x1 == x2 == xc) {
+			i1 += 1
+			i2 += 1
+			ic += 1
+		}
+
+		i10 = i1
+		if (x1 != xc) while (x1 != xc) {
+			i1 += 1
+			if (i1 == n1)
+				break
+			x1 = L1 [i1]
+		}
+		i20 = i2
+		if (x2 != xc) while (x2 != xc) {
+			i2 += 1
+			if (i2 == n2)
+				break
+			x2 = L2 [i2]
+		}
+		h = mkhunk (i10, L1 [i10:i1], L2 [i20:i2])
+		if (h) H.append (h)
+	}
+
+	# last lines. always differ
+	if (i1 < n1 or i2 < n2) {
+		h = mkhunk (i1, L1 [i1:n1], L2 [i2:n2])
+		if (h) H.append (h)
+	}
+
+	return Hunks (H, !D1.nl, !D2.nl)
+}
+
+def pydiff (original, modified, f1="", f2="")
+{
+	if (original == modified)
+		return "--- %s\n+++ %s\n" %(f1, f2)
+
+	if ("\0" in original or "\0" in modified)
+		return "Files %s and %s differ\n" %(f1, f2)
+
+	if (!original) {
+		# (xxx: handle newline)
+		ds = modified.split ("\n")
+		ds.pop ()
+		return "--- %s\n+++ %s\n@@ -0,0 +1,%i @@\n+" %(f1, f2, len (ds))
+				 + "\n+".join (ds) + "\n"
+	}
+
+	if (!modified) {
+		# (xxx: handle newline)
+		ds = original.split ("\n")
+		ds.pop ()
+		return "--- %s\n+++ %s\n@@ -1,%i +0,0 @@\n-" %(f1, f2, len (ds))
+				 + "\n-".join (ds) + "\n"
+	}
+
+	H = hunks_by_diff (original, modified)
+	return H.unidiff (original, f1, f2)
+}
+
+def pypatch (original, diff)
+{
+	H = hunks_by_patch (diff)
+	return H.apply (original)
+}
+
+method Hunks.unidiff (original_data, f1, f2)
+{
+	D1 = Lines (original_data)
+	L1 = D1.lines
+	CNUM = 3
+	s = []
+	s.append ("--- %s" %f1)
+	s.append ("+++ %s" %f2)
+	lastend = -1
+	lastmark = 0
+	ndiff = nadd = nrmv = 0
+	near = False
+
+	for (h in $hunks) {
+		if (lastend == -1) {
+			i = max (h.offset - CNUM, 0)
+			lastmark = len (s)
+			s.append (i + 1)
+		} else if (lastend + 2 * CNUM >= h.offset) {
+			i = lastend
+			near = True
+		} else {
+			i = lastend
+			lastend += CNUM
+			while (i < lastend) {
+				s.append (" " + L1 [i])
+				i += 1
+			}
+			nl = len (s) - lastmark - 1
+			s [lastmark] = "@@ -%i,%i +%i,%i @@" % (s [lastmark], nl - nadd,
+					s [lastmark] + ndiff, nl - nrmv)
+			ndiff += nadd - nrmv
+			nadd = nrmv = 0
+			i = max (h.offset - CNUM, 0)
+			lastmark = len (s)
+			s.append (i + 1)
+			near = False
+		}
+		while (i < h.offset) {
+			s.append (" " + L1 [i])
+			i += 1
+		}
+
+		### hunk optimization 
+		#
+		# suppose patch (assume 'c' is an empty line):
+		#	@ a -b c +d +c e @
+		# can be converted to:
+		#	@ a -b +c +d c @
+		# where by bringing the two chunks closer together
+		# we have to emit less trailing lines (but the number of -/+ is the same). 
+		# The following code attempts to do this, but maybe we can do even more!
+
+		if (near)
+			if (!h.rmv)
+				while (s [-1][0] == " " and h.add and s [-1][1:] == h.add [-1]) {
+					s.pop ()
+					h.add.insert (0, h.add.pop ())
+					h.offset -= 1
+					h.end -= 1
+				}
+			else.if if (!h.add)
+				while (s [-1][0] == " " and h.rmv and s [-1][1:] == h.rmv [-1]) {
+					s.pop ()
+					h.rmv.insert (0, h.rmv.pop ())
+					h.offset -= 1
+					h.end -= 1
+				}
+
+		#
+		if (0)
+		if (h.rmv and s and s [-1] -> str and s [-1][0] == "+" and s [-1][1:] == h.rmv [-1]) {
+			s.pop ()
+			h.rmv.pop ()
+			h.end -= 1
+			nadd -= 1
+		}
+
+		for (l in h.rmv) {
+			s.append ("-" + l)
+			nrmv += 1
+		}
+		if (h.NLo)
+			s.append ("\\ No newline at end of file")
+		for (l in h.add) {
+			s.append ("+" + l)
+			nadd += 1
+		}
+		if (h.NLm)
+			s.append ("\\ No newline at end of file")
+		lastend = h.end
+	}
+	i = lastend
+	lastend = min (lastend + CNUM, len (L1))
+	while (i < lastend) {
+		s.append (" " + L1 [i])
+		i += 1
+	}
+	nl = len (s) - lastmark - 1
+	if (h.NLo) nl -= 1
+	if (h.NLm) nl -= 1
+	s [lastmark] = "@@ -%i,%i +%i,%i @@" % (s [lastmark], nl - nadd,
+					s [lastmark] + ndiff, nl - nrmv)
+
+	s.append ("")
+
+	return "\n".join (s)
+}
+
+method Hunks.apply (original)
+{
+	original = original.split ("\n")
+	last = $hunks [-1]
+	if (last.NLo != last.NLm)
+		if (last.NLo) original.append ("")
+		else original.pop ()
+
+	for (h in reversed ($hunks)) {
+		if (h.rmv)
+			if (original [h.offset:h.offset + len (h.rmv)] != h.rmv)
+				raise Error ("Patch doesn't apply!")
+		original [h.offset:h.offset + len (h.rmv)] = h.add
+	}
+	return "\n".join (original)
+}
+
+######################################################################
+
+# External diff
+
+def external_diff (original, modified, f1="", f2="")
+{
+	F1 = tmpfile ()
+	F2 = tmpfile ()
+	F3 = tmpfile ()
+	F1.write (original)
+	F2.write (modified)
+	system ("diff -u %s %s > %s" %(F1.fnm, F2.fnm, F3.fnm))
+	txt = F3.read ()
+	if (txt.sw ("Files"))
+		return txt.replace (F1.fnm, f1).replace (F2.fnm, f2)
+	# replace filenames
+	i = txt.find ("\n", txt.find ("\n") + 1) + 1
+	return "--- %s\n+++ %s\n" %(f1, f2) + txt [i:]
+}
+
+diff = external_diff
+
+def external_patch (orig, diff)
+{
+	f1 = tmpfile ();
+	f2 = tmpfile ();
+	f3 = tmpfile ();
+	f1.write (orig);
+	f2.write (diff);
+	system ("patch --quiet %s %s -o %s" %(f1.fnm, f2.fnm, f3.fnm));
+	return f3.read ();
+}
+
+##
+##
+
+def diffstat (d)
+{
+	p = m = 0
+	for (i in d.split ("\n"))
+		if (i.sw ("+")) p += 1
+		else if (i.sw ("-")) m += 1
+	return p, m
+}
+
+def TEST (original, modified)
+{
+	d1 = pydiff (original, modified, f1="a", f2="b")
+	d2 = external_diff (original, modified, f1="a", f2="b")
+	print pypatch (original, d1) == modified
+	print external_patch (original, d1) == modified
+	print external_patch (original, d2) == modified
+	print pypatch (original, d2) == modified
+	return ""
+}
+
+if (__name__ == __main__)
+{
+	from sys import argv
+	if (argv [1] == '-i')
+		f, a, b = pydiff, argv [2], argv [3]
+	else if (argv [1] == 'patch')
+		f, a, b = pypatch, argv [2], argv [3]
+	else if (argv [1] == 'test')
+		f, a, b = TEST, argv [2], argv [3]
+	else
+		f, a, b = external_diff, argv [1], argv [2]
+	print f (readfile (a), readfile (b)),
+}

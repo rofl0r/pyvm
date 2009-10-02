@@ -1,0 +1,62 @@
+__autosem__
+
+# long numbers in special representation. used mostly for cases
+# where we need to count things that exceed 32-bits (like the browser
+# download stats).
+#
+# The representation is for example the string:
+#	"10.300.785.009.320.000"
+# thousands separated by dots.
+
+def tostring (L)
+{
+	d = []
+	L = Long (L)
+	while (L) {
+		res = int (L % 1000)
+		L = L / 1000
+		if (L) d << "%03i" % res
+		else d << "%i" % res
+	}
+	return ".".join (d.reverse ())
+}
+
+def fromstring (s)
+{
+	L = Long (0)
+	for (x in s.split ("."))
+		L = L * 1000 + int (x)
+	return L
+}
+
+def tostringnum (L)
+	return tostring (L).replace (".", "")
+
+def fromstringnum (s)
+{
+	ll = []
+	while (s) {
+		ll<< int (s [-3:])
+		s = s [:-3]
+	}
+	ll.reverse ()
+	L = Long (0)
+	for (i in ll)
+		L = L * 1000 + i
+	return L
+}
+
+# parse a string and return either an int or a Long. unsigned
+def strtouil (s)
+{
+	while (s and s [0] == "0")
+		s = s [1:]
+	if (len (s) < 10)
+		return int (s)
+	if (len (s) > 10)
+		return fromstringnum (s)
+	if (s [0] > "2")
+		return fromstringnum (s)
+	x = int (s)
+	return x >= 0 ? x : fromstringnum (s)
+}

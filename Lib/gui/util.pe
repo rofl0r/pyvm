@@ -1,0 +1,23 @@
+from itertools import izip, count;
+
+def kwget (kw, v, dflt=None)
+	return kw.pop (v, dflt);
+
+def enum (x, n=0)
+	return izip (count (n), x);
+
+def sort2 (a, b)
+	return a < b ? (a, b) : (b, a);
+
+def intersection ((x0, y0, w0, h0), (x1, y1, w1, h1))
+{
+	xx0 = x0 + w0;
+	xx1 = x1 + w1;
+	yy0 = y0 + h0;
+	yy1 = y1 + h1;
+	if (xx0 < x1 or xx1 < x0 or yy0 < y1 or yy1 < y0)
+		return None;
+	x = max (x0, x1);
+	y = max (y0, y1);
+	return x, y, min (xx0, xx1) - x, min (yy0, yy1) - y;
+}

@@ -1,0 +1,94 @@
+__autosem__
+
+# Selector of type1 or trutype
+def Rasterizer (filename, data=None, **kw)
+{
+	if (!data)
+		data = readfile (filename)
+
+	if (data.sw ("\0\1\0\0") or data.sw ("OTTO")) {
+		from fonts.raster.truetype import TTF
+		return TTF (filename, data, **kw)
+	}
+
+	from fonts.raster.type1 import Type1
+	return Type1 (filename, data, **kw)
+}
+
+# weak reference interface of open rasterizers
+Faces = {}
+__weakrefs__.append (Faces)
+
+def open_face (filename, data, encoding=None)
+{
+	if (filename)
+		try return Faces [filename]
+	R = Rasterizer (filename, data, encoding=encoding)
+	if (filename)
+		Faces [filename] = R
+	return R
+}
+
+# provide the API required by the renderer
+from fonts.raster.rasterizer import MissingGlyph
+from math import ceil
+
+class BuiltinRasterizer
+{
+	bltin_descent = 1
+
+	method __init__ (ptsize, $filename, mem, encoding, gamma, $ffixed)
+	{
+		$R = open_face (filename, mem, encoding=encoding)
+		$ucs = $R.ucs
+
+		char2id = $R.char2id
+		advance_of = $R.advance_of
+
+		if (ffixed) {
+			wi = advance_of (char2id ("i"), 15)
+			ww = advance_of (char2id ("W"), 15)
+			if (wi != ww)
+				print "WARNING: ffixed on non monospace font"
+
+			ch = char2id ("w")
+			pt = 8.0
+			while (advance_of (ch, pt) / 64.0 <= ffixed)
+				pt += 0.1
+			ptsize = pt - 0.1
+		}
+
+		# Match freetype's Set_Char_Size
+		$ptsize = int (ptsize*64)/64.0
+
+		$width = $height = ptsize
+		$baseline = int ($R.descent (ptsize))
+		$ascent = int ($R.ascent (ptsize))
+		$lineskip = int (ceil ($R.height_at (ptsize)))
+
+		pt = $ptsize
+		def $dadvance (c)
+			return advance_of (char2id (c), pt)
+		def $iadvance (c)
+			return int (advance_of (char2id (c), pt))
+		$advance = $dadvance
+		if (ffixed) {
+			$width = ffixed
+			w = 64 * ffixed
+			def $advance (c)
+				return w
+			$uadvance = $advance
+		}
+	}
+
+	method compute_glyph (c)
+		try return $R.compute_glyph ($R.char2id (c), $ptsize, c==" ", $ffixed)
+		except (MissingGlyph) return
+
+	method unicode_glyph (c)
+		try return $R.compute_glyph ($R.utf2id (c), $ptsize, c==32, $ffixed)
+		except return
+
+	method uadvance (c)
+		return $R.advance_of ($R.utf2id (c), $ptsize)
+}

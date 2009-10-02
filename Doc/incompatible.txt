@@ -1,0 +1,97 @@
+Some important things that are different in pyvm
+================================================
+
+1) No operator overloading
+--------------------------
+
+the VM of pyvm does not support operator overloading besides the
+__{get|set|del}item__ and __{get|set}attr__ and __cmp__, __eq__
+and __hash__ methods.
+
+The rationale for that is that with operator overloading you can't
+do something that is not already possible with the standard syntax.
+For example, where one would say
+	rez = a1.add (a2)
+with operator overloading this may become
+	rez = a1 + a2
+when a1 and a2 are instances.
+
+There are cases where operator overloading can be useful, but there
+are also many cases where operator overloading can be abused, makes
+the code harder to understand and gives a false sense of perfection.
+
+Implementing operator overloading was left an open issue. After 70k
+lines of code doing almost everything, it seems that everything can
+be done nicely without it. After all, the core functionality can be
+implemented with good old functions and then write a specific new
+language (for example like matlab) that calls these functions, for
+doing fancy stuff.
+
+In the same line, pyvm does not do:
+
+- Subclassing of builtin objects. This is another form of operator
+  overloading.
+- Properties. Yet another way to overload the setattr/getattr
+  operators.
+- Metaclass magic. A way to overload instance creation operation.
+
+The absence of these features make the VM simpler and a bit faster.
+
+2) Nested functions
+-------------------
+
+Nested functions are different with regard to the way they use
+variables from the outer scope.  In pyvm the value of the outer
+variables is used as a constant with the value it had at the time
+of the function definition.  For example:
+
+	def func ():
+		L = []
+		for i in [1,2,3]:
+			def f ():
+				print i
+			L.append (f)
+		for ff in L:
+			ff ()
+	func ()
+
+The above program, when executed from python will print
+	3,3,3
+while with pyvm it will print
+	1,2,3
+
+A consequence of this is that two nested functions cannot
+call each other because the name of a nested function is
+also a local variable and one of the two will have to be
+defined after the other. Generally, too complex cases are
+a sign that one should use a class instead.
+
+
+3) int to long
+--------------
+
+pyvm does not do automatic int to Long conversions.  pyvm's integers
+are normal 32-bit signed integers with the standard wrap on overflow
+rules.
+
+Generally, the rationale is that because pyvm is not a general purpose
+language like python, and it has very specific uses by the code
+implemented in the toolchain, we know when we'll need Longs. And
+the cases are indeed few (actually only asymetric cryptography and
+bittorrent file lengths). On the other hand, the C wrapping semantics
+are also useful a lot of times.
+
+
+4) Reading files
+----------------
+
+Reading files is more special. If a file is a normal file, completely
+saved and closed, then we can use the standard python function open().read()
+or the builtin readfile() which reads the entire file and is a bit faster.
+Generally, we prefer to read entire files, do what we have to do and close
+them asap (with modern computers with GBs of memory, this is possible).
+These functions prefer to mmap() the file if small.
+
+For special files, like FIFOs, and reading incrementally (like tail -f),
+we use the os.openfd() function which returns an integer file descriptor,
+os.read(fd,size) and then explicitly close the fd with os.close (fd).

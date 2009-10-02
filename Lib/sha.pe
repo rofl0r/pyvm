@@ -1,0 +1,109 @@
+##  SHA module
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+import DLL
+
+namespace C
+{
+	# cases:
+	#  1) C version of SHA
+	#  2) x86 optimized assembly
+	#   2a) linked with pelf object file
+	#   2b) linked as a shared library
+	sha = None
+
+	# Note: if you want to switch mode (from/to asm to/from plain C),
+	# you have to "touch" the file sha.c in order to recompile and
+	# use the new libs.
+	if (DLL.ARCH_586 ()) {
+		try {
+			# pelf relocatables. (this mess should be fixed in DLL.py)
+			asm = DLL.MakeLib ("asm/sha-x86", "", pelf=1)[1]
+			sha = DLL.Clib ("sha", "-DASM_SHA -O3 -Wall", pelf=1, syms=asm.D)
+			if (__name__ == __main__)
+				print "assembly SHA, pelf linked"
+		} except try {
+			HL = HOME + "Lib/Clibs/asm/sha-x86.s -DASM_SHA"
+			sha = DLL.Clib ("sha", HL + " -O3 -Wall", pelf=0)
+			if (__name__ == __main__)
+				print "assembly SHA, shared library"
+		}
+	}
+
+	if (!sha) {
+		if (__name__ == __main__)
+			print "slower SHA"
+		sha = DLL.Clib ("sha", "-O3 -Wall", pelf="try")
+	}
+
+	init = sha ["sha_init"]
+	update = sha ["sha_update"]
+	final = sha ["sha_final"]
+	SHA = sha ["SHA"]
+	SIZEOF_CTX = sha ["sizeof_sha"]
+	del sha
+}
+
+def digest (txt)
+{
+	digest = _buffer (20)
+	C.SHA (txt, len (txt), digest)
+	return digest
+}
+
+def hexdigest (txt) return digest (txt).hexlify ()
+
+class new
+{
+	method __init__ (txt=None)
+	{
+		$ctx = _buffer (C.SIZEOF_CTX)
+		C.init ($ctx)
+		if (txt is not None)
+			C.update ($ctx, txt, len (txt))
+	}
+
+	method update (txt)
+		C.update ($ctx, txt, len (txt))
+
+	method digest ()
+	{
+		digest = _buffer (20)
+		C.final (digest, $ctx)
+		return digest
+	}
+
+	method hexdigest ()
+		return $digest ().hexlify ()
+}
+
+USAGE = """pyvm sha [file]
+Print the SHA1 digest of file. Without arguments, verify correctly working SHA and time it"""
+
+if (__name__ == "__main__")
+{
+	if (sys.argv [1:]) {
+		print digest (readfile (sys.argp.filename_ex ())).hexlify ()
+		exit ()
+	}
+
+	print digest ("abc").hexlify ().lower () == "a9993e364706816aba3e25717850c26c9cd0d89d"
+	data = 1000000 * "a"
+	print digest (data).hexlify ().lower () == "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
+	print data == 1000000 * "a"
+	d = new ()
+	d.update ("abcdbcdecdefdefgefghfghi")
+	d.update ("ghijhijkijkljklmklmnlmnomnopnopq")
+	print d.digest ().hexlify ().lower () == "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+	N = 20
+	import time
+	t = time.Timit ()
+	for (i in *N)
+		digest (data)
+	t.mbpsr (len (data) * N, 2)
+}

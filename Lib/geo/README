@@ -1,0 +1,14 @@
+Geolocation, IP address to country
+==================================
+
+The database is a compressed form of the FREE database found
+in http://software77.net/geo-ip
+
+Running, for example:
+
+	pyvm ip2country 62.1.246.2
+
+should print:
+
+	GR
+

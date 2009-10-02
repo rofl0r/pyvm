@@ -1,0 +1,67 @@
+__autosem__
+
+USAGE = """usage: transcode <input-encoding> <output-encoding> <input-file> <output-file>
+       ucat <input-encoding> <input-file>
+
+Convert some text between UTF-8 and iso-8859-x encodings.
+One of <input-encoding> or <output-encoding> must be "utf-8".
+The other encoding must be "8859-x".
+
+The conversion from utf-8 to 8859-x will report how many characters
+from the input file did not have a corresponding glyph in the output
+encoding.  If the <output-file> is "." the resulting text will not
+be saved.
+
+If the output file is "-", the transcoded text will be printed on
+stdout.
+
+In the `ucat` form, the output-encoding is set to "utf-8" and the output-file
+to stdout.
+
+Note that "transcode" is not enough for HTML text.  You will have
+to further edit the output file and modify the tag
+	<meta http-equiv="Content-Type: text/html; charset=<input-encoding>>
+to reflect the new encoding.
+"""
+
+
+if (sys.script_name == "ucat") {
+	e2, f2 = "utf-8", "-"
+	e1, f1 = sys.argp.nargs (2)
+	# todo, automatically detect input encoding by
+	# looking at Mime headers
+} else e1, e2, f1, f2 = sys.argp.nargs (4)
+
+isocp = ["8859-%i"%i for (i in *11)]
+isocp.append ("8859-15")
+
+if (e1 == "utf-8") {
+	if (e2 not in isocp)
+		sys.argp.help ()
+} else if (e1 not in isocp or e2 != "utf-8")
+	sys.argp.help ()
+
+try data = readfile (f1)
+except {
+	print "Can't open:", f1
+	sys.argp.help ()
+}
+
+if (e2 == "utf-8") {
+	T = @fonts.unicode.transcoder ("iso-"+e1)
+	newdata = T (data)
+	if (f2 != "-")
+		print "input size: %i bytes, output size: %i bytes, +%.1f%%" %(len (data), len (newdata),
+				(100.0 * (len (newdata) - len (data))) / len (data))
+} else {
+	ok, na, newdata = @fonts.unicode.r_transcode ("iso-" + e2, data)
+	if (na) print na, "characters failed!"
+	print "input size: %i bytes, output size: %i bytes, +%.1f%%" %(len (data), len (newdata),
+			(100.0 * (len (newdata) - len (data))) / len (data))
+	if (na > ok)
+		print "Too many characters failed! Maybe the input file is not %s?" %e2
+}
+
+if (f2 != ".")
+	if (f2 == "-") sys.stdout.write (newdata)
+	else open (f2, "w").write (newdata)

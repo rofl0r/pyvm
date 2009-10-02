@@ -1,0 +1,13 @@
+.*git
+*.pyc
+fsurl
+hypertext
+XXX
+sandbox
+TRICK
+Registry
+pygame
+# I think it's better not to track this
+bootstrap.bin
+warning.pe
+QUOTES

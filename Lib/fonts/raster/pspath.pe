@@ -1,0 +1,371 @@
+##  Postscript path rasterizer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+__bind__ = ["hypot", "curve2", "C", "curve3", "dist"]
+
+C = @DLL.Import ("raster", "-O3", pelf=True)
+
+## Curves. we have curves with 2 (a straight line), 3 and 4 control points.
+## all curves are drawn with continuity in the y-axis (no gaps or dupe y points).
+## The final point is always excluded.  The starting point is always included
+## unless it is also the last point.
+
+from math import hypot
+
+def dist (x0, y0, x1, y1)
+	return int (hypot (x0-x1, y0-y1))
+
+def curve4 (x0, y0, x1, y1, x2, y2, x3, y3)
+{
+	np = 2 * (dist (x0, y0, x1, y1) + dist (x1, y1, x2, y2) + dist (x2, y2, x3, y3))
+	rez = array ("i", 2 * np)
+	nn = C.curve4 (x0, y0, x1, y1, x2, y2, x3, y3, np, rez)
+	if (nn == -1) {
+		print "Insufficient space, pspath:", __LINE__
+		return [x0, y0]
+	}
+	return rez [:nn]
+}
+
+def curve3 (x0, y0, x1, y1, x2, y2)
+{
+	np = 2 * (dist (x0, y0, x1, y1) + dist (x1, y1, x2, y2))
+	rez = array ("i", 2 * np)
+	nn = C.curve3 (x0, y0, x1, y1, x2, y2, np, rez)
+	if (nn == -1) {
+		print "Insufficient space, pspath:", __LINE__
+		return [x0, y0]
+	}
+	return rez [:nn]
+}
+
+def curve2 (x0, y0, x1, y1)
+{
+	a = array ("i", 2 * abs (y0 - y1))
+	C.curve2 (x0, y0, x1, y1, a)
+	return a
+}
+
+##
+## Transformation Matrix
+##
+
+def CTM (l)
+{
+	if (!l) {
+		return def (x, y) (x, y)
+	}
+	a, b, c, d, e, f = l
+	t = _buffer (6 * 8);
+	C.init_ctm (t, a, b, c, d, e, f);
+	rz = array ("i", 2)
+	apply_ctm = C.apply_ctm
+	def f (x, y)
+	{
+		apply_ctm (t, x, y, rz)
+		return rz
+	}
+	return f
+}
+
+##
+## A subpath is a sequence of lines that make a -closed- shape.
+## Some call this a "contour".
+## The end of each line is the start of the next line.
+## Lines MUST NOT cross (i think that this _is_ the definition
+## of a contour, but if not, crossing lines will fsck the
+## raster).
+##
+
+class Subpath
+{
+	method __init__ ()
+	{
+		$points = []
+		$add_points = $points.append
+	}
+
+	method close ()
+	{
+		# join all the segments into one "array"
+		l = 0
+		for (p in $points)
+			l += len (p)
+		a = array ("i", l)
+		l = 0
+		for (p in $points) {
+			C.add_points (a, l, p, len (p))
+			l += len (p)
+		}
+		$points = a
+	}
+
+	# fill the subpath.  returns a list of
+	# horizontal lines (y, x, width)
+
+	method make_hlines ()
+	{
+		if (!$points) {
+			$xMax = $xMin = $yMax = $yMin = 0
+			return []
+		}
+
+		# remove corner points which are neiter start points
+		# nor stop points and just confuse the rasterizer.
+
+		p = $points
+		C.remove_corners (p, len (p)/2)
+
+		# now at each row we should have an even number of 'x' points.
+		# gather them. The collect_lines() C function will fill an
+		# array with (x, width) pairs for every y point. The array is
+		# limited to a maximum of 5 such (x,width) pairs per y value.
+		# These are enough to raster the glyph "m". Maybe other languages
+		# need more?
+
+		ret = array ("i", 4)
+		C.minmax (p, len (p)/2, ret)
+		minx, maxx, miny, maxy = ret
+
+		ny = 1 + maxy - miny
+
+		MAXPAIRS = 10	# if modify, change (0, 2, 4, 6, 8) below as well
+		aa = array ("i", ny*MAXPAIRS, 0xffff)
+		C.collect_lines (miny, ny, p, len (p)/2, aa, MAXPAIRS)
+
+		$ny = ny
+		$aa = aa
+
+		$xMax = maxx
+		$xMin = minx
+		$yMax = maxy
+		$yMin = miny
+	}
+
+	# or draw just the outline
+
+#	method draw_outline_onto (fb)
+#		for (x0, y0, x1, y1 in $lines ())
+#			fb.draw_line (x0, y0, x1, y1, 0)
+}
+
+
+def open_hlines (ny, miny, aa)
+{
+	MAXPAIRS = 10
+	hlines = []
+	for (yy in *ny) {
+		y = yy + miny
+		yy *= MAXPAIRS
+		for (i in (0, 2, 4, 6, 8)) {
+			i += yy
+			x0 = aa [i]
+			if (x0 == 0xffff)
+				break
+			hlines.append ((y, x0, aa [i+1]))
+		}
+	}
+	return hlines
+}
+
+##
+## A Path is a full glyph.  A path is made up of zero or more subpaths.
+## For example, in the letter "O" there are two subpaths, the inner circle
+## and the outer circle.
+##
+## When we rasterize the glyph, the areas of the subpaths are XORed.
+## (according to the spec clockwise shapes are filled and anti-clockw
+##  are unfilled. but the xor rule works)
+##
+
+class Path
+{
+	method __init__ (tm=None, $x=0, $y=0)
+	{
+		$ctm = CTM (tm)
+		$subpaths = []
+	}
+
+	method open_contour ()
+		$p = Subpath ()
+
+	method close_contour ()
+	{
+		$p.close ()
+		$subpaths.append ($p)
+	}
+
+	method _move ($x, $y);
+
+	method lineto (x, y)
+	{
+		x0, y0 = $ctm ($x, $y)
+		$x = x
+		$y = y
+		x, y = $ctm (x, y)
+		$p.add_points (curve2 (x0, y0, x, y))
+	}
+
+	method curveto (x1, y1, x2, y2, x3, y3)
+	{
+		x0, y0 = $ctm ($x, $y)
+		$x = x3
+		$y = y3
+		x1, y1 = $ctm (x1, y1)
+		x2, y2 = $ctm (x2, y2)
+		x3, y3 = $ctm (x3, y3)
+		$p.add_points (curve4 (x0, y0, x1, y1, x2, y2, x3, y3))
+	}
+
+	method conicto (x1, y1, x2, y2)
+	{
+		x0, y0 = $ctm ($x, $y)
+		$x = x2
+		$y = y2
+		x1, y1 = $ctm (x1, y1)
+		x2, y2 = $ctm (x2, y2)
+		$p.add_points (curve3 (x0, y0, x1, y1, x2, y2))
+	}
+
+	# XOR the subpaths and return horizontal lines of
+	# the final glyph
+
+	method draw_outlines (fb)
+		for (p in $subpaths)
+			p.draw_outline_onto (fb)
+
+	method fill (fb)
+	{
+		for (p in $subpaths)
+			p.make_hlines ()
+		try {
+			$yMin = min ([p.yMin for (p in $subpaths)])
+			$yMax = max ([p.yMax for (p in $subpaths)])
+			$xMin = min ([p.xMin for (p in $subpaths)])
+			$xMax = max ([p.xMax for (p in $subpaths)])
+		}
+
+
+		if (len ($subpaths) == 1) {
+			p = $subpaths [0]
+			C.put_hlines2 (fb.buffer, fb.w, fb.h, p.aa, p.ny, p.yMin, 10)
+			return
+		}
+
+		hlines = [open_hlines (p.ny, p.yMin, p.aa) for (p in $subpaths)]
+		L = []
+		for (y, l in gather_hlines (hlines))
+			for (x, w in compose_lines (l))
+				L<< (y, x, w)
+
+		ll = []
+		for (y, x, w in L) {
+			ll.append (y)
+			ll.append (x)
+			ll.append (w)
+		}
+		C.put_hlines (fb.buffer, fb.w, fb.h, array ('i', ll), len (ll)/3, 0)
+	}
+
+	yMin = yMax = 0
+	xMin = xMax = 0
+}
+
+class PsPath (**Path)
+{
+	method hsbw ($x, $wx)
+		$lbear = x
+
+	# postscript move commands (type1, cff). lines and cubic bezier curves
+	method rmoveto (dx, dy)
+	{
+		$x += dx
+		$y += dy
+		$start = $x, $y
+		$open_contour ()
+	}
+	method hmoveto (dx) return $rmoveto (dx, 0)
+	method vmoveto (dy) return $rmoveto (0, dy)
+	method rlineto (dx, dy) return $lineto ($x+dx, $y+dy)
+	method hlineto (dx) return $rlineto (dx, 0)
+	method vlineto (dy) return $rlineto (0, dy)
+
+	method rcurveto (dx1, dy1, dx2, dy2, dx3, dy3)
+		return $curveto ($x+dx1, $y+dy1, $x+dx2, $y+dy2, $x+dx3, $y+dy3)
+	method rrcurveto (dx1, dy1, dx2, dy2, dx3, dy3)
+		return $rcurveto (dx1, dy1, dx1+dx2, dy1+dy2, dx1+dx2+dx3, dy1+dy2+dy3)
+	method hvcurveto (dx1, dx2, dy2, dy3)
+		return $rrcurveto (dx1, 0, dx2, dy2, 0, dy3)
+	method vhcurveto (dy1, dx2, dy2, dx3)
+		return $rrcurveto (0, dy1, dx2, dy2, dx3, 0)
+	method closepath ()
+	{
+		xy = $x, $y
+		$lineto (*$start)
+		$x, $y = xy
+		$close_contour ()
+	}
+
+}
+
+# Given `n` lists of hlines ([(y,x,w)]), yield the
+# hlines of the same y.  (Maybe do in C)
+
+gen gather_hlines (H)
+{
+	if (!H) return ()
+	A = {}
+	gth = A.gather
+	for (h in H)
+		for (y, x, w in h)
+ 			gth (y, (x, w))
+
+	return A.iteritems ()
+}
+
+# Given some horizontal lines (on the same y line),
+# xor them and return the finally visible lines
+
+def compose_lines (L)
+{
+	if (len (L) == 1)
+		return L
+
+	if (len (L) == 2) {
+		(x0, w0), (x1, w1) = L
+		if (x0 + w0 < x1 or x1 + w1 < x0)
+			return L
+		if (x0 < x1 and x0 + w0 > x1 + w1) {
+			w1 += x1
+			return (x0, (x1 - x0)), (w1, (x0 + w0 - w1))
+		}
+	}
+
+	return compose_lines_expensive (L)
+}
+
+def compose_lines_expensive (L)
+{
+	vl = []
+	for (x, w in L) {
+		vl.append (x)
+		vl.append (x + w)
+	}
+	vl.sort ()
+
+	L = []
+	x = None
+	for (xx in vl)
+		if (x is None) x = xx
+		else {
+			L.append ((x, xx - x))
+			x = None
+		}
+	return L
+}

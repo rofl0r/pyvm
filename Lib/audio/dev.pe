@@ -1,0 +1,162 @@
+##  PCM audio device
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+import thread
+from os   import write, read
+from time import sleep
+
+C = @DLL.Import ("audio", "-Wall", pelf="try")
+
+# Only one program can grab the audio device.
+Lock = @lockfile.lockfile ("audio")
+
+class AudioDev
+{
+	method __init__ ()
+		$a = -1
+
+	# Assume format: signed 16 bit host endian.
+	# This is what ffmpeg gives and that is the
+	# format of audio CDs (little endian).
+
+	method grab ($rate, $channels)
+	{
+		if (!Lock.get ())
+			return False
+		$a = C.open_audio (0)
+		if ($a == -1) return False
+		bs = C.setup_dsp (rate, channels)
+		if (bs < 0) {
+			if (bs == -4)
+				print "Cannot set sample rate %i exatcly. will need resampling" %rate
+			else print "setup_dsp returned:", bs
+			return False
+		}
+		$buffsize = bs
+		$spb = 1.0 / (2 * rate * channels)	# seconds per byte
+		return True
+	}
+
+	method play (data)
+	if ($a != -1) {
+		if (len (data) > $buffsize) {
+			 $play (data [:$buffsize])
+			return $play (data [$buffsize:])
+		}
+
+		write ($a, data)
+	}
+
+	method release ()
+	{
+		Lock.leave ()
+		if ($a != -1) {
+			C.close_audio ()
+			$a = -1
+		}
+	}
+
+	__del__ = release
+
+	method play_sync ($data)
+	{
+		t0 = now ()
+		$play (data)
+		dt = now () - t0
+		st = len (data) * $spb
+		if (st > dt)
+			sleep (st - dt)
+		return len (data) * $spb
+	}
+
+	# recording
+
+	method rec ()
+	{
+		a = C.open_audio (1)
+		if (a == -1)
+			raise Error ("Can't open /dev/dsp for recording")
+		bs = C.setup_dsp (44100, 2)
+		if (bs < 0)
+			raise Error ("rec failed")
+		while (1) {
+			d = read (a, 44100)
+			if (!d) raise Error ("Read failed")
+			yield d
+		}
+		C.close_audio ()
+	}
+}
+
+def stereo2mono (s, d=None)
+{
+	if (d is None) {
+		C.stereo2mono (s, s, len (s) / 4)
+		return s [:len (s)/2]
+	}
+	C.stereo2mono (s, d, len (s) / 4)
+	return d
+}
+
+def stereo62mono (s)
+{
+	C.stereo62mono (s, s, len (s) / 12)
+	return s [:len (s)/6]
+}
+
+def set_volume (level)
+{
+	volume.set_pcm (level)
+	volume.set_volume (level)
+}
+
+def get_volume (dev=0)
+	return C.volume (-1, dev) & 255
+
+def dvol (dv)
+{
+	set_volume (get_volume () + dv)
+	return get_volume ()
+}
+
+namespace volume
+{
+	l = locals ()
+	for (n, dev in enumerate (("volume", "pcm", "mic", "igain"))) {
+		def setter (level, n=n)
+			C.volume (level, n)
+		def getter (n=n)
+			return C.volume (-1, n)
+		def modder (dlevel, n=n)
+		{
+			p = C.volume (-1, n)
+			return C.volume (p + dlevel, n)
+		}
+		#	return C.volume (C.volume (-1, n) + dlevel, n)
+		l ["set_" + dev] = setter
+		l ["get_" + dev] = getter
+		l ["mod_" + dev] = modder
+		# $$("set_"+dev) = setter
+	}
+}
+
+if (__name__ == __main__)
+{
+	# Play file with raw sound data S16SYS, 44100, 2channel
+	A = AudioDev ()
+	if (!A.grab (44100, 2))
+		print "Can't grab audio device! Some other application has it?"
+	else {
+		import os
+		f = os.openfd (sys.argv [1], 0, 0)
+		while (data = os.read (f, 1024))
+			A.play (data)
+		os.close (f)
+		A.release ()
+	}
+}

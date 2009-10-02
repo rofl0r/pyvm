@@ -1,0 +1,145 @@
+##  SHAENC cipher
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+MD5 = @md5.digest;
+SHA = @sha.digest;
+
+namespace parameters
+{
+	block_size = 20;
+	iv = None;
+	key_size = None;
+	header = 20;
+}
+
+#
+# SHA encryption.  Very secure but slower than the other methods.
+# Uses only MD5 and SHA, and no other black boxes.
+#
+# Read SHAENC.txt for more info.
+#
+
+strxor = @crypto.cryptorand.strxor;
+
+def XOR (s1, s2)
+{
+	s3 = _buffer (len (s1));
+	strxor (s1, s2, s3, len (s1));
+	return s3;
+}
+
+gen keychain (password)
+{
+	d = MD5 (password);
+	while (1)
+		yield d = (MD5 (d + password) + d) [:32];
+}
+
+gen xorpads (password)
+	for (k in keychain (password))
+		yield SHA (k);
+
+# arbitary pad generation from the password
+
+class xpgen
+{
+	method __init__ (password)
+	{
+		$g = xorpads (password).next;
+		$have = '';
+	}
+
+	method mkpad (n)
+	{
+		if (n <= len ($have)) {
+			r, $have = $have.Break (n);
+			return r;
+		}
+		l = len ($have);
+		s = [$have];
+		while (l < n) {
+			s.append ($g ());
+			l += 16;
+		}
+		r, $have = "".join (s).Break (n);
+		return r;
+	}
+}
+
+# encryptor/decryptor
+
+class shae
+{
+	method __init__ (password)
+	{
+		Kr = @crypto.cryptorand.randstr (20);
+		ph = SHA (password);
+		$h = XOR (ph, Kr);
+		$PAD = xpgen (Kr).mkpad;
+	}
+
+	method encrypt0 (data)
+		return XOR (data, $PAD (len (data)));
+
+	method encrypt (data)
+		return $h + ($encrypt = $encrypt0) (data);
+}
+
+class shad
+{
+	method __init__ (password)
+		$ph = SHA (password);
+
+	method decrypt0 (data)
+		return XOR (data, $PAD (len (data)));
+
+	method decrypt (data)
+	{
+		h, data = data [:20], data [20:];
+		if (len (h) < 20)
+			raise "Error, need at least 20 bytes to start deciphering";
+		Kr = XOR ($ph, h);
+		$PAD = xpgen (Kr).mkpad;
+		$decrypt = $decrypt0;
+		if (data) return $decrypt (data);
+		return "";
+	}
+}
+
+# as per API
+
+def encryptor (password)
+{
+	E = shae (password);
+	def encrypt (data)
+		return E.encrypt (data);
+	return encrypt;
+}
+
+def decryptor (password)
+{
+	D = shad (password);
+	def decrypt (data)
+		return D.decrypt (data);
+	return decrypt;
+}
+
+def encrypt (data, password)
+	return shae (password).encrypt (data);
+def decrypt (data, password)
+	return shad (password).decrypt (data);
+
+#
+if (__name__ == __main__)
+{
+	e = shae ('xxx');
+	d = shad ('xxx');
+	cipher = e.encrypt ("Hello world");
+	print cipher.hexlify ();
+	plain = d.decrypt (cipher);
+	print plain;
+}

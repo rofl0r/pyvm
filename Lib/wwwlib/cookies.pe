@@ -1,0 +1,131 @@
+__autosem__
+
+import serialize, thread, time
+
+THIRD_PARTY = True#False
+
+from wwwlib.wcache import WCACHE_HOME
+COOKIE_DB = WCACHE_HOME + "Cookies"
+cookiejar = serialize.load (COOKIE_DB, {})
+LOCK = thread.xlock ()
+DEBUG = 0
+
+# in an http response there can be multiple `set-cookie` lines.
+# according to the HTTP RFC, multiple lines can be joined if
+# they are separated by commas, but in the case of cookies that
+# is not possible because there can be unquoted commas in it!
+# Go figure.  Our HTTP client library joins multiple cookies
+# with newlines
+
+# Important and Tracker cookies.
+# There are two basic uses of cookies, storing a password of account information
+# and tracking net users.  Intra-site cookies (where a site foo.com sets a cookie
+# for domain .bar.com) are luckily not used since most browsers default to not
+# accepting those.
+# What happens in order to track users, instead, is cookies in secondary page
+# elements.  For example, a page on www.foo.com/index.html has an image or
+# external script at http://track.bar.com/image.gif which sets a cookie.
+# This is a "secondary" cookie and in 99% of cases these are used for tracking.
+#
+# At the moment, *only* primary cookies are saved.  Secondary cookies are
+# alive until browser shutdown.
+
+def add_cookies (site, date, cookies, primary)
+{
+	if (!primary and !THIRD_PARTY)
+		return
+	for (c in cookies.split ("\n"))
+		add_cookie (site, date, c)
+}
+
+def add_cookie (site, date, cookie)
+{
+	if (DEBUG)
+		print "----------GOT COOKIE:", site, cookie
+
+	d = {}
+	l = []
+	session = None
+	for (field in cookie.split (";")) {
+		if ("=" not in field)
+			continue
+		name, None, value = field.partition ("=")
+		name = name.strip ()
+		value = value ? value.strip () : ""
+		if (!session)
+			session = name
+		else name = name.lower ()
+		d [name] = value
+	}
+
+	# Cookies without "expires" or "max-age" live until the browser shutdown,
+	# simply not stored iow.
+
+	kill_after = -1
+	if ("max-age" in d)
+		try kill_after = int (d ["max-age"])
+	if ("expires" in d) {
+		try {
+			when = time.datestr_to_secs (d ["expires"]) - date
+			if (when < 0) when = 0
+			kill_after = max (kill_after, when)
+		}
+	}
+
+	d ["*kill_after"] = kill_after == -1 ? -1 : int (now () + kill_after)
+	d ["*created"] = int (now ())
+	d ["**"] = session
+
+	if ("domain" in d) {
+		domain = d ["domain"].lower ()
+		if (!("."+site).ew (domain)) {
+			# It seems that intra-site cookies are turned off for 90% of
+			# web browsers by default and sites cannot afford to make
+			# use of this great feature.
+			print 44 * "^", "INTERSITE COOKIE!"
+			return
+		}
+		site = domain
+	}
+
+	d ["*"] = cookie
+	with (LOCK) 
+		if (kill_after) {
+			if (site not in cookiejar)
+				cookiejar [site] = {}
+			cookiejar [site][session] = d
+		} else {
+			try del cookiejar [site][session]
+			try if (!cookiejar [site]) del cookiejar [site]
+		}
+}
+
+def get_cookies (url)
+{
+	host = url.host
+	C = []
+	R = []
+	try C.extend (cookiejar [host].values ())
+	try C.extend (cookiejar ["." + host].values ())
+
+	while (host.count (".") > 1) {
+		host = "." + host.partition (".")[2]
+		try C.extend (cookiejar [host].values ())
+		host = host [1:]
+	}
+
+	for (c in C) 
+		if ("path" not in c or url.path.sw (c ["path"])) try {
+			k = c ["**"]
+			R.append ("%s=%s" %(k, c [k]))
+		} except print sys.exc_info ()
+
+	if (!R) return ""
+
+	if (DEBUG or 0)
+		print "FOR HOST:", url.host, "WE HAVE:", ";".join (R)
+
+	return "; ".join (R)
+}
+
+# max-age=0 end session

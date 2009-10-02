@@ -1,0 +1,192 @@
+##  BMP and ICO Image
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+namespace BI __constant__
+{
+	RGB	= 0
+	RLE8	= 1
+	BITFIELDS = 3
+}
+
+if (1) C = @DLL.Import ("bmp", "-O3 -Wall", pelf=1)
+else C = @DLL.Import ("bmp", "-O3 -Wall -g", pelf=0)
+
+class bmp
+{
+	Width = None
+
+	method __init__ ($filename);
+
+	method size ()
+	{
+		if ($Width is None)
+			$do_read (True)
+		return $Width, $Height
+	}
+
+	method read ()
+		return $do_read ()
+
+	method do_read (size_only=False)
+	{
+		data = size_only ? open ($filename).read (64) : readfile ($filename)
+		p = @datastream.data_parser_le (data)
+		if (!p.match ("BM"))
+			raise Error ("Not a BMP")
+		p.skip (8)
+		offset = p.r32l ()
+		r = $read_bitmap (p, offset=offset, size_only=size_only)
+		p.kill ()
+		return r
+	}
+
+	method read_bitmap (stream, header=0, offset=0, size_only=False)
+	{
+		if (header)
+			stream.seek (header)
+
+		hlen = stream.r32 ()
+		if (hlen == 12) {
+			width = stream.r16 ()
+			height = stream.r16 ()
+			stream.read (2)
+			bits = stream.r16 ()
+			compression = BI.RGB
+			lutsize = 3
+			colors = 0
+		} else if (hlen in (40, 64, 108)) {
+			width = stream.r32 ()
+			height = stream.r32 ()
+			stream.read (2)
+			bits = stream.r16 ()
+			compression = stream.r32 ()
+			lutsize = 4
+			stream.r32 ()	# sizeimage
+			stream.r32 ()	# xpels
+			stream.r32 ()	# ypels
+			colors = stream.r32 ()
+			stream.r32 ()	# ClrImp
+		} else raise Error ("Unsupported BMP header length [%i]" %hlen)
+
+		# go figure!
+		if (self => ico)
+			height /= 2
+
+		$Width, $Height = width, height
+		if (size_only)
+			return
+
+		if (compression == BI.BITFIELDS) {
+			mask = stream.r32 (), stream.r32 (), stream.r32 ()
+			# check if working
+		} else if (compression not in (BI.RGB, BI.RLE8))
+			raise Error ("Unsupported BMP compression")
+
+		if (hlen != 40)
+			stream.read (hlen - 40)
+
+		if (bits <= 8) {
+			colors = colors or 1 << bits
+			if (lutsize == 3)
+				palette = p.read (colors * 3)
+			else {
+				pal = []; alf = []; read = stream.read;
+				for (None in *colors) {
+					pal << read (3)
+					alf << read (1)
+				}
+				palette = "".join (pal)
+			}
+			C.bgr2rgb_pal (palette, colors)
+		} else colors = colors or 256
+
+		rgb = _buffer (width * height * 3, 0)
+		if (offset)
+			stream.seek (offset)
+
+		combo = bits, compression
+
+		if (combo == (8, 0)) {
+			skip = C.pal8_to_rgb (palette, stream.data, stream.offset, rgb, width, height)
+		} else if (combo == (8, 1)) {
+			skip = C.rlepal8_to_rgb (palette, stream.data, stream.offset, rgb, width, height)
+			if (skip < 0)
+				raise Error ("Error in RLE %i" %skip)
+		} else if (bits == 32 and compression in (0, 3)) {
+			skip = C.bgr32_to_rgb (stream.data, stream.offset, rgb, width, height)
+		} else if (combo == (24, 0)) {
+			skip = C.bgr_to_rgb (stream.data, stream.offset, rgb, width, height)
+		} else if (combo == (16, 0)) {
+			skip = C.bgr16_to_rgb (stream.data, stream.offset, rgb, width, height)
+		} else if (combo == (4, 0)) {
+			skip = C.pal4_to_rgb (palette, stream.data, stream.offset, rgb, width, height)
+		} else if (combo == (1, 0)) {
+			skip = C.pal1_to_rgb (palette, stream.data, stream.offset, rgb, width, height)
+		} else raise Error ("BMP: Bad combo %i/%i" %(bits, compression))
+
+		alpha = None
+		if (self => ico) {
+			# in ICO images there is the transparency map with 1 bit per pixel
+			stream.skip (skip)
+			w = width / 8
+			if (width % 8) w += 1
+			if (w % 4) w += 4 - w%4
+			try tmap = stream.read (w*height)
+			except print "Can't use AND map"
+			else {
+				alpha = _buffer (width * height)
+				C.alphatab (tmap, width, height, alpha)
+				alpha = alpha, False
+			}
+		}
+
+		return rgb, width, height, alpha
+	}
+}
+
+class ico (**bmp)
+{
+	method do_read (size_only=False)
+	{
+		data = readfile ($filename)
+		p = @datastream.data_parser_le (data)
+		if (!p.match ("\0\0\1\0"))
+			raise Error ("Not an ICO")
+		n_images = p.r16l ()
+		I = []
+		for (None in *n_images) {
+			w = p.r8 ()
+			h = p.r8 ()
+			p.skip (10)
+			offset = p.r32l ()
+			I.append ((w*h, offset))
+		}
+
+		r = $read_bitmap (p, header=I [0][1], size_only=size_only)
+		p.kill ()
+		return r
+	}
+
+	method header (p)
+	{
+		if (!p.match ("\0\0\1\0"))
+			raise Error ("Not an ICO")
+		p.skip (14)
+		return p.r32l ()
+	}
+}
+
+if (__name__ == __main__)
+{
+	f = sys.argp.filename_ex ()
+	s = readfile (f)
+	if (s.sw ("\0\0\1\0"))
+		b = ico (f).read ()
+	else b = bmp (f).read ()
+}

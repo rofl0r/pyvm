@@ -1,0 +1,155 @@
+# crap little script to print stats about the pyvm project's status
+#
+# usage:
+#
+#	gitwc		: special stat report mode
+#
+#	gitwc past	: show last commits & blob count
+#
+#	gitwc <arg>	: word count where arg can be
+#		"wd"	: working dir
+#		"cache"	: git index cache
+#		"last"	: last commit
+#		<sha>	: said commit
+
+__autosem__
+
+from scm.git import repository
+from time import dateof
+from tokenize2 import token_count
+
+nostdin ()
+
+r = repository ()
+
+def statcommit (c)
+{
+	print c, dateof (c.date ())
+	t = r.open (c.tree)
+	f = t.lsfiles_r (r)
+	print "%i files" %len (f)
+
+	pes = pys = cs = 0
+	pel = pyl = cl = 0
+	pet = pyt = 0
+	for (fn, hh in f)
+		if (fn.ew (".pe")) {
+			pes += 1
+			data = r.open (hh).data
+			pel += data.count ("\n")
+			pet += token_count (data = data)
+		} else if (fn.ew (".py") and "Benchmarks" not in fn) {
+			pys += 1
+			data = r.open (hh).data
+			pyl += data.count ("\n")
+			pyt += token_count (data = data)
+		} else if (fn.ew (".c") or fn.ew (".h") or fn.ew (".c+")) {
+			cs += 1
+			data = r.open (hh).data
+			cl += data.count ("\n")
+		}
+
+	print "%i pe files\t %i lines %i tokens" %(pes, pel, pet)
+	print "%i py files\t %i lines %i tokens" %(pys, pyl, pyt)
+	print "%i C files\t %i lines" %(cs, cl)
+}
+
+gen iterfiles (arg)
+{
+	if (arg == "wd") {
+		for (fn, None in r.IDX.lsfiles ())
+			try yield fn, readfile (fn)
+		return
+	}
+
+	if (arg == "cache") {
+		f = r.IDX.lsfiles ()
+	} else {
+		if (arg == "last") c = r.open_commit (r.HEAD ())
+		else try c = r.open_commit (r.findsig (arg))
+		except {
+			print sys.exc_info ()[1]
+			exit ()
+		}
+		t = r.open (c.tree)
+		f = t.lsfiles_r (r)
+	}
+	for (fn, hh in f)
+		yield fn, r.open (hh).data
+}
+
+
+def wccommit (arg, a)
+{
+	L = []
+	for (fn, d in iterfiles (arg)) {
+		if (fn.ew (".pe")) {
+			 if ('e' not in a) continue
+		} else if (fn.ew (".py") and "Benchmarks" not in fn) {
+			 if ('y' not in a) continue
+		} else continue
+		ll = []
+		if ('l' in a) ll.append (d.count ("\n"))
+		if ('t' in a) ll.append (token_count (data = d))
+		if ('c' in a) ll.append (len (d))
+		L.append ((ll, fn))
+	}
+
+	ll = []
+	if ('l' in a) ll.append ("lines")
+	if ('t' in a) ll.append ("tokens")
+	if ('c' in a) ll.append ("bytes")
+	ll.append (" files" %len (L))
+	print "\t".join (ll)
+	print "------------------------"
+
+	for (t, fn in L.sort ())
+		print "\t".join ([str (x) for (x in t)]), "\t", fn
+
+	rl = range (len (L [0][0]))
+	print "-----------------------------------"
+	print "\t".join ([sum ([x [0][i] for (x in L)]) for (i in rl)]) + "\t %i files" %len (L)
+}
+
+if (not sys.argv [1:])
+{
+	c = r.open_commit ()
+	statcommit (c)
+	N = 0
+	while (c.parents) {
+		c = r.open (c.parents [0])
+		statcommit (c)
+		N += 1
+		if (N > 18)
+			break
+	}
+	exit ()
+}
+
+arg = sys.argv [1]
+
+if (arg == "past") {
+	NN = int (sys.argv [2]) ?? 30;
+	objs = set ()
+	L = list (r.History (r.open_commit ()))
+	O = []
+	for (d, c in reversed (L)) {
+		t = r.open (c.tree)
+		o = set ([x [1] for (x in t.lsfiles_r (r))])
+		O.append (len (o - objs))
+		objs = objs | o
+	}
+
+	O.reverse ()
+
+	print "%i blobs in the system" %len (objs)
+	for ((date, commit), o in zip (L, O) [:NN])
+		print commit.sig, dateof (date), "(+%i blobs)" %o
+
+	if (len (L) > NN)
+		print "... and more"
+	exit ()
+}
+
+action = sys.argv [2] ?? "yetcl"
+wccommit (arg, action)

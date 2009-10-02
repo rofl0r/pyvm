@@ -1,0 +1,295 @@
+##  Common Base Raster routines
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+__bind__ = ["MakeBitmap", "MakeBitmap2"]
+
+from rglyph import RenderedGlyph
+from graphics.framebuffer import FrameBuffer
+from math import floor, ceil
+
+C = @DLL.Import ("mkglyph", "-O3 -Wall", pelf=1)
+
+if (0) {
+	def make_gamma_table (gamma)
+		return "".join ([chr (int (256 * pow (i / 256.0, gamma))) for (i in *256)])
+
+	Gamma = make_gamma_table (0.92)
+	C.set_gamma (Gamma)
+}
+
+MakeBitmap = C.MakeGlyph
+MakeBitmapAH = C.MakeGlyphAH
+MakeBitmap2 = C.MakeGlyph2
+MakeBitmap3 = C.MakeGlyph3
+
+def NA ()
+	raise Error ("Not Subclassed!")
+
+class MissingGlyph { }
+
+## (abstract) Base class
+
+class BaseRasterizer
+{
+	# To be provided by subclasses:
+
+	# public
+	method glyph_names ()		NA ()
+	method advance_of (g, px)	NA ()
+	method height_at (px)		NA ()
+
+	# private
+	method Init (data)		NA ()
+	method exec_glyph (ctm, g)	NA ()		# --> returns Path
+	method char2id (c)		NA ()
+	method name2id (n)		NA ()
+	method utf2id (n)		NA ()
+	method px2adv (a, px, em)	NA ()
+
+	method info ()
+		print "No info"
+
+	# ----------------------------------------------------
+
+	method __init__ ($filename="", data=None, **kw)
+	{
+		if (!data) data = readfile (filename)
+
+		# Must set: $BBox, $FontName, $UnitsPerEM
+		$Init (data, **kw)
+	}
+
+	method descent (px)
+		return $BBox [1] * px / $UnitsPerEM
+
+	method ascent (px)
+		return $BBox [3] * px / $UnitsPerEM
+
+	MPP = None
+	# Raster a glyph.  Returns a grayscale framebuffer with attached metrics.
+	# The size of the framebuffer depends on the `px` and `MPP` parameters
+	# as well as the font's BBox definition.
+	# This function is suitable for `render_glyph` to create a bitmap from
+	# this framebuffer, or for debugging tools (fontlab, etc).
+	# For a more general font rasterizer, use custom functions.
+
+	method do_raster (g, axis=True, grid=False, px=None, MPP=16)
+	{
+		# MPP: Pixels per mega-pixel. MPP=16 means a mega pixel is 16x16 pixels.
+		# The effect of MPP is gray tones and anti-aliasing.  How much MPP is
+		# a function of the px size.
+		if ($MPP) MPP = $MPP
+		else MPP = 16#max (min (33 - int (px), 16), 6)
+
+		# Allocate a buffer as big as the bounding box. Actually each dimension
+		# is streched 150 more points because glyphs may attempt to draw outside
+		# it (todo: proper bounds checking in the path fill)
+		FBP = list ($BBox)
+		FBP [1] -= 150
+		FBP [0] -= 150
+		FBP [2] += 150
+		FBP [3] += 150
+		
+		# Scale everything to the desired px size
+		if (px) scale = (MPP * px) / $UnitsPerEM
+		else scale = 1.0
+
+		FBP = [int (i * scale) for (i in FBP)]
+
+		WW = FBP [2] - FBP [0]
+		HH = FBP [3] - FBP [1]
+
+		# Create path, make framebuffer, raster path to it
+		SHIFT_X = FBP [0]
+		shape = $exec_glyph ([scale, 0, 0, -scale, -SHIFT_X, FBP [3]], g)
+		F = FrameBuffer (WW, HH, 1)
+		F.clear (0xffffff)
+		shape.fill (F)
+
+		# Paint axis
+		if (axis) {
+			F.draw_line (0, FBP [3], WW, FBP [3], 0)
+			F.draw_line (-FBP [0], 0, -FBP [0], HH, 0)
+		}
+
+		advance = shape.wx * scale
+		x0 = -FBP [0]
+		y0 = FBP [3]
+		em = $UnitsPerEM * scale
+
+		yMin = shape.yMin
+		yMax = shape.yMax
+		xMin = shape.xMin
+		xMax = shape.xMax
+
+		# positioning metrics
+		p_advance = $advance_of (g, px, 1)
+
+		# XXX: in the renderer we have `(x >> 64) + lbear` because
+		# freetype provides lbear like that. If we add the decimal
+		# precision to `lbear` and modify freetype to provide lbear*64
+		# and have `(x + lbear)>>64` in the renderer, would the result
+		# be more "correct"?
+		#
+		# Some initial testing showed that this is sensitive and needs
+		# more tweaking. Note that such a change may be necessary to
+		# fix the slight wrong shifts that are produced by the auto-hinter
+		# which shifts the bitmaps for grid fitting. That shift can
+		# be compensated by subtracking it from left bearing...
+		#
+		# Anyway, for the moment this px_lbear is in pixels.
+
+		px_lbear = $px2adv (shape.lbear, px, $UnitsPerEM) / 64.0
+		px_lbear = int (floor (px_lbear))
+		mpp = float (MPP)
+
+		if (yMin == yMax)  {
+			rows = cols = 0
+		} else {
+			# calculate offsets in the framebuffer
+			# effective rows&columns of the final bitmap
+
+			yMin = ceil ((y0 - yMin) / mpp)
+			yMax = floor ((y0 - yMax) / mpp)
+			b_ymin = y0 - int (mpp * yMin)
+			rows = int (yMin - yMax)
+
+			# Total mess. I haven't managed to figure out the precise
+			# freetype algorithm. Normally, the xMin should be calculated
+			# from the minimum drawn point in the shape, floor'd and
+			# converted to pixels. However, that becomes totally broken.
+			# The thing below where we use the lbear value seems to produce
+			# much better results...
+			xm = px_lbear * MPP
+			while (xm > xMin - x0) {
+				xm -= MPP
+			}
+			xMin = xm
+			xMax = ceil ((xMax - x0) / mpp)
+			b_xmin = x0 + int (xMin)
+			b_xmax = int (mpp * xMax) + x0
+			cols = (b_xmax - b_xmin) / MPP
+		}
+
+		# Paint px grid?
+		if (grid and rows) {
+			b_ymax = y0 - int (em * yMax / px) 
+			yy = b_ymin
+			while (yy < b_ymax) {
+				xx = b_xmin
+				while (xx < b_xmax) {
+					F.draw_line (xx, b_ymax, xx, b_ymin, 0x88)
+					xx += MPP
+					xx = int (xx)
+				}
+				F.draw_line (b_xmin, yy, b_xmax, yy, 0x99)
+				yy += MPP
+				yy = int (yy)
+			}
+		}
+
+		# the useful metrics
+		F.cols = cols
+		F.rows = rows
+		F.x_start = b_xmin
+		F.y_start = b_ymin
+		F.advance = p_advance
+		F.px_lbear = px_lbear
+		F.py = -int (yMin)
+		F.MPP = MPP
+		F.em = em
+
+		return F
+	}
+
+	AUTOHINT = @sysconfig.GETCONF ("autohint")
+
+	# Produce anti-aliased bitmap for glyph `g` at the given `px`.
+	# The returned thing is a packed blob that contains the bitmap, metrics
+	# and other info, similar to what we get from the freetype backend and
+	# usable by the renderer.
+
+	method render_glyph (g, px, issp=0)
+	{
+		fb = $do_raster (g, px=px, axis=False)
+		cols, rows, MPP, x_start, y_start, advance, px_lbear, py =
+		fb.cols, fb.rows, fb.MPP, fb.x_start, fb.y_start, fb.advance, fb.px_lbear, fb.py
+
+		if (!rows)
+			return RenderedGlyph (g, "", advance, 0, 0, 0, 0, issp)
+
+		# Experimental auto-hinting.  we can give slight shifts to the mega-glyph
+		# offsets looking for the offset with the highest sum of squares.  This
+		# seems to work! but some more feedback is needed by experienced people.
+		# play with `fontlab` to see this.
+		# The bottomline is though, that
+		#	1) It doesn't cost that much (especially with smaller MPP)
+		#	   - The caller should do proper caching so there will be a small slowdown
+		#	     only the first time a glyph is rendered at a specific pt.
+		#	2) It does appear to be much better. At least since the sum of squares
+		#	   is higher it means that there is more light energy for the eye.
+		#	   - also, more whiteness makes the renderer faster (because it doesn't
+		#	     blend pixels that are 100% white).
+
+		if ($AUTOHINT and 1) {
+			# We have this in pure C
+			if (0) {	# very slow
+				vv = 0
+				#M2 = MPP / 2 - 2
+				M2 = max (MPP / 2 - 2, 1)
+				bitmap2 = _buffer (cols * rows)
+				for (x in xrange (-M2, M2)) {
+					vv2 = MakeBitmap2 (fb.buffer, fb.w, x_start+x,
+							   y_start, rows, cols, MPP, bitmap2)
+					if (vv2 > vv) {
+						xb = x
+						bitmap = bitmap2
+						bitmap2 = _buffer (cols * rows)
+						vv = vv2
+					}
+				}
+				for (y in xrange (-M2, M2)) if (y) {
+					vv2 = MakeBitmap2 (fb.buffer, fb.w, x_start + xb,
+							   y_start+y, rows, cols, MPP, bitmap2)
+					if (vv2 > vv) {
+						bitmap = bitmap2
+						bitmap2 = _buffer (cols * rows)
+						vv = vv2
+					}
+				}
+			} else {
+				if (0) {	# fast
+					bitmap = _buffer (cols * rows)
+					MakeBitmapAH (fb.buffer, fb.w, x_start,
+						      y_start, rows, cols, MPP, bitmap)
+				} else {	# faster
+					bitmap = _buffer (cols * rows)
+					MakeBitmap3 (fb.buffer, fb.w, x_start, y_start,
+							  rows, cols, MPP, bitmap)
+				}
+			}
+		} else {
+			bitmap = _buffer (cols * rows)
+			MakeBitmap (fb.buffer, fb.w, x_start, y_start, rows, cols, MPP, bitmap)
+		}
+
+		return RenderedGlyph (g, bitmap, advance, rows, cols, int (px_lbear), py, issp)
+	}
+
+	method draw_outline (glyph, fb, x, y, w, h)
+	{
+		shape = $exec_glyph ([scale, 0, 0, -scale, x - $BBox [0] * scale,
+				      h + $BBox [1] * scale - y], glyph)
+		scale = w / float ($BBox [2] - $BBox [0])
+		shape.draw_outlines (fb)
+	}
+
+	method compute_glyph (c, px, issp, ffixed=0)
+		return $render_glyph (c, px, issp).pack (ffixed)
+}

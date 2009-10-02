@@ -1,0 +1,6 @@
+This is the stripped down version of PCRE Regular Expression library
+from the exim mail client.
+
+This is ideal for embedding the PCRE library in other programs.
+
+Thanks to Philip Hazel!

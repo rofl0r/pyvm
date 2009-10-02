@@ -1,0 +1,267 @@
+##  pyc Disassembler
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This is an incomplete program. It has been used in its current form
+# to track some bugs in the compiler.  It can be used as a base for a
+# more powerful disassembler, GUI, etc.
+
+__autosem__
+
+from pyc import arch24 as arch
+import zlib
+from datastream import data_parser
+
+SHOWLINENO = False
+MAGIC24 = "%mI" %arch.MAGIC
+MAGICPYVM = "%mI" %arch.MAGIC_PYVM
+
+class Code
+{
+	method __init__ ($argcount, $stacksize, $flags, $code, $consts, $names, $varnames,
+			$freevars, $cellvars, $filename, $name, $firstlineno, $lnotab);
+
+	method __str__ ()
+		return "Code object: " + $name
+
+	method codes ()
+		return $consts ? [x for (x in $consts) if (x => Code)] : []
+
+	method findcode (c)
+		for (x in $codes ())
+			if (x.name == c)
+				return x
+
+	method nth_code (n)
+		for (nn, x in enumerate ($codes ()))
+			if (nn == n)
+				return x
+
+	method codename ()
+		return $name == "?" ? "Module" : $name
+}
+
+class Double
+{
+	method __init__ ($d);
+}
+
+# pyc marshal reader.  This code duplicates the file pyvm/marshal.c+
+
+class breader
+{
+	method __init__ ($version, data, offset)
+	{
+		$p = data_parser (data, offset)
+		$p.export (self, [["rbyte", "r_byte"], ["r8", "r_u8"], ["r32l", "r_long"],
+				  ["r16l", "r_short"], ["rn", ""]])
+		$strings = []
+	}
+
+	method r_string ()
+		return $rn ($r_long ())
+
+	method r_sstring ()
+		return $rn ($r_u8 ())
+
+	method r_tuple ()
+		return tuple ([$r_object () for (i in *$r_long ())])
+
+	method r_stuple ()
+		return tuple ([$r_object () for (i in *$r_u8 ())])
+
+	method r_builtin ()
+		return __builtins__ [$r_object ()]
+
+	method r_object ()
+	{
+		b = $r_byte ()
+		if (b == "c") {
+			argcount = $r_long ()
+			if ($version != 'pyvm')
+				$r_long () # n_locals
+			stacksize = $r_long ()
+			flags = $r_long ()
+			code = $r_object ()
+			consts = $r_object ()
+			names = $r_object ()
+			if ($version == 'pyvm')
+				if (names is not None) $SharedNames = names
+				else names = $SharedNames
+			varnames = $r_object ()
+			freevars = $r_object ()
+			cellvars = $r_object ()
+			filename = $r_object ()
+			name = $r_object ()
+			if (name -> tuple)
+				name = name [1]
+			firstlineno = $r_long ()
+			lnotab = $r_object ()
+			return Code (argcount, stacksize, flags, code, consts, names, varnames,
+					freevars, cellvars, filename, name, firstlineno, lnotab)
+		} else if (b == "s") {
+			return $r_string ()
+		} else if (b == chr (ord ("s") + 128)) {
+			return $r_sstring ()
+		} else if (b == "t") {
+			s = $r_string ()
+			$strings << s
+			return s
+		} else if (b == chr (ord ("t") + 128)) {
+			s = $r_sstring ()
+			$strings << s
+			return s
+		} else if (b == chr (ord ("(") + 128)) {
+			return $r_stuple ()
+		} else if (b == "(") {
+			return $r_tuple ()
+		} else if (b == "N") {
+			return None
+		} else if (b == "i") {
+			return $r_long ()
+		} else if (b == "R") {
+			return $strings [$r_long ()]
+		} else if (b == chr (ord ("R") + 128)) {
+			return $strings [$r_u8 ()]
+		} else if (b == "F") {
+			return False
+		} else if (b == "T") {
+			return True
+		} else if (b == "B") {
+			return $r_builtin ()
+		} else if (b == "z") {
+			s1 = $r_long ()
+			s2 = $r_long ()
+			return zlib.decompress ($rn (s1), bufsize=s2)
+		} else if (b == "g") {
+			d = $rn (8)
+			return Double (d)
+		} else if (b == "<") {
+			return set ([$r_object () for (i in *$r_long ())])
+		} else raise Error ("UNKNOWN OBJECT OF TYPE [%c (%i)]" %(b, ord (b)))
+	}
+
+}
+
+method Code.disassemble ()
+{
+	r = breader (0, $code, 0)
+
+	while (1) {
+		o ="%3i:" %r.p.offset
+		try c = ord (r.r_byte ())
+		except break
+		op = arch.opname [c]
+
+		if (c >= 90) {
+			a = r.r_short ()
+			e = ""
+			if (c in arch.hasname)
+				a = $names [a]
+			else if (op == "LOAD_CONST") {
+				if (a >= 30000) a = $names [-1][a - 30000]
+				else a = $consts [a]
+				a = repr (a) ?? a
+			} else if (op.ew ("_FAST")) {
+				a = $varnames [a]
+			} else if (op.sw ("JUMP_IF") or op == "JUMP_FORWARD")
+				e = "(to %i)"% (r.p.offset + a)
+			print o, op, a, e
+		} else print o, op
+	}
+}
+
+##
+## Simple interactive disassembler
+##
+
+if (__name__ == __main__)
+{
+	r = readfile (sys.argp.filename_ex ())
+	MAGIC = r [:4]
+	TIME = r [4:8]
+
+	if (MAGIC in MAGICPYVM)
+		version = 'pyvm'
+	else if (MAGIC == MAGIC24)
+		version = '2.4'
+	else raise Error ("Bad Magic [%s]" %MAGIC.hexlify ())
+
+	b = breader (version, r, 8)
+	Module = b.r_object ()
+	Current	= Module
+	Up = []
+
+	# .. we should be able to `cd` into a code object
+	# `ls` the code objects found in its consts and
+	# `d`isassemble any of them.  something like an fs navigator.
+	# XXX: use the readline utility tab completion
+	rl = @readline.command_prompt ([ ['l'], [r'(d)\s*(\S*)'], [r'(cd)\s+(\S+)'], [r'\.\.'] ])
+	def subcode (x)
+		try return Current.nth_code (int (x))
+		except return Current.findcode (x)
+
+	print ".pyc file disassembler. Press enter for help\n"
+	while (1) {
+		print "You are at:", Current.codename ()
+
+		path = ".".join ([c.codename () for (c in reversed (Up))])
+		if (path) path += "." 
+		path += Current.codename ()
+		cmd = rl.get ("%s > " %path)
+
+		if(cmd is None) break
+		if.continue (cmd is False)
+			print "Commands:
+l			: list current code object for contained code objects
+d			: disassemble current code object
+d <name-or-num>		: disassemble contained code object named <name>
+cd <name-or-num>	: enter contained code object
+cd ..			: upper code object
+..			: upper code object
+"
+
+		if (cmd == 'l') {
+			for (n, i in enumerate (Current.codes ()))
+				print "%2i: %s" %(n, i)
+		} else if (cmd [0] == 'd') {
+			if (c = (cmd [1] ? subcode (cmd [1]) : Current))
+				c.disassemble ()
+			else print "No such object"
+
+			if (SHOWLINENO) {
+				if (c) print c, c.firstlineno, c.lnotab
+				l0 = c.firstlineno
+				a0 = 0
+				xx = ords (c.lnotab)
+				print xx
+				vv = []
+				ll = []
+				for (v in xx) {
+					if (ll) {
+						l0 += v
+						ll <<  l0
+						vv << ll
+						ll = []
+					} else {
+						a0 += v
+						ll << a0
+					}
+				}
+				print vv
+			}
+		} else if (cmd [0] == 'cd') {
+			if (cmd [1] == '..')
+				try Current = Up.pop ()
+			else if (c = subcode (cmd [1])) {
+				Up.append (Current)
+				Current = c
+			} else print "No such object"
+		} else if (cmd == '..') {
+			try Current = Up.pop ()
+		}
+	}
+}

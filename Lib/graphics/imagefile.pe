@@ -1,0 +1,377 @@
+##  Image file to RGB decoders
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from rawimage import image
+
+# ImageFile points to an encoded/compressed image.
+# We can request it being converted to a raw RGB, query parameters
+# or convert to RGB while scaling at the same time.
+
+# xxx: There is no good support for:
+#	- multiple images/frames in one image file. usually for animated gif/png/ico
+#	- alpha channel is implemented with a separate buffer (a string or None, iow)
+#	  and passed to `rawimage`. Then, framebuffer.put_image may use this extra table
+#	  to do the blending (not fully implemented). Thus the image's depth may be
+#	  changed to 16bpp while keeping the separate alpha table. (optimizations possible)
+
+class Error (Exception);
+
+def jdiv (x, y)
+	return (x - 1) / y + 1
+
+	###################################################################
+
+namespace C
+{
+	from cutil import ppmdown, nice_resize, nice_resize_bg, xresize
+}
+
+def aspect_ratio_fit (havex, havey, wantx, wanty)
+{
+	r = (havey * wantx) / float (wanty * havex)
+	a1, a2 = (r < 1) ? (wantx, havex) : (wanty, havey)
+	return a2 / a1, r
+}
+
+### Base Image Class ###
+
+from time import Tickit
+
+class Image
+{
+	w = 0
+	Animated = False
+	colorkey = None
+	alphatab = None
+
+	# private
+
+	method alloc (w, h)
+	{
+		if (w <= 0 or h <= 0)
+			raise Error ("Bad size %ix%i" %(w, h))
+		if (w * h > 70000000)
+			raise Error ("Image too big (needs %iMB)" %(3 * w * h / (1024*1024)))
+		return _buffer (3 * w * h, 0)
+	}
+
+	method alloc16 (w, h)
+	{
+		if (w <= 0 or h <= 0)
+			raise Error ("Bad size %ix%i" %(w, h))
+		if (w * h > 70000000)
+			raise Error ("Image too big (needs %iMB)" %(2 * w * h / (1024*1024)))
+		return _buffer (2 * w * h, 0)
+	}
+
+	method init ();
+
+	method resized_fit_wh (w, h)
+	{
+		W, H = $size ()
+		s, r = aspect_ratio_fit (W, H, w, h)
+		if (s < 1)
+			return W, H
+
+		if (r < 1) h = int (h * r)
+		else w = int (w / r)
+		return w, h
+	}
+
+	method resize_fit (w, h, quality='medium')
+	{
+		W, H = $size ()
+		s, r = aspect_ratio_fit (W, H, w, h)
+		# fits
+		if (s < 1)
+			if (quality == "expand") quality = "low"
+			else return $read ()
+
+		# resize at decoding if possible (for example jpeg, and much faster)
+		data, W, H = $read_scaled (s)
+
+		if (W==w and h==H)
+			return data, W, H
+
+		if (r < 1) h = int (h * r)
+		else w = int (w / r)
+
+		thumb = _buffer (w * h * 3)
+
+		if (quality == "low")
+			C.xresize (data, W, H, thumb, w, h, 3)
+		else ($background ? C.nice_resize_bg : C.nice_resize) (data, W, H, thumb, w, h)
+
+		return thumb, w, h
+	}
+
+	method read_scaled (s)
+	{
+		# (jpeg decoder can scale while decoding. for other formats
+		#  we should implament a function half_rescale() at img.c)
+		return $read ()
+	}
+
+	# public
+
+	# `background` means that image operations such as decoding and resizing
+	# will try to release the GIL while in C code.
+
+	method __init__ ($fnm, $background=False)
+		$init ()
+
+	method size ()
+	{
+		if ($w) return $w, $h
+		w, h = $_size ()
+		if (min (w, h) <= 0)
+			raise Error ("Bad size %ix%i" %(w, h))
+		return $w, $h = w, h
+	}
+
+	method read_rgb (resize=None)
+	{
+		if (resize is None or resize == $size ())
+			return $read ()
+		return $resize_fit (*resize)
+	}
+
+	# at 24 bpp [default]
+	method read_image (resize=None)
+	{
+		data, w, h = $read_rgb (resize)
+		if (resize and $alphatab) {
+			print "Can't resize alphatab", resize, [$w, $h]
+			resize = None
+		}
+		return image (data, w, h, colorkey=$colorkey, alphatab=$alphatab)
+	}
+
+	method read_as_fb ()
+		return $read_image ().to_framebuffer ()
+
+	# to be overriden if it can be performed at decode time
+	method read_image_bpp (bpp, resize=None)
+		return $read_image (resize).convert_bpp (bpp)
+
+	method thumbnail (w, h)
+		return $resize_fit (w, h, 'low')
+}
+
+class PPMImage (Image)
+{
+	method _size ()
+	{
+		l = open ($fnm).next
+		l ()
+		do s = l ()
+		while (s [0] == '#' or s.isspace ())
+		return ints (s.split ())
+	}
+
+	method read ()
+	{
+		f = open ($fnm)
+		l = f.next
+		l ()
+		do s = l ()
+		while (s [0] == '#' or s.isspace ())
+
+		w, h = ints (s.split ())
+		maxval = int (l ()[:-1])
+		data = f.read ()
+		f.close ()
+
+		if (maxval == 65535) {
+			ndata = _buffer (len (data) / 2)
+			C.ppmdown (len (data), data, ndata)
+			data = ndata
+		} else if (maxval != 255)
+			raise Error ("Unsupported maxval in ppm [%i]"%maxval)
+
+		ll = 3 * w * h
+		if (len (data) > ll)
+			data = data [:ll]
+		else if (len (data) < ll)
+			data += '\0' * (ll - len (data))
+
+		return data, w, h
+	}
+}
+
+class JPEGImage (Image)
+{
+	mem = ""
+	jpeg = None
+
+	method init ()
+		if (!$jpeg) {
+			import jpeg
+			$__class__.jpeg = jpeg
+		}
+
+	# do a scale/2 in the jpeg decoder (faster decoding too)
+	method read_scaled (s)
+	{
+		if (s >= 2) {
+			s = s >= 8 ? 8 : s >= 4 ? 4 : 2
+			$mem = $mem or readfile ($fnm)
+			W, H = $size ()
+			W = jdiv (W, s)
+			H = jdiv (H, s)
+			data = $alloc (W, H)
+			#lq = quality == 'low' ? 1 : 0
+			lowquality = 0
+			$jpeg.jpeg2rgb ($mem, s, lowquality, data, background=$background)
+			$mem = ''
+			return data, W, H
+		}
+		return $read ()
+	}
+
+	method _size ()
+	{
+		$mem = $mem or readfile ($fnm)
+		return $jpeg.jpegsize ($mem)
+	}
+
+	method read ()
+	{
+		mem = readfile ($fnm)
+		w, h = $size ()
+		out = $alloc (w, h)
+		$jpeg.jpeg2rgb (mem, 1, 0, out)
+		return out, w, h
+	}
+
+	method read_image_bpp (bpp, resize=None)
+	{
+		if (resize)
+			return $read_image (resize).convert_bpp (bpp)
+
+		if (bpp == 2) try {
+			mem = readfile ($fnm)
+			w, h = $size ()
+			out = $alloc16 (w, h)
+			$jpeg.jpeg2rgb16 (mem, 1, 0, out)
+			return image (out, w, h, bpp)
+		}
+
+		return $read_image ().convert_bpp (bpp)
+	}
+}
+
+class GIFImage (Image)
+{
+	# xxxx: adapt to the interface of the PNG/BMP/ICO and make a baseclass
+	method init ()
+		$GIF = @graphics.gif.gif ($fnm)
+
+	method _size ()
+		return $GIF.swidth, $GIF.sheight
+
+	method read ()
+	{
+		None, None, w, h, data, $alphatab = $GIF.read ()
+		return data, w, h
+	}
+}
+
+class PNGImage (Image)
+{
+	# With the current implementation of png.pe, we read, decode and store
+	# the entire image at initialization. fix.
+
+	method init ()
+		$PNG = @graphics.png.png ($fnm)
+
+	method _size ()
+		return $PNG.size ()
+
+	method read ()
+	{
+		data, w, h, $alphatab = $PNG.read ()
+		return data, w, h
+	}
+}
+
+class BMPImage (Image)
+{
+	method init ()
+		$BMP = @graphics.bmp.bmp ($fnm)
+
+	method _size ()
+		return $BMP.size ()
+
+	method read ()
+	{
+		data, w, h, $alphatab = $BMP.read ()
+		return data, w, h
+	}
+}
+
+class ICOImage (Image)
+{
+	method init ()
+		$BMP = @graphics.bmp.ico ($fnm)
+
+	method _size ()
+		return $BMP.size ()
+
+	method read ()
+	{
+		data, w, h, $alphatab = $BMP.read ()
+		return data, w, h
+	}
+}
+
+ImMagic = {
+	'P6\n':			PPMImage,
+	'BM':			BMPImage,
+	'\xff\xd8':		JPEGImage,
+	'GIF87a':		GIFImage,
+	'GIF89a':		GIFImage,
+	'\211PNG\r\n\032\n':	PNGImage,
+	'\0\0\1\0':		ICOImage,
+}
+
+def ImageFile (fnm, background=False)
+{
+	head = open (fnm).read (8)
+
+	for (f, c in ImMagic.items ())
+		if (head.sw (f)) return c (fnm, background)
+
+	raise Error ("Unknown image type [%s]" %fnm)
+}
+
+def isImageFile (fnm)
+{
+	head = open (fnm).read (8)
+
+	for (f, c in ImMagic.items ())
+		if (head.sw (f))
+			return True
+}
+
+#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+if (__name__ == '__main__')
+{
+	i = sys.argv [1]
+	x = ImageFile (i)
+	print x.size ()
+	d, w, h = x.read_rgb()
+	print x.w, x.h
+#	d, w, h = x.thumbnail (120, 120)
+	f = open ("tmp.ppm", "w")
+	f.write ("P6\n%i %i\n255\n" %(w, h))
+	f.write (d)
+	f.close ()
+}

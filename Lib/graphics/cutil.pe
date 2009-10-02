@@ -1,0 +1,35 @@
+# wrap em
+
+__autosem__
+
+CFLAGS = "-O3 -Wall"
+if (@DLL.ARCH_586 ())
+	CFLAGS += " -DPYVM_MMX"
+
+globals ().update (@DLL.Clib ('img', CFLAGS, pelf=1, libs=["m"]));
+
+if ("MMX" in CFLAGS and @sysconfig.GETCONF ("MMXRGB"))
+	enable_mmx ()
+
+def nice_resize (data, W, H, newdata, w, h)
+{
+	buf1 = _buffer (H * w * 3);
+	buf2 = _buffer (2 * ntaps () * max (w, h));
+	hresize (data, W, H, newdata, w, h, buf1, buf2);
+}
+
+def nice_resize_bg (data, W, H, newdata, w, h)
+{
+	buf1 = _buffer (H * w * 3);
+	buf2 = _buffer (2 * ntaps () * max (w, h));
+	hresize_bg (data, W, H, newdata, w, h, buf1, buf2);
+}
+
+gen rgbiter (data)
+{
+	ri = _buffer (12);
+	init_rgbiter (data, len (data), ri);
+	next = rgbiter_next;
+	while ((x = next (ri)) >= 0)
+		yield x;
+}

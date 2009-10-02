@@ -1,0 +1,82 @@
+##  SSH Remote Shell Application
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# ssh is a multi-layer protocol. Based on the transport layer, userauth
+# and channels, we have standards for custom "services", like "session",
+# "x11", "tcpip-forwarding", "sftp", etc.
+# These services too have their own protocol..
+
+__autosem__
+
+from misc import fprint
+import thread
+
+#
+# Interactive shell application, all it needs is a term class.
+#
+
+def sshell (C, term)
+{
+	channel = C.OpenChannel ("session")
+	channel.send_request ("pty-req", True, "vt100", term.X, term.Y, 0, 0, "")
+	channel.send_request ("shell", True)
+
+	def incoming ()
+	{
+		try while (c = channel.recv ())
+			term.putchars (c)
+		term.stop ()
+	}
+	thread.start_new (incoming)
+
+	for (c in term.getchars ())
+		channel.send (c)
+}
+
+# stdin/stdout terminal
+class stdconsole
+{
+	method __init__ ()
+	{
+		$X, $Y = sys.tty_size ()
+		$running = True
+	}
+	method putchars (c)
+		fprint (c)
+	method getchars ()
+	{
+		$tid = thread.get_ident ()
+		sys.pty_stdin (True)
+		try while ($running) yield sys.pty_getchar ()
+		sys.pty_stdin (False)
+	}
+	method stop ()
+	{
+		$running = False
+		try thread.interrupt ($tid)
+	}
+}
+
+from ssh.applayer import Connect
+
+USAGE = """Usage: sshell <alias>
+aliases are read from user/etc/ssh-hosts"""
+
+if (__name__ == __main__)
+{
+	hostname, username, password, privkey = @ssh.hostalias.get (sys.argp.one ())
+
+	print "WARNING!: This implementation does not support REKEY!."
+	print "The connection can close unexpectedly after 1 hour!!!"
+	print "---------------------------------------------------\n"
+	C = Connect (hostname, 22, username, password, privkey)
+#c = C.OpenChannel ("direct-tcpip", "diogenis", 21, "174.181.11.12", 3100);
+#print c.recv ();
+	try sshell (C, stdconsole ())
+	finally sys.pty_stdin (False)
+	print;
+}

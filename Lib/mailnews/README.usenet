@@ -1,0 +1,37 @@
+To subscribe to a group run:
+
+	pyvm usenet subscribe clpy news.gmane.org gmane.comp.python.general 1000
+
+"clpy" is the newsgroup nickname and directory under pyvm/user/usenet/ where
+the index file and messages are stored.
+
+The NNTP implementation has been mostly tested with gmane. Other NNTP servers
+may expose bugs.
+
+After that, it's possible to run:
+
+	pyvm usenet catchup
+
+to fetch the new stuff, and:
+
+	pyvm mymbox
+
+to read the group. The newsreader program is a very simple reader.
+The main use of this library is to "keep an eye" on various lists through
+gmane, and it's pretty good at that. Each list has its own personality,
+some have a vast number of messages, others huge threads that persist
+for a long time, others contain many fresh unanswered topics and others
+contain a variety of completely offtopic and extremely interesting
+messages at the same time.
+The reader has some methods for presenting the messages, some of which
+will be useful for every list personality.
+
+On the other hand, the viewer is not good for actually participating
+actively in a group. Most people who are active members of some group,
+are probably using a mailing-list directly and have setup a functional
+toolchain to manage their workflow. This, being a nntp reader does not
+offet a superior solution unless heavily hacked.
+
+
+Q: is threading broken in c.l.py?
+A: This is mailman's fault!

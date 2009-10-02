@@ -1,0 +1,15 @@
+How to install the latest ffmpeg version
+
+	# go somewhere with space
+	pyvm git-checkout git://git.ffmpeg.org/ffmpeg ffmpeg
+	cd ffmpeg
+	pyvm git-checkout git://git.ffmpeg.org/libswscale libswscale
+	./configure --enable-gpl --enable-shared
+	make
+	# as root
+	make install
+	# test the version
+	./ffmpeg
+	touch PYVM_HOME_DIR/Lib/Clibs/ffmpg.c
+	pyvm libav
+

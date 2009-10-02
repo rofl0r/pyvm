@@ -1,0 +1,24 @@
+##  Common code
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# C stuff
+namespace Cpdf
+{
+	locals ().update (@DLL.Clib ("pdf", "-O3", pelf=1));
+}
+
+dictFromList = @builtins.list2dict;
+
+# Application warnings (to aid development)
+
+WARNED = set ();
+
+def WARNING (msg)
+	if (msg not in WARNED) {
+		print 'WARNING (pdf):', msg;
+		WARNED.add (msg);
+	}

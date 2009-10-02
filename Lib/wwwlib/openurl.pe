@@ -1,0 +1,28 @@
+__autosem__
+
+# TODO: send to mozilla, konq?
+
+USAGE = "openurl <url>
+
+If the web browser is started, tell it to open the url in new tab
+otherwise start browser"
+
+def Open (url)
+{
+	try if ((i = @ipc.Client ("WWW")).ping ()) {
+		i.msg ("GO: " + url)
+		return
+	} except print sys.exc_info ()
+	print "RUNNING BROWSER..."
+	@os.system ("pyvm www %s" %url)
+}
+
+if (__name__ == __main__) {
+	a = sys.argp.one ()
+	l = a.lower ()
+	if (!a.sw ("http://") and !a.sw ("https://") and !a.sw ("ftp://") and !a.sw ("file://"))
+		if (havefile (a))
+			a = "file://" + @os.abspath (a)
+		else exit ("No such file")
+	Open (a)
+}

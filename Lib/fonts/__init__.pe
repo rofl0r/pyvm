@@ -1,0 +1,9 @@
+from render import Renderer, Font, Open;
+from encodings import standardEncoding;
+
+def GetEncoding (data)
+{
+	from fonts.raster.type1 import Type1;
+	T = Type1 (data=data);
+	return T.Encoding;
+}

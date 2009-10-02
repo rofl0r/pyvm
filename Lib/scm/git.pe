@@ -1,0 +1,678 @@
+##  git shell commands
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This module provides some simple higher level git commands (porcelain)
+__autosem__
+Repository = @scm."git-core".repository
+RemoteRepo = @scm."git-core".RemoteRepo
+ReadFile = @scm."git-core".ReadFile
+MakeTagobj = @scm."git-core".make_tag
+
+import os, re, time
+from misc import fprint
+
+USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|tag|pull]
+
+	init-db			: create new repository
+	which			: report which branch we're in
+	diff			: diff working directory vs. head
+	diff <sha>		: diff working directory vs. specified commit (or branch)
+	diff <t1> <t2>		: diff two commits (or branches)
+	cat <sha>		: show an object
+	past			: show last commits
+	checkin			: equivalent to 'commit -a' in standard git.
+	switch <branch>		: switch to other branch (not well tested/checkout not 100% OK)
+	files			: show if there are new untracked files, or missing tracked files
+	files ls		: list indexed files
+	files update		: update the file index according to the output of `git files`
+	tar			: make a tarball of head. see pyvm/Makefile
+	head			: echo the head SHA
+	history <path>		: print commits that modify the file in path
+	fork <branch>		: make a new branch, exactly the same as the current branch
+	sigbranch [<branch>]	: create a PGP signed branch (pulled with pullpgp)
+
+	pull [-nostage] <remote-repo> <remote_branch> <local_branch>
+		the <remote_repo> can be another git directory or an http url.
+		pulls everything from the specified remote branch and makes local
+		branch point to the new stuff. Example:
+			git pull http://pyvm.org/pyvm master upstream
+		By default, if you are on the same branch as the destination of
+		pull, this command will store the current point in branch
+		'staged' and switch to that, prior to the pull.
+	pullpgp [-nostage] <remote-repo> <key-id> <remote_branch> <local_branch>
+		like pull but verifies that the branch is signed by the specified PGP key ID
+"
+
+## 
+## Init-db
+##  Create a new repository.
+##
+
+PYEXCLUDE = 
+r"# patterns in here are Regular Expressions, from start to end
+\.git/objects/.*
+\.git/refs/.*
+\.git/HEAD
+\.git/index
+"
+
+def init_db ()
+{
+	try {
+		find_repository ()
+		print "A git repository already exists upwards!"
+		return
+	}
+
+	try os.mkdir (".git")
+	except {
+		print "Couldn't create .git/ directory!"
+		return
+	}
+
+	os.chdir (".git")
+
+	for (d in (
+		'info', 'refs', 'refs/tags', 'refs/heads', 'remotes', 'hooks', 'branches',
+		'objects', 'objects/info', 'objects/pack', 'refs/signed'
+	)) os.mkdir (d)
+
+#	for (d1 in "0123456789abcdef")
+#		for (d2 in "0123456789abcdef")
+#			os.mkdir ("objects/" + d1 + d2)
+
+	open ("description", "w").write ("Unnamed repository\n")
+	open ("info/exclude", "w").write ("# edit this file\n")
+
+	os.symlink ("refs/heads/master", "HEAD")
+
+	# make empty tree
+	os.chdir ("..")
+	repo = repository (".git/")
+	repo.IDX.write_index ()
+#	nulltree = repo.IDX.write_tree ()
+#	hdr = "gitmaster <gitmaster@proxima-5> %i +0300" % int (now ()) 
+#	hdr = "author %s\ncommitter %s\n\n" %(hdr, hdr)
+#	message = hdr + "root\n"
+#	repo.write_HEAD (repo.do_commit (message, nulltree, []))
+
+	print "OK. Defaulting to default storage area"
+}
+
+##
+## Utility
+##
+
+def find_repository ()
+{
+	cwd = os.getcwd ()
+	while (1) {
+		if (os.access (cwd + "/.git"))
+			return cwd + "/.git/"
+		cwd, None, None = cwd.rpartition ("/")
+		if (!cwd) raise "No .git repository in here"
+	}
+}
+
+def repository (BASEDIR=None)
+	return Repository (BASEDIR or find_repository ())
+
+def need_checkin (repo)
+{
+	try cur = repo.branch (os.readlink (repo.BASEDIR + "HEAD").rpartition ("/")[2])
+	except {
+		print "No HEAD commit"
+		return [f for (f, sig in repo.IDX.lsfiles ())]
+	}
+	files_to_diff = set (repo.diff_files ())
+	treefiles = repo.openobj (cur.tree).lsfiles_r (repo)
+	for (f, sig in treefiles)
+		if (f not in repo.IDX.D or repo.IDX.D [f][-1] != sig)
+			files_to_diff.add (f)
+	treefiles = dict (treefiles)
+	for (f, sig in repo.IDX.lsfiles ())
+		if (f not in treefiles)
+			files_to_diff.add (f)
+	L = []
+	for (f in list (files_to_diff).sort ())
+		try if (repo.openblob (treefiles [f]) != readfile (f))
+			L.append (f)
+		except L.append (f)
+	return L
+}
+
+from ignorefile import ignore as gitignore
+
+def find_files (exclude, dir=".")
+{
+	F = []
+	if (os.access (dir + '/.gitignore'))
+		exclude = gitignore (dir + '/.gitignore', exclude)
+	for (f in os.listdir_fullpath (dir)) {
+#		if (os.path.islink (f)) continue
+		if (exclude (f [2:])) continue
+		if (os.path.isdir (f)) {
+			if (!f.ew ("/.git"))
+				F.extend (find_files (exclude, f + "/"))
+		} else
+			F.append (f [2:])
+	}
+	return F
+}
+
+##
+## shell commands
+##
+
+def readfilee (f)
+	return ReadFile (f) ?? ""
+
+from scm.diff import pydiff as diff
+
+def dflt_diff (data1, data2, f)
+{
+	if (data1 == data2) return
+	a = "a/" + f
+	b = "b/" + f
+	print "diff --git %s %s" %(a, b)
+	print diff (data1, data2, a, b),
+}
+
+def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
+{
+	# diff: cache -- working directory
+	if (told == tnew == None) {
+		for (f in repo.diff_files ()) 
+			differ (repo.IDX.readfile (f), readfilee (f), f)
+		return
+	}
+
+	# diff: tree -- working directory
+	told = repo.open_commit (told)
+	if (tnew == None) {
+		# add files that differ between the cache/wd
+		files_to_diff = set (repo.diff_files ())
+		# add files that differ between tree/cache
+		treefiles = repo.openobj (told.tree).lsfiles_r (repo)
+		for (f, sig in treefiles)
+			if (f not in repo.IDX.D or repo.IDX.D [f][-1] != sig)
+				files_to_diff.add (f)
+		treefiles = dict (treefiles)
+		for (f in list (files_to_diff).sort ()) {
+			oldf = repo.openblob (treefiles [f]) ?? ""
+			newf = readfilee (f)
+			differ (oldf, newf, f)
+		}
+		return
+	}
+
+	# diff: tree -- tree
+	# (avoid lsfiles_r and do it at the tree level, avoiding identical subtrees)
+	tnew = repo.open_commit (tnew)
+	for (f, b1, b2 in repo.diff_trees (told.tree, tnew.tree))
+		differ (b1 ? b1.data : "", b2 ? b2.data : "", f)
+}
+
+GitUser = @sysconfig.GETCONF ("gituser")
+
+def cmd_checkin (repo, message)
+{
+	# checkin is the simple command to commit the current state
+	# of the working directory.  It is the two step procedure
+	# update-index and git-commit.
+
+	if (">" not in GitUser) {
+		print "BAD GitUser string. No email address"
+		exit ()
+	}
+
+	idx = repo.IDX
+
+	# update the cache
+	# git-update-index --refresh
+	for (f in idx.D.keys ())
+		idx.update (f)
+	idx.write_index ()
+
+	# write the cache to a new tree object
+	# git-write-tree
+	newtree = idx.write_tree ()
+
+	# make new commit and save to HEAD
+	# git-commit
+	hdr = "%s %i +0300" % (GitUser, int (now ()))
+	hdr = "author %s\ncommitter %s\n\n" %(hdr, hdr)
+	message = hdr + message
+	try parents = repo.HEAD (),;
+	except {
+		print "No parent. Initial commit?"
+		parents = []
+	}
+
+	sig = repo.do_commit (message, newtree, parents)
+	repo.write_HEAD (sig)
+
+	#
+	print "OK, HEAD now is:", sig
+}
+
+def cmd_which (repo)
+	print repo.HEAD_is ()
+
+def cmd_past (repo, arg=None)
+{
+	# print the commit history (most recent first)
+	for (_, com in repo.History (repo.open_commit (arg))) {
+		print com
+		if.break (len (com.parents) > 1) {
+			print "A MERGE- parents:"
+			for (c in com.parents)
+				print " ", c
+			print "STOPPING"
+		}
+	}
+}
+
+def cmd_branch (repo, branchname, arg=None)
+{
+	# create a new branch by forking the specified branch/hash/HEAD
+	com = repo.open_commit (arg)
+
+	try {
+		repo.branch (branchname)
+		print "Branch [%s] exists already. Won't create" %branchname
+		return
+	}
+
+	open (repo.BASEDIR + "refs/heads/" + branchname, "w").write (com.sig + "\n")
+}
+
+def cmd_switch (repo, branch)
+{
+	# simple command to checkout a branch, but not if data
+	# will be lost.
+
+	if (need_checkin (repo)) {
+		print "Files that need check-in:", ",".join (need_checkin (repo))
+		print "switch aborted.  Use --force to do the switch anyway"
+		return
+	}
+
+	cur = os.readlink (repo.BASEDIR + "HEAD").rpartition ("/")[2]
+	if (branch == cur)
+		return
+	toc = repo.branch (branch)
+	if (toc.sig != repo.branch (cur).sig) {
+		# do check-out
+		# read target tree into cache
+		repo.IDX.read_tree (repo.openobj (toc.tree))
+
+		# print the diff that will be perfomed from the checkout
+		#cmd_diff (repo);
+
+		# check out files from cache
+		repo.IDX.check_out ()
+
+		# write cache
+		repo.IDX.write_index ()
+	}
+	repo.set_HEAD (branch)
+}
+
+def cmd_checkout (repo, com=None)
+{
+	c = repo.open_commit (com)
+	repo.IDX.read_tree (repo.openobj (c.tree))
+	repo.IDX.check_out ()
+	repo.IDX.write_index ()
+}
+
+def cmd_files (repo, cmd=None)
+{
+	# files is a simple command that works with the exclude
+	# file.  It can:
+	#	list the files of the current branch
+	#	add files to the current branch
+	#	tell us if there are new files that are not in the branch
+	#	  and are not ignored either.
+
+	in_cache = set (repo.IDX.D.keys ())
+	if (cmd == "ls") {
+		for (i in list (in_cache).sort ())
+			print i
+		return
+	}
+
+	pat = ".git/"
+	exclude = re.re (pat)
+	if (os.access (repo.BASEDIR + 'info/exclude'))
+		exclude = gitignore (repo.BASEDIR + 'info/exclude', exclude)
+
+	in_wd = set (find_files (exclude))
+	new = in_wd - in_cache
+	missing = in_cache - in_wd
+	if (cmd == "update") {
+		if (!new and !missing) {
+			print "Nothing to add/remove."
+			return
+		}
+		for (f in new) {
+			print "adding:", f
+			repo.IDX.update (f)
+		}
+		for (f in missing) {
+			print "removing:", f
+			repo.IDX.remove (f)
+		}
+		repo.IDX.write_index ()
+		return
+	}
+	if (cmd == "test")
+		return new or missing
+
+	if (cmd) raise Error ("git files [update|ls]")
+
+	if (!new and !missing) {
+		print "No new files."
+		return
+	}
+
+	if (new) {
+		print "Files in working directory that are not ignored and not in the repository:"
+		for (f in list (new).sort ())
+			print " ", f
+	}
+	if (missing) {
+		print "Missing Files:"
+		for (f in list (missing).sort ())
+			print " ", f
+	}
+	print "Place apropriate patterns to .gitignore's, or run:"
+	print "    git files update"
+	print "to update the files into the repository."
+}
+
+def cmd_cat (repo, obj)
+	print repo.openobj (repo.findsig (obj)).data
+
+def cmd_history (repo, path)
+	for (c in repo.file_history_master (repo.open_commit (), path))
+		print c
+
+def cmd_tar (repo, *options)
+{
+	prefix = ""
+	extra = []
+	tarfile = None
+	for (o in options)
+		if (o [0] == "-") {
+			if (o.sw ("--prefix="))
+				prefix = o [9:]
+			else if (o.sw ("--add="))
+				extra.append (o [6:])
+			else raise Error ("Unknown option [%s]" %o)
+		} else if (tarfile) raise Error ("tarfile already specified")
+		else tarfile = o
+
+	if (!tarfile)
+		raise Error ("No tarfile specified")
+
+	C = @tar.Create (tarfile)
+	mt = now ()
+	for (f, sig, mode in repo.open (repo.open_commit (repo.HEAD ()).tree).lsr (repo)) {
+
+		perm = mode & 07777
+		linkname = data = ""
+		if (mode & 0170000 == 0120000) {
+			linkname = repo.openblob (sig)
+			filetype = "symlink"
+		} else if (sig) {
+			data = repo.openblob (sig)
+			filetype = "regular"
+		} else {
+			filetype = "directory"
+		}
+
+		C.add_entry (prefix + f, data, perm, 0, 0, mt, filetype, linkname)
+	}
+	for (e in extra)
+		C.add_entry (prefix + e, readfile (e), @os.stat (e) [0] & 07777, 0, 0, mt, "regular")
+	C.done ()
+}
+
+# unused in favor of sigbranch
+#def cmd_tag (repo, tagname, msg)
+#{
+#	head = repo.HEAD ()
+#	tagger = "Stelios"
+#	tagobj = MakeTagobj (head, tagname, msg, tagger)
+#	print "The tag object is\n=========================================="
+#	print tagobj
+#	print "=========================================="
+#	sig = repo.write ("tag", tagobj)
+#	repo.create_tag (tagname, sig)
+#	print tagname, "created"
+#}
+
+# Signed branches. These are files placed in refs/signed/
+# Each file is the commit SHA followed by the PGP signature of
+# it
+def cmd_sigbranch (repo, branch="master")
+{
+	try b = repo.branch (branch).sig
+	except {
+		print "No such branch [%s]"%branch
+		return
+	}
+	sig = @pgp.gpg.SIGN (b)
+	try repo.mkdir ("refs/signed")
+	open (repo.BASEDIR + "refs/signed/" + branch, "w").write (b + "\n" + sig)
+	print "OK, signed branch [%s] created" %branch
+}
+
+def cmd_fork (repo, branch)
+	repo.write_branch (branch, repo.HEAD ())
+
+def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=False)
+{
+	# There is the possibility that the pull will be interrupted.
+	# for that what we want is: if a tree object is here this means that
+	# all the other objects pointed-to by that tree object are also here.
+	# Similarily, if a commit is here, its parents are here too.
+	# So pulling has to be pre-order last-to-first.
+	# This works for linear-history repositories only!
+
+	# If we want to pull to local branch "upstream" and we are already
+	# at "upstream", we make a temporary fork branch "staged" so that
+	# the user will have to run "switch upstream" for the checkout to
+	# happen
+	if (nostage) on_branch = False
+	else {
+		on_branch = repo.HEAD_is () == local_branch
+		try repo.HEAD ()
+		except on_branch = False
+	}
+
+	repo2 = RemoteRepo (remote_repo)
+	sbranch = None
+	if (pgp) {
+		try sbranch = repo2.readfile ("refs/signed/" + remote_branch)
+		except {
+			print "Can't find signed branch [%s] in remote repo" %remote_branch
+			return
+		}
+		b, None, sig = sbranch.partition ("\n")
+		if (@pgp.gpg.VERIFY ("", "", sig, b, keyid=pgp) != "ok") {
+			print "Signature verification fail!"
+			return
+		}
+		b = repo2.open (b)
+	} else b = repo2.branch (remote_branch)
+
+	try if (b.sig == repo.branch (local_branch).sig) {
+		print "Already up to date. Nothing to pull."
+		return
+	}
+
+	if (on_branch) {
+		print "Already on branch:", local_branch
+		print "Staging current state"
+		repo.write_branch ("staged", repo.HEAD ())
+		repo.set_HEAD ("staged")
+		print 'Switched to branch "staged"'
+	}
+
+	have = set ()
+	saw = have.add
+	write = repo.write
+
+	c = []
+	for (h in repo2.MainHistory (b))
+		if (repo.haveobj (h.sig)) break
+		else c<< h
+	print "%i commits to pull" %len (c)
+	c.reverse ()
+
+	def haveobj (sig)
+		if (sig in have) return True
+		else if (repo.haveobj (sig)) {
+			saw (sig)
+			return True
+		}
+
+	def pull_tree (t)
+	{
+		if (haveobj (t.sig))
+			return 0, 0
+		n = 1
+		b = 0
+		for (o in t.objs ())
+			if (!haveobj (o)) {
+				o = repo2.openobj (o)
+				if (o.kind == "blob") {
+					fprint ("*")
+					write (o.kind, o.data)
+					saw (o.sig)
+					b += 1
+				} else if (o.kind == "tree") {
+					nn, bb = pull_tree (o)
+					n += nn
+					b += bb
+				}
+			}
+		fprint ("+")
+		write (t.kind, t.data)
+		saw (t.sig)
+		return n, b
+	}
+
+	tnb = tnt = 0
+	for (c in c) {
+		print "pulling commit:", c.sig
+		print " ", time.rfc1123 (c.date ())
+		print " ", c.title ()
+		print " ",
+		nt, nb = pull_tree (c.Tree ())
+		print "\n %i trees and %i blobs pulled" %(nt, nb)
+		write (c.kind, c.data)
+		tnb += nb
+		tnt += nt
+	}
+	print "Total %i trees and %i blobs pulled" %(tnt, tnb)
+
+	repo.write_branch (local_branch, b.sig)
+	print "created local branch:", local_branch
+	if (sbranch) {
+		open (repo.BASEDIR + "refs/signed/" + local_branch, "w").write (sbranch)
+		print "copied signed branch to refs/signed/"+local_branch
+	}
+}
+
+##
+##
+
+def read_message ()
+{
+	print "Enter log message (end with CTRL-D):"
+	msg = sys.stdin.read ()
+	if (!msg) {
+		print "Cancelled."
+		exit ()
+	}
+	return msg
+}
+
+if (__name__ == __main__)
+{
+	cmd = sys.argp.pop_command (
+		"init-db,which,diff,past,checkin,switch,files,cat,checkout,tar,head,"+
+		"tag,history,pull,fork,sigbranch,pullpgp"
+	)
+
+	if (cmd == "init-db") {
+		init_db ()
+		exit ()
+	}
+
+	repo = repository (find_repository ())
+	nargs = sys.argp.nargs
+	one = sys.argp.one
+
+	if (cmd == "which") {
+		cmd_which (repo)
+	} else if (cmd == "diff") {
+		cmd_diff (repo, *nargs (0, 2))
+	} else if (cmd == "past") {
+		cmd_past (repo, *nargs (0, 1))
+	} else if (cmd == "checkin") {
+		#if (argv [2:] and argv [2] == "-")
+		#	print need_checkin (repo) ? "Check-in is needed." : "No check-in required."
+		#else
+		if (!need_checkin (repo))
+			print "Already checked-in. Won't make a new commit."
+		else {
+			if (cmd_files (repo, "test")) {
+				print "Untracked files. Won't make a new commit."
+				print "run 'pyvm git files' and 'pyvm git files update' to resolve"
+				exit ()
+			}
+			msg = read_message ()
+			print "writting..."
+			cmd_checkin (repo, msg)
+		}
+	} else if (cmd == "switch") {
+		cmd_switch (repo, one ())
+	} else if (cmd == "files") {
+		cmd_files (repo, *nargs (0, 1))
+	} else if (cmd == "cat") {
+		cmd_cat (repo, one ())
+	} else if (cmd == "checkout") {
+		# undocumented in USAGE.
+		cmd_checkout (repo, *nargs (0, 1))
+	} else if (cmd == "tar") {
+		cmd_tar (repo, *sys.argp.argv)
+	} else if (cmd == "head") {
+		print repo.HEAD ()
+	} else if (cmd == "tag") {
+		msg = read_message ()
+		cmd_tag (repo, one (), msg)
+	} else if (cmd == "history") {
+		cmd_history (repo, one ())
+	} else if (cmd == "fork") {
+		cmd_fork (repo, one ())
+	} else if (cmd == "pull") {
+		nostage = sys.argp.check_switch ("-nostage")
+		repo2, rb, lb = nargs (3)
+		cmd_pull (repo, repo, rb, lb, nostage=nostage)
+	} else if (cmd == "sigbranch") {
+		cmd_sigbranch (repo, *nargs (0, 1))
+	} else if (cmd == "pullpgp") {
+		nostage = sys.argp.check_switch ("-nostage")
+		repo2, keyid, rb, lb = nargs (4)
+		cmd_pull (repo, repo2, rb, lb, keyid, nostage=nostage)
+	} else sys.argp.help ("unknown command")
+}

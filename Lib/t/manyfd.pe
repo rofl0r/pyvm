@@ -1,0 +1,88 @@
+#
+# Test pyvm's multithreading for deadlocks.
+# Usage: write a script that calls "pyvm manyfd.pe" 100 times
+# and observe if the program ends.
+#
+# This program runs an increasing number of client-servers
+# that exchange messages. Eventually, it terminates when the
+# process limit of max open file descriptors is reached.
+#
+# Note: in ordrer to really stress test the threading,
+# see pyvm/module.time.c+ and change the TimeTravel()
+# function to do so without vmsleep(), iow, consider
+# sleep() a blocking call and start out new threads
+# to handle it.
+
+__autosem__
+
+print "HI"
+import socket, thread
+
+P = @random.randint (10000, 20000)
+s = socket.socket ()
+s.bind ((0, P))
+s.listen (6)
+R=1
+
+def serv (c)
+{
+	while (1)
+	{
+		d = c.recv ()
+		if (!d)
+			break
+		sleep (0.001)
+		c.send (d)
+	}
+}
+
+def cli ()
+try {
+	s = socket.socket ()
+	s.connect ((0, P))
+	while (1) {
+		s.send ("hi")
+		sleep (0.001)
+		s.recv ()
+	}
+} except {
+	print "END"
+	thread.Interrupt (0, SystemExit, if_running=1)
+	global R
+	R = 0
+}
+
+def clients ()
+{
+	for (i in *2000) {
+#		if (i > 508)
+#		print "ONE MORE", i
+		thread.start_new (cli)
+		sleep (0.001)
+		if (!R)
+			break
+	}
+}
+
+def job ()
+{
+	while (1) {
+		for (i in *1000);
+		sleep (0.001)
+	}
+}
+
+thread.start_new (job)
+thread.start_new (job)
+thread.start_new (job)
+
+thread.start_new (clients)
+
+while (1)
+{
+try
+	c, addr = s.accept ()
+except break
+	thread.start_new (serv, c)
+}
+

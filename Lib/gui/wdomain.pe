@@ -1,0 +1,40 @@
+# This module takes care of the "current open window/packer/application"
+# The namespace of the module is used as a common data area for all the
+# widgets. The effect of begin()/end() as issued by the window manager,
+# is for widgets to automatically insert themselves in the current open
+# packer.
+
+__autosem__
+
+data = None
+
+def begin (Rootwin, Wm)
+{
+	global data
+	namespace new_data
+	{
+		rootwin = Rootwin
+		wm = Wm
+		packers = []
+		prev = data
+		tabgroup = None
+	}
+	data = new_data
+}
+
+def add_packer (p)
+	data.packers.append (p)
+
+def pop_packer (p)
+	if (data.packers.pop () is not p)
+		raise Error ("Packing Error")
+
+def add_child (w)
+	try data.packers [-1].add_child (w)
+	except raise Error ("No open container for widget!")
+
+def end ()
+{
+	global data
+	data = data.prev
+}

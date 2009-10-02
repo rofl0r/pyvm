@@ -1,0 +1,95 @@
+__autosem__
+
+import os
+
+# on filename extension, we may be able to use ffmpeg
+# (xxx: sysconfig Mp3Quality="Highest")
+def audio_encode (infile, outfile, quiet=False)
+	if (e = os.findexe ("lame"))
+		if (!quiet) os.execbin_bg (e, "-r", infile, outfile)
+		else os.execbin_bg (e, "--quiet", "-r", infile, outfile)
+	else if (e = os.findexe ("bladeenc"))
+		if (!quiet) os.execbin_bg (e, infile, outfile)
+		else os.execbin_bg (e, "-quiet", infile, outfile)
+	else raise Error ("No external encoder :(")
+
+# An audio encoder from the computer's `mic` input.  That should be
+# /dev/dsp in read mode.  aka, the analog channel.
+#
+# The "mic" is interesting because you can connect radio and vinyl
+# to it.  If your amplifier has an AUX-OUT plug, use this, otherwise
+# use the output for headphones.
+#
+# Music can be cut into tracks with the 'soundlab' program.
+#
+
+def hhmm (s)
+{
+	hours, sep, minutes = s.partition (":")
+	if (!sep) {
+		minutes = hours
+		hours = "0"
+	}
+	hours = int (hours)
+	minutes = int (minutes)
+	if !(0 <= hours <= 23 and 0 <= minutes <= 59)
+		raise Error ("Bad hh:mm time [%s]" %s)
+	t = int (hours) * 60 + int (minutes)
+	if (t < 0) raise Error ()
+	return t
+}
+
+if (__name__ == __main__)
+{
+	import time
+
+	USAGE = "usage: rec [-d hh:mm ] [-s hh:mm] [-p] <output-file>
+-d	: the duration.  If unspecified it defaults to 12 hours
+-s	: start time. if unspecified starts immediately, (TODO, date)
+-p	: send recorded sound to audio out
+"
+
+	play = sys.argp.check_switch ("-p")
+	opts = sys.argp.opts ("d", "s")
+	if ("d" in opts) duration = 60 * hhmm (opts ["d"])
+	else duration = 12 * 60 * 60
+
+	if ("s" in opts) {
+		import time
+		t = time.time ()
+		now = time.localtime (t)
+		nowh, nowm = now [3], now [4]
+		daymin = nowh * 60 + nowm
+		recmin = hhmm (opts ["s"])
+		dt = recmin - daymin
+		if (dt < 0) 
+			dt += 24 * 60
+		print "Recording will start in %i hours and %i minutes" %(dt/60, dt%60)
+		time.sleep (dt * 60)
+	}
+
+	from audio import dev
+	# Input gain should be consistent between recordings !
+	dev.volume.set_igain (@sysconfig.GETCONF ("reclevel"))
+
+	t0 = time.time ()
+	fifo = @misc.tmpfifo ()
+	audio_encode (fifo.fnm, sys.argp.filename ())
+	fifo.openw ()
+	Dev = dev.AudioDev ()
+	if (play) {
+		Dev2 = dev.AudioDev ()
+		if (!Dev2.grab (44100, 2)) {
+			print "Can't use audio output!"
+			exit ()
+		}
+	}
+	for (d in Dev.rec ()) {
+		if (play)
+			Dev2.play (d)
+		fifo.write (d)
+		if.break (time.time () - t0 > duration) 
+			print "Duration complete"
+	}
+	fifo.close ()
+}

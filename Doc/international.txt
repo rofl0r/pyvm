@@ -1,0 +1,104 @@
+International text support in pyvm
+==================================
+
+Display:
+--------
+
+pyvm can display international text (especially in applications
+like the web browser), as long it has the proper fonts and the
+font library is told that it's dealing with UTF-8 text.
+
+Right now the only unicode fonts we have are the 8x16 bitmap
+console fonts (for all the 8859-x codepages, though!).  In theory we
+should find "webfonts" for all the 8859-x in all the combinations
+of {sans, serif, monospace}-{regular, bold, italic, bold-italic}
+for scalable unicode fonts.
+Also, "webfonts" does not mean any random fonts.... some CSS pages
+contain features (like absolute positioning) that depend on having
+the same font metrics as the web browser where the page was tested!
+
+So, in the end, pyvm is ready to display international text in nice
+truetype fonts when we find the proper font files.
+
+
+Windows Fonts: A Good Solution
+------------------------------
+
+If you have Microsoft windows installed you can use the default
+Window's fonts which have international characters for may languages
+and they are pretty nice too!
+
+See the REAME in the directory Lib/FontFiles/ms
+
+
+Latin Modern
+------------
+
+The Latin Modern font family is a beautiful collection of fonts that
+could be used as webfonts.  The problem is that the OpenType distribution
+of LM fonts seems to miss some characters (in fact all the low case
+greek characters are absent).  On the other hand, the LM site advertises
+that the collection contains all the known european glyphs.
+
+This is under investigation.
+
+
+Keyboard:
+---------
+
+The pyvm GUI can use alternative keyboard mappings in order to type
+international text (in the 8x16 bitmap fonts though).  That is
+independent of the hosting windowing environment like X11, KDE, etc.
+One reason for that is that pyvm's GUI can run on the framebuffer
+where it has to implement this functionality itself anyway.
+
+At the moment only Greek keyboard is implemented.  To enable the
+keyboard to switch to Greek mode with "ALT-SHIFT", run:
+
+	pyvm sysconfig set altgr greek
+
+Widgets that are configured for UTF mode, can receive greek text.
+
+
+System:
+-------
+
+Editing text files from the system, using the right encoding/codepage
+and saving them for other applications, in not done yet.
+
+
+For Programmers:
+================
+
+Unlike python, pyvm does not have "Unicode Strings".
+There is only one string type, the good old string (where iteration yields
+byte characters).
+
+Generally, "string" does not mean "printable text".  The raw rgb data
+of an image can be a "string".  Printable text is "string" + "font"
+and the unicode information thus becomes part of the "font".
+
+The builtin module "_unicode" implements some functions like the
+`utf8_iter` which takes a string and yields unicode character values.
+In the `gui/utfutils.pe` there are some more complex functions that
+implement slicing and editting UTF-8 text, etc.
+
+Generally, unicode text is always represented in UTF-8.  Because UTF-8
+strings are "compatible" with ASCII (that is we can never mistake a
+unicode character for an ascii character), many things just work with
+the existing string methods.  For example, calling
+
+	s.split ("\n")
+
+when `s` contains a UTF-8 string, will work perfectly well.  In the end
+only the font drawing library cares about whether a string should be
+iterated in bytes or utf8 characters.  So the extra features of
+"unicode strings" can be abstracted in a very small part of the code
+with the small `utfutils` library.
+
+The disadvantage of UTF-8 strings is that some things are slower.
+For instance, calculating the "character length" of a utf-8 string
+is an O(N) action.  For that, we try to first use standard string
+methods like the `split ("\n")` function to break the text into
+smaller parts and then apply the utf-8 functions on -short-
+sentences.

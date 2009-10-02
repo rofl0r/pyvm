@@ -1,0 +1,275 @@
+__autosem__
+
+# Try to figure out the columns widths for a table
+
+# method of table_box.
+method compute_widths (width, xsp)
+{
+	# hair: neither the HTML standard nor the CSS standard actually explain how
+	# td-widths are supposed to work in the table layout wrt mixed: percentages,
+	# auto and lengths at the same time. This is mostly trial-and-error experimental.
+	# thus heavily commented
+
+	if (!$ncols)
+		return []
+
+	spacing = (1 + $ncols) * xsp
+	spw = None
+	if ("width" in $node.css) {
+		# table has specified width, not free to expand
+		w = $node.css ["width"]
+		if (w -> int)
+			spw = width = w - spacing
+		else if (w > 0)
+			spw = width = int (width * w) - spacing
+		else print "OTHER WIDTH:", w
+	}
+	if (spw is None)
+		width -= spacing
+
+	hints = $width_hints ()
+	percents = fixed = auto = 0
+	for (i in hints)
+		if(i -> float) percents += 1
+		else if(i -> int) fixed += 1
+		else auto += 1
+
+	maxes = $col_maxes ()
+	tmax = sum (maxes)
+
+	# Early exit. We don't have size hints and all cells at maximum fit
+	# completely. no need to calculate min_widths. happens often for huge
+	# tables
+	if (!(percents or fixed) and tmax <= width) {
+		if (spw and tmax < spw and tmax) {
+			# expand cells to reach specified width
+			dw = spw - tmax
+			return [m + int (dw * float (m)/tmax) for (m in maxes)]
+		}
+		return [m+6 for (m in maxes)]
+	}
+
+	mins = $col_mins ()	# more expensive than maxes
+
+	# size hints in td-width cannot reduce a cell less than its minimum content width (MCW)!
+	if (fixed) {
+		h = []
+		for (hh, mm in zip (hints, mins))
+			if(hh -> int) h<< max (hh, mm)
+			else h<< hh
+		hints = h
+		for (i, hh in enumerate (hints))
+			if (hh -> int)
+				mins [i] = maxes [i] = hh
+		tmax = sum (maxes)
+	}
+	tmin = sum (mins)
+
+	# if table width is specified but less than MCW of cells, it becomes their sum!
+	if (spw and spw < tmin)
+		width = spw = tmin
+
+	# if percents add up to more than 100% cap them
+	if (percents) {
+		ptot = sum ([i for (i in hints) if (i -> float)])
+		if (auto or fixed) {
+			if (ptot > 1.0) {
+				ptot = 0
+				for (hh in hints)
+					if (hh -> float) {
+						if.continue (ptot + hh < 1.0)
+							ptot += hh
+						__SET_ITER__ (1.0 - ptot)
+						ptot = 1.0
+					}
+			}
+		} else {
+			# if all percents and they don't sum to 100%, scale them
+			if (ptot != 1.0) 
+				for (hh in hints)
+					if (hh -> float)
+						__SET_ITER__ (hh / ptot)
+			ptot = 1.0
+		}
+	}
+
+	# only percentage hints for all cells
+	if !(fixed or auto) {
+		if (spw) {
+			for (hh, mm in zip (hints, mins))
+				if (hh * spw < mm)
+					break
+			else.for return [int (hh * spw) for (hh in hints)]
+			# percentages cannot be obeyed
+			print "////////// Unhandled table case 1", hints, mins, spw
+		} else {
+			# table is free to resize up to screen width
+			maxw = max ([m/hh for (hh, m in zip (hints, maxes))])
+			if (maxw <= width) {
+				r = [int (hh * maxw) for (hh in hints)]
+				for (rm, mm in zip (r, mins))
+					if (rm < mm)
+						break
+				else.for return r
+			}
+			print "////////// Unhandled table case 2", hints, mins, spw, tmax, width, maxw
+		}
+	}
+
+	if (tmax <= width) {
+		if (!percents) {
+			if (spw is None or tmax == width)
+				return [m+6 for (m in maxes)]
+			# only expand "auto" cells to reach specified width
+			wfixed = sum ([i for (i in hints) if (i -> int)])
+			# "auto" at their max:
+			W = sum ([mm for (hh, mm in zip (hints, maxes)) if (not hh -> int)])
+			# should be expanded to:
+			D = float (spw - wfixed)
+			widths = []
+			for (hh, mm in zip (hints, maxes))
+				if(hh -> int) widths<< hh
+				else widths<< int (mm * D / W)
+			return widths
+			
+		}
+
+		# if there are "auto" cells and the percentages add up to 100% this
+		# seems to mean that the table expands as much as possible if its
+		# width is unspecified!
+		if ((fixed or auto) and ptot == 1.0) {
+			if (spw is None)
+				spw = width
+		}
+	}
+
+	# cells at their minimum cannot fit in width: use minimum anyway
+	if (tmin >= width)
+		return mins
+
+	# case where there is one only 100% and the rest are fixed
+	if (fixed and percents == 1 and !auto and spw) {
+		wf = sum ([i for (i in hints) if (i->int)])
+		return [hh -> int ? hh : spw - wf for (hh in hints)]
+	}
+
+	# percentages less than 100% and auto widths: convert percentages
+	# to fixed
+	if (!fixed and auto and percents and ptot < 0.99 and spw) {
+		for (i in *len (hints))
+			if (hints [i] -> float)
+				hints [i] = max (int (spw * hints [i]), mins [i])
+		fixed = True
+		percents = False
+	}
+
+	# fixed & auto: expand autos to meet spw
+	if (fixed and !percents and auto and spw and tmin < spw) {
+		tminauto = sum ([x for (hh, x in zip (hints, mins)) if (hh is None)])
+		tmaxauto = sum ([x for (hh, x in zip (hints, maxes)) if (hh is None)])
+		D = tmaxauto - tminauto
+		wfixed = sum ([x for (x in hints) if (x -> int)])
+		W = float (width - wfixed) - tminauto
+		if (W > 0)
+			return [hh -> int ? hh : max (int (mi + ((ma - mi) * W) / D), mi)
+					for (hh, mi, ma in zip (hints, mins, maxes))]
+	}
+
+	# percentages adding up to 100% and auto widths. autos are minimized
+	if (!fixed and auto and percents and ptot >= .99) {
+		if (!spw)	# XXX: corrent?
+			spw = width
+		minw = sum ([mm for (hh, mm in zip (hints, mins)) if (hh is None)])
+		rest = spw - minw
+		return [hh is None ? mm : max (int (hh*rest), mm)
+				for (hh, mm in zip (hints, mins))]
+	}
+
+	'''
+	if (fixed and percents and auto and ptot < 1.0 and spw) {
+		wfixed = sum ([hh for (hh in hints) if (hh -> int)])
+		rest = spw - wfixed
+		wperc = 0
+		for (hh, mm in zip (hints, mins))
+			if (hh -> float)
+				if (hh * rest > mm)
+					wperc += int (hh * rest)
+				else print "FAKFAK", hh*rest, mm
+		rest -= wperc
+		tminauto = sum ([x for (hh, x in zip (hints, mins)) if (hh is None)])
+		tmaxauto = sum ([x for (hh, x in zip (hints, maxes)) if (hh is None)])
+#$dump (1)
+#print spw, wfixed, wperc, rest, tminauto, tmaxauto
+	}
+	'''
+
+	if (fixed or (percents and auto))
+		print "////////// Unhandled table case 3", hints, mins, spw, ptot
+
+	# good old width distribution algorithm
+	if (tmax == tmin)
+		return mins
+	D = tmax - tmin
+	W = float (width) - tmin
+	return [int (mi + ((ma - mi) * W) / D) for (mi, ma in zip (mins, maxes))]
+}
+
+method width_hints ()
+{
+	# look for width information in TD tags. Note that these are
+	# just *hints*. MCW is never overriden
+	n = $ncols
+	w = [None]*n
+	span = {}
+	for (r in $rows)
+		for ((x, cs, None), c in zip (r.positions, r.cells))
+			# (xxx: todo, use multi-colspan hints)
+			if ("width" in c.node.css) {
+				width = c.node.css ["width"]
+				if (width -> float and width < 0)
+					width = -int (width * $css ["font-size"])
+				if.continue (cs != 1)
+					span [(x, cs)] = width
+				if (w [x] is None) {
+					w [x] = width
+					if !(n -= 1)
+						break
+				}
+			}
+	if (span) print "---- width hints colspan:", span, w
+	return w
+}
+
+method col_maxes ()
+{
+	d = {x:0 for (x in *$ncols)}
+	for (r in $rows)
+		r.cell_maxes (d)
+	return $prep_minmaxes (d)
+}
+
+method col_mins ()
+{
+	d = {x:0 for (x in *$ncols)}
+	for (r in $rows)
+		r.cell_mins (d)
+	return $prep_minmaxes (d)
+}
+
+method prep_minmaxes (d)
+{
+	# adjust multi-column cells, if extra space, distribute equally
+	for (k in d)
+		if (k -> tuple) {
+			x, cs = k
+			c = [x+i for (i in *cs)]
+			tot = sum ([d [x] for (x in c)])
+			v = d [k]
+			if (tot < v) {
+				dm = cs ? (v - tot) / cs : 0
+				for (x in c)
+					d [x] += dm
+			}
+		}
+	return [d [k] for (k in *$ncols)]
+}

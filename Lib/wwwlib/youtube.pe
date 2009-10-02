@@ -1,0 +1,270 @@
+##  Youtube Downloader/previewer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import re, misc
+from wwwlib import webnet, dom
+from wwwlib.js import jslex
+
+# Downloaded videos together with their title and icon are saved under
+# pyvm/user/wcache/tubes/
+# and they have the form of "mytubes".
+
+# There are various options for getting a video:
+# 1. from youtube's swfArgs ["fmt_url_map"] parameter which has a comma separated
+#    list of fmt_id|url entries.
+# 2. construct it from the swfArgs ["t"] (token) parameter
+# 3. from pwnyoutube standard and high quality links
+# The thing is that at any time, youtube and google can change their
+# "API" and break all youtube downloaders, and for that sites like
+# pwnyoutube have a very big future in making Web 2.x compatible to
+# everybody else except the Webkit/Mozilla/IE engines.
+#
+# The question now is, which of all the above urls to choose.
+# The function check_sizes() can be used to see the size in bytes and
+# the video type of all the above urls. More or less:
+# - default youtube url (2) == youtube fmt id 5 == pwnyoutube standard video
+# - pwnyoutube hidef == youtube fmt id 18 (mp4)
+# - youtube fmt id 35 is a much larger file (probaby larger dimensions/full screen)
+# - youtube fmt id 34 is the smallest size (better for preview?)
+
+def uesc (M)
+	return "%c" %int (M [0][1:], 16)
+
+urlesc = re.compile ("%..").subwith (uesc)
+
+# save temporary .html files from youtube and pwnyoutube?
+SAVE_TMPS = 0
+
+TUBEDIR = ewslash (@sysconfig.GETCONF ("webcache")) + "tubes/"
+try @os.mkdir (TUBEDIR)
+
+YOUTUBE = "http://www.youtube.com/watch?v="
+IYOUTUBE = "http://www.youtube.com/get_video_info?&video_id=%s&el=detailpage&ps=default&eurl=&gl=US&hl=en"
+GYOUTUBE = "http://www.youtube.com/get_video?&video_id=%s&t=%s&el=detailpage&ps=default&eurl=&gl=US&hl=en"
+PWNYOUTUBE = "http://www.pwnyoutube.com/watch?v=%s"
+PWN = "http://www.pwnyoutube.com"
+
+class tube
+{
+	method __init__ (arg)
+	{
+		if ("/" in arg) {
+			x = arg [:len (YOUTUBE)].lower ()
+			if (x != YOUTUBE) 
+				raise Error ("Bad youtube url [%s]" %x)
+			$video_id = arg [len (YOUTUBE):]
+			$url = arg
+		} else {
+			$video_id = arg
+			$url = YOUTUBE + arg
+		}
+		$iurl = IYOUTUBE %$video_id
+		$IMAGE_FILE = TUBEDIR + $video_id + ".image"
+		$TITLE_FILE = TUBEDIR + $video_id + ".title"
+	}
+
+	method fetch_metadata (pwn=False)
+	{
+		$urls = urls = {}
+		print "Connecting to yuotube to fetch video page..."
+		purl = webnet.START_URL ($url).get_it ()
+		if (purl.Status != "OK")
+			raise Error ("Can't get [%s]"%$iurl)
+
+		data = purl.readfile ()
+		$NotAvail = "is not available" in data.lower ()
+		print "Got it. Extracting metadata"
+		if (SAVE_TMPS)
+			open ("YOUTUBE%s.html"%$video_id, "w").write (data)
+		$Title, $Icon, VideoURL, SwfURLs = parse_metadata (data, $video_id)
+		print "Title:", $Title
+		if (VideoURL)
+			urls ["youtube", "default"] = VideoURL, ".flv"
+		for (fmt, url in SwfURLs)
+			urls ["youtube", fmt] = url, (fmt == 18 ? ".%i.mp4" : fmt == 5 ? ".flv"
+				 : ".%i.flv")%fmt
+
+		if (!urls or pwn) {
+			print "Connecting to pwnyoutube to fetch video page..."
+			purl = webnet.START_URL (PWNYOUTUBE% $video_id).get_it ()
+			if (SAVE_TMPS)
+				open ("PWNYOUTUBE%s.html"%$video_id, "w").write (purl.readfile ())
+			PwnURL, PwnURLHQ = parse_pwnmetadata (purl.readfile ())
+			if (PwnURL)
+				urls["pwn", "default"] = PwnURL, ".pwn.flv"
+			if (PwnURLHQ)
+				urls ["pwn", "hidef"] = PwnURLHQ, ".pwn.mp4"
+		}
+	}
+
+	method check_sizes ()
+		for (N, (sitedesc, (url, ext)) in enumerate ($urls.items ())) {
+			url = webnet.START_URL (url)
+			url = url.get_it (head=True)
+			clen = int (url.Headers ["content-length"]) / 1024
+			type = url.Headers ["content-type"]
+			print N, sitedesc, clen, type, havefile (TUBEDIR + $video_id + ext) ?
+				"-WE HAVE THIS-" : ""
+		}
+
+	method getit (hidef=False, pwn=False, fmt=False)
+	{
+		v = None
+		if (fmt is not False)
+			v = $urls ["youtube", int (fmt)]
+		else if (pwn) {
+			if (hidef)
+				try v = $urls ["pwn", "hidef"]
+				except print "No Hidef from pwn. Going for default"
+			if (!v) v = $urls ["pwn", "default"]
+		} else {
+			if (hidef)
+				try v = $urls ["youtube", 18]
+				except print "No Hidef from youtube. Going for default"
+			if (!v)
+				try v = $urls ["youtube", 5]
+				except v = $urls [$urls.keys ()[0]]
+		}
+		$doget (v)
+	}
+
+	method doget ((url, ext))
+	{
+		VIDEO_FILE = TUBEDIR + $video_id + ext
+		TITLE_FILE = TUBEDIR + $video_id + ".title"
+		IMAGE_FILE = TUBEDIR + $video_id + ".img"
+		if (!havefile (TITLE_FILE))
+			open (TITLE_FILE, "w").write ($Title)
+		if (!havefile (IMAGE_FILE)) {
+			print "Getting image"
+			try open (IMAGE_FILE, "w").write (
+				webnet.START_URL ($url).generate ($Icon).get_it ().readfile ())
+			except print "Image fail"
+		}
+		print "Downloading the video...."
+		tmpfile = misc.tmpfile (fnm=VIDEO_FILE, cleanup=False)
+		url = webnet.START_URL (url)
+		url.get_it (tmpfile=tmpfile, progress="stdoutkb")
+		return VIDEO_FILE
+	}
+
+	method geti (i)
+		return $doget ($urls.values ()[i])
+}
+
+def parse_metadata (page, video_id)
+{
+	doc = dom.produce (page)
+	Title = doc.title
+	t = Icon = fum = None
+	for (n in doc.walk_after ())
+		if (n.tag == "img") {
+			if (video_id in n.getattr ("src"))
+				Icon = n.getattr ("src")
+		} else if (n.tag == "script" and !t) {
+			ina = s1 = s2 = 0
+			for (l in jslex.jslex (n.cdata ()))
+				if (l == "swfArgs") ina = True
+				else if (ina)
+					if (l == '"t"') s1 = 1
+					else if (l == '"fmt_url_map"') s1 = 2
+					else if (l == ":" and s1) s1 += 10
+					else {
+						if (s1 == 11) t = l [1:-1]
+						if (s1 == 12) fum = l [1:-1]
+						s1 = 0
+					}
+		}
+	urls = []
+	if (fum) try {
+		for (u in urlesc (fum).split (",")) {
+			q, None, u = u.partition ("|")
+			urls<< (int (q), u)
+		}
+	} except {
+		print "Failed to extract urls from ftm_url_map"
+	}
+	if (t) vurl = GYOUTUBE %(video_id, t)
+	else {
+		print "Failed to extract the 't=...' parameter from the youtube page."
+		print "Attempt pwn instead"
+		vurl = None
+	}
+	return Title, Icon, vurl, urls
+}
+
+def parse_pwnmetadata (page)
+{
+	doc = dom.produce (page)
+	v1 = v2 = None
+	for (n in doc.walk_after ())
+		if (n.tag == "a" and (src = n.getattr ("href"))) {
+			if (src.sw ("/save-video.flv")) v1 = PWN + src
+			else if (src.sw ("/save-video.mp4")) v2 = PWN + src
+		}
+	return v1, v2
+}
+
+USAGE = "usage: youtube [-pwn][-check][-hd][-fmt <fmt>][-preview][-i] <video-id|youtube-url>
+
+Download the video of the specified video_id. Options:
+	-hd		: download the hidef mp4 version if available
+	-pwn		: use pwnyoutube instead
+	-fmt <fmt>	: fetch video with specified youtube id (5, 35, 18, 22, etc)
+	-check		: instead of downloading discover all the available urls
+			  and print the file size and file type of each one. the `-pwn`
+			  option applies to check the pwnyoutube urls as well.
+	-i		: interactive selection of the above stuff (text mode)
+	#-preview	: open up the video player to view the video as it downloads
+	#		  with the option to stop early if crap (NOT IMPLEMENTED)
+"
+
+if (__name__ == __main__)
+{
+	fmt = sys.argp.check_vswitch ("-fmt")
+	hidef, pwnit, check, interactive = sys.argp.check_switches ("-hd", "-pwn", "-check", "-i")
+	T = tube (sys.argp.one ())
+
+	if (interactive) {
+		print "youtube downloader started."
+		T.fetch_metadata (pwn=True)
+		T.check_sizes ()
+		if (!T.urls) {
+			print "No urls found! Bad video ID?"
+			exit ()
+		}
+		while (1) {
+			i = raw_input ("Please select which video to download: ").strip ()
+			if (!i or i == "q")
+				exit ()
+			try {
+				i = int (i)
+				if (0 <= i < len (T.urls))
+					break
+			}
+		}
+		f = T.geti (i)
+		print "OK. Saved to :", f
+
+		exit ()
+
+	}
+
+	T.fetch_metadata (pwn=pwnit)
+	if (!T.urls) {
+		print "No urls found! Bad video ID?"
+		exit ()
+	}
+	if (check) {
+		T.check_sizes ()
+		exit ()
+	}
+	f = T.getit (hidef, pwnit, fmt)
+	print "OK. Saved to :", f
+}

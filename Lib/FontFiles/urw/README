@@ -1,0 +1,21 @@
+   The commercial quality Type1 fonts. from ghostscript -- contributed by
+   URW++ Design and Development Incorporated, of Hamburg Germany (http://www.urwpp.de).
+
+
+pyvm
+----
+
+The URW fonts can be used as the "Builtin PDF Fonts".  According to the PDF spec, documents
+can define their own fonts (and usually do), but there is a set of builtin ones.
+
+These are the fonts xpdf uses, too.  Only the ones required for PDF are included here.
+There are more URW fonts which we may include in the future (look into /usr/share/ghostscript/fonts)
+
+Outside PDF, these fonts *can* be used for the gui (widgets, buttons, menus, lists) and
+the web browser (although their metrics differ from the "webfonts" and css may appear
+broken).
+
+They are pretty nice but because they are old, type1 fonts, they start to look ugly
+in low resolutions (low DPI).  Generally, they were designed for laser printers that
+have DPI then times better than computer screens.  On high resolution graphics,
+the URW fonts can be used everywhere successfuly.

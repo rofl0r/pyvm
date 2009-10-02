@@ -1,0 +1,499 @@
+##  Compact Font Format (CFF) parser
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# "The Compact Font Format Specification" technical note #5176
+
+__autosem__
+
+from datastream import data_parser
+import cffdata, ttycolor
+
+# The compact font format is just another representation of type1 (pfb)
+# fonts, without encryption and with a special encoding to reduce its
+# size (zlib wasn't invented back then).  Such fonts are found embedded
+# in PDF files.
+
+def readindex (r)
+{
+	dp = data_parser (r)
+	count = dp.r16b () + 1
+	ofz = dp.r8 ()
+	if (ofz == 1)
+		offsets = [dp.r8 () for (None in *count)]
+	else if (ofz == 2)
+		offsets = [dp.r16b () for (None in *count)]
+	else if (ofz == 0)
+		return dp.rest (), []
+	else raise Error ("Unimplemented offset type [%s]" %ofz)
+
+	datas = []
+	po = None
+	for (o in offsets) {
+		if (po is not None)
+			datas<< dp.read (o - po)
+		po = o
+	}
+	return dp.rest (), datas
+}
+
+TopDictCodes = {
+	 0: "version",
+	 1: "Notice",
+	 2: "FullName",
+	 3: "FamilyName",
+	 4: "Weight",
+	 5: "FontBox",
+	13: "UniqueID",
+	14: "XUID",
+	15: "charset",
+	16: "Encoding",
+	17: "CharStrings",
+	18: "Private",
+	 -1: "isFixedPitch",
+	 -2: "ItalicAngle",
+	 -3: "UnderlinePosition",
+	 -4: "UnderlineThickness",
+	-21: "PostScrpt",
+	-22: "BaseFontName",
+}
+
+PrivDictCodes = {
+	 6: "BlueValues",
+	 7: "OtherBlues",
+	 8: "FamilyBlues",
+	 9: "FamilyOtherBlues",
+	10: "StdW",
+	11: "StdH",
+	19: "Subrs",
+	20: "defaultWidthX",
+	21: "nominalWidthX",
+	 -9: "BlueScale",
+	-11: "BlueFuzz",
+	-10: "BlueShift",
+	-12: "StemSnapH",
+	-13: "StemSnapV",
+	-14: "ForceBold",
+}
+
+NIBBLES = {
+	0:'0', 1:'1', 2:'2', 3:'3', 4:'4', 5:'5', 6:'6', 7:'7', 8:'8', 9:'9',
+	10:'.', 11:'E', 12:'E-', 14:'-',
+}
+
+def parseDict (c, CCODE)
+{
+	c = ords (c)
+	d = []
+	D = {}
+	i = 0
+	while (i < len (c)) {
+		v = c [i]
+##		print 'v is:', v
+		i += 1
+		if (v >= 32) {
+			if (v <= 246)
+				v -= 139
+			else if (v <= 250) {
+				v = (v - 247) * 256 + c [i] + 108
+				i += 1
+			} else if (v <= 254) {
+				v = -(v - 251) * 256 - c [i] - 108
+				i += 1
+			} else raise Error ("NOTIMPL")
+			d.append (v)
+		} else if (v == 28) {
+			s = "%c%c" %(c [i], c [i+1])
+			d.append (ord16bs (s))
+			i += 2
+		} else if (v == 29) {
+			s = "%c%c%c%c" %(c [i], c [i+1], c [i+2], c [i+3])
+			d.append (ord32b (s))
+			i += 4
+		} else if (v == 30) {
+			n = []
+			while (1) {
+				cc = c [i]
+				i += 1
+				for (nb in (cc >> 4, cc & 0xf))
+					if (nb == 15) break
+					else n.append (NIBBLES [nb])
+				if (nb == 15) break
+			}
+			d.append (float ("".join (n)))
+		} else if (v == 12) {
+			try D [CCODE [-c [i]]] = len (d) == 1 ? d [0] : d
+			except print 'error', ttycolor.color ("UNKNOWN CFF COMMAND (12):", 'r'), c [i], d
+			d = []
+			i += 1
+		} else {
+			try D [CCODE [v]] = len (d) == 1 ? d [0] : d
+			except print 'error', ttycolor.color ("UNKNOWN CFF COMMAND:", 'r'), v
+			d = []
+		}
+	}
+
+	return D
+}
+
+# The charstrings can be either type1 or type2 according to the spec.
+# In practice, all seem to be type2.
+
+# Parse a Type2 Charstring microprogram, generating a sequence of ps commands.
+# This program is then converted to a Type1 microprogram.  Hinting commands
+# are supressed
+
+Type2Coding = {
+	 1: "hstem",
+	 3: "vstem",
+	 4: "vmoveto",
+	 5: "rlineto",
+	 6: "hlineto",
+	 7: "vlineto",
+	 8: "rrcurveto",
+	10: "callsubr",
+	14: "endchar",
+	18: "hstemhm",
+	19: "hintmask",
+	20: "cntrmask",
+	21: "rmoveto",
+	22: "hmoveto",
+	23: "vstemhm",
+	24: "rcurveline",
+	25: "rlinecurve",
+	26: "vvcurveto",
+	27: "hhcurveto",
+	30: "vhcurveto",
+	31: "hvcurveto",
+}
+
+class type2decoder
+{
+	method __init__ (c)
+		$dp = data_parser (c)
+
+	method decode ()
+	{
+		CCODE = Type2Coding
+		dp = $dp
+		r8 = dp.r8
+		while (1) {
+			try v = r8 ()
+			except break
+
+			if (v >= 32) {
+				if (v <= 246)
+					yield v - 139
+				else if (v <= 250)
+					yield (v - 247) * 256 + r8 () + 108
+				else if (v <= 254)
+					yield -(v - 251) * 256 - r8 () - 108
+				else yield dp.r32b () / 65536.0
+			} else if (v == 28) {
+				yield dp.r16bs ()
+			} else if (v == 29) {
+				try yield dp.r32b ()
+				except return
+			} else if (v == 12) {
+				v = r8 ()
+				try yield CCODE [v]
+				except print ttycolor.color ("UNKNOWN TYPE2 COMMAND (12):", 'r'), v
+			} else {
+				try yield CCODE [v]
+				except print ttycolor.color ("UNKNOWN TYPE2 COMMAND:", 'r'), v
+			}
+		}
+	}
+
+	method getn (n)
+		return $dp.rn (n)
+}
+
+# Here covert to type1. There are subtleties. Some things are just ignored.
+# Guide: xpdf/fofi/FoFiType1C.cc:cvtGlyph()
+
+def decode_type2_charstring (cs, dw, nw, localsubr)
+{
+	NEED_CLOSEPATH = {"endchar", "rmoveto", "hmoveto", "vmoveto", "seac" }
+	OPEN_PATH = { "rcurveline", "rlinecurve", "vvcurveto", "hhcurveto",
+			"vhcurveto", "hvcurveto", "hflex", "flex", "hflex1", "flex1",
+			"rlineto", "hlineto", "vlineto", "rrcurveto" }
+
+	T = type2decoder (cs)
+	args = []
+	p = []
+
+	nHints = 0
+	openPath = False
+	firstOp = True
+
+	for (i in T.decode ())
+		if (i -> str) {
+			if (firstOp) {
+				if (len (args) % 2)
+					w = args.pop (0) + nw
+				else w = dw
+				p.extend ([0, int (w), 'hsbw'])
+				firstOp = False
+			}
+
+			if (i in NEED_CLOSEPATH and openPath) {
+				p.append ("closepath")
+				openPath = False
+			}
+
+			if (i in OPEN_PATH)
+				openPath = True
+
+			if (i in {"hsbw", "endchar", "return", "vmoveto", "hmoveto"}) {
+				p.extend (args)
+				args = []
+				p.append (i)
+			} else if (i == "rmoveto") {
+				if (len (args) != 2)
+					raise "BROKEN"
+				p.extend (args)
+				args = []
+				p.append (i)
+			} else if (i in {"hstem", "vstem"}) {
+				nHints += len (args) / 2
+				args = []
+			} else if (i in {"hstemhm", "vstemhm"}) {
+				nHints += len (args) / 2
+				args = []
+			} else if (i in ("hintmask", "cntrmask")) {
+				nHints += len (args) / 2
+				args = []
+				T.getn ((nHints + 7) >> 3)
+			} else if (i == "rrcurveto") {
+				while (args) {
+					p.extend (args [:6])
+					p.append ("rrcurveto")
+					args = args [6:]
+				}
+			} else if (i == "hhcurveto") {
+				if (len (args) % 2) {
+					p.extend ([args [1], args [0], args [2], args [3],
+						 args [4], 0, "rrcurveto"])
+					args = args [5:]
+				}
+				while (args) {
+					p.extend ([args [0], 0, args [1], args [2],
+						   args [3], 0, "rrcurveto"])
+					args = args [4:]
+				}
+			} else if (i == "vvcurveto") {
+				if (len (args) % 2) {
+					p.extend ([args [0], args [1], args [2], args [3], 0, args [4]])
+					p.append ("rrcurveto")
+					k = 5
+				} else k = 0
+				while (k < len (args)) {
+					p.extend ([0, args [k], args [k+1], args [k+2],
+						   0, args [k+3], "rrcurveto"])
+					k += 4
+				}
+				args = []
+			} else if (i in ("hlineto", "vlineto")) {
+				for (a in args) {
+					p.append (a)
+					p.append (i)
+					i = i == "hlineto" ? "vlineto" : "hlineto"
+				}
+				args = []
+			} else if (i in ("hvcurveto", "vhcurveto")) {
+				F = !bool (i != "hvcurveto");
+				k = 0
+				while (k < len (args) and k != len (args) - 5) {
+					f = bool (k % 8) == F ? "vhcurveto" : "hvcurveto"
+					p.extend ([args [k], args [k+1], args [k+2],
+						  args [k+3], f])
+					k += 4
+				}
+				if (k == len (args) - 5) {
+					if (bool (k % 8) != F)
+						p.extend ([
+							args [k], 0, args [k+1], args [k+2],
+							args [k+4], args [k+3]])
+					else
+						p.extend ([
+							0, args [k], args [k+1], args [k+2],
+							args [k+3], args [k+4]])
+					p.append ("rrcurveto")
+				}
+				args = []
+			} else if (i == "rlineto") {
+				while (len (args) >= 2) {
+					p.extend (args [:2])
+					p.append ("rlineto")
+					args = args [2:]
+				}
+			} else if (i == "rcurveline") {
+				while (len (args) >= 8) {
+					p.extend (args [:6])
+					p.append ("rrcurveto")
+					args = args [6:]
+				}
+				p.extend (args)
+				p.append ("rlineto")
+				args = []
+			} else if (i == "rlinecurve") {
+				while (len (args) >= 8) {
+					p.extend (args [:2])
+					p.append ("rlineto")
+					args = args [2:]
+				}
+				p.extend (args)
+				p.append ("rrcurveto")
+				args = []
+			} else if (i == "callsubr") {
+				raise Error ("TODO: callsubr not implemented")
+			} else {
+				print "TODO: decode_type2_charstring:", i
+				exit ()
+			}
+		} else args.append (i)
+
+	return tuple (p)
+}
+
+def parse (r)
+{
+	hdr = r [:4]
+	R = r
+	r = r [4:]
+
+	# Name INDEX
+	r, NameIndex = readindex (r)
+
+	# TopDICT INDEX
+	r, TopDict = readindex (r)
+	TopDict = {"Encoding":0, "charset":0}
+			.update (parseDict (TopDict [0], TopDictCodes))
+
+	# String INDEX
+	r, StringIndex = readindex (r)
+	def getString (n)
+		return n < 391 ? cffdata.StdStrings [n] : StringIndex [n - 391]
+
+	# Global Subr INDEX
+	r, GlobalSubrIndex = readindex (r)
+
+#	print NameIndex
+#	print TopDict
+##	print StringIndex
+##	print GlobalSubrIndex
+
+	# Private dict
+	size, offset = TopDict ["Private"]
+	PrivateDict = {"defaultWidthX":0, "nominalWidthX":0, "CharstringType":2, "Subrs":None}
+			.update (parseDict (R [offset:size+offset], PrivDictCodes))
+#	print PrivateDict
+
+	if (PrivateDict ["Subrs"] is not None)
+		LocalSubrs = readindex (R [offset + PrivateDict ["Subrs"]:]) [1]
+	else LocalSubrs = []
+
+	# CharStrings INDEX
+	dw = PrivateDict ["defaultWidthX"]
+	nw = PrivateDict ["nominalWidthX"]
+	r2, CharStringsIndex = readindex (R [TopDict ["CharStrings"]:])
+	if (PrivateDict ["CharstringType"] == 2)
+		CharStrings = [decode_type2_charstring (c, dw, nw, LocalSubrs)
+				 for (c in CharStringsIndex)]
+	else raise Error ("Charstring Type not implemented")
+
+	nglyphs = len (CharStringsIndex)
+
+##	print nglyphs, "glyphs in CharStrings"
+
+	charset_offset = TopDict ["charset"]
+	# read charset
+	if (charset_offset > 2) {
+		charset = [0] * (nglyphs + 1)
+		C = R [charset_offset:]
+		fmt = ord (C [0])
+		if (fmt == 0) {
+			C = C [1:1+nglyphs*2]
+			for (i in *nglyphs)
+				charset [i + 1] = ord16b (C [2*i:2*i+2])
+		} else if (fmt == 1) {
+			C = C [1:1+nglyphs*2]
+			i = 1
+			j = 0
+			while (i < nglyphs) {
+				c = ord16b (C [3*j:3*j+2])
+				nleft = ord (C [3*j+2])
+				j += 1
+				for (k in *(nleft + 1)) {
+					if (i >= nglyphs)
+						break
+					charset [i] = c
+					i += 1
+					c += 1
+				}
+			}
+		} else raise Error ("Unknown charset format %i" %fmt)
+	} else if (charset_offset == 0) {
+		# ISOAdobe charset
+		charset = range (229)
+	} else raise Error ("STANDARD CHARSET!")
+	charset = [getString (c) for (c in charset)]
+
+	# read encoding
+	e = TopDict ["Encoding"]
+	if (e > 2) {
+		encoding = [""] * 256
+		E = R [e:TopDict ["CharStrings"]]
+		dp = data_parser (E)
+		encFormat = dp.r8 ()
+		if (encFormat & 0x7f == 0) {
+			for (i in *dp.r8 ())
+				encoding [dp.r8 ()] = charset [i+1]
+		} else if (encFormat & 0x7f == 1) {
+			nCodes = 1
+			ranges = dp.r8 ()
+			for (None in *ranges) {
+				c = dp.r8 ()
+				nLeft = dp.r8 ()
+				j = 0
+				while (j <= nLeft and nCodes < len (charset)) {
+					if (c < 256)
+						encoding [c] = charset [nCodes]
+					nCodes += 1
+					c += 1
+					j += 1
+				}
+			}
+		}
+		if (encFormat & 0x80) {
+			for (i in *dp.r8 ()) {
+				c = dp.r8 ()
+				encoding [c] = getString (dp.r16b ())
+			}
+		}
+	} else if (e == 0) {
+		from fonts import standardEncoding
+		encoding = list (standardEncoding)
+	} else raise Error ("Other Encoding")
+
+	# Make chars dictionary, compatible with Type1
+	Chars = {}
+	for (n, c in enumerate (CharStrings))
+		Chars [charset [n]] = c
+
+	font_name = getString (TopDict ["FullName"]) ?? getString (TopDict ["BaseFontName"])
+	# To return standard stuff
+	return font_name, TopDict ["FontBox"], encoding, {}, Chars
+}
+
+#
+#
+#
+
+if (__name__ == __main__)
+	for (f in sys.argv [1:])
+		parse (readfile (f))

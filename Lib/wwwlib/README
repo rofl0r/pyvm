@@ -1,0 +1,44 @@
+Browser of the web
+------------------
+
+Generally, a web browser that does all the things simple people
+want (flash, advanced javascript and plugins) is not what this
+is about. A js/flash engine may be implemented in the future
+but replacing Mozilla is not something feasible.
+
+For that this is a "browser of the web" and not a "web browser".
+We don't care about showing a page 100% the way it should be;
+instead, in every page there is some interesting data and the
+wrapping css decoration. We try to make the interesting data
+available to the user.
+
+The CSS engine is currently broken (there are some serious bugs
+in inline boxes with borders+box-decoration, as well as the
+fact that inline flow and box flow should be separated. These
+two things, together with many others can be fixed only with
+a complete rewrite!).
+
+The browser can switch between "full css mode" and "plain HTML
+mode" by pressing '8' and '1'. Bugs that appear in full css
+mode should not be reported; we can discover a million of
+them easilly ourselfs:)
+On the other hands, bugs that stop the plain HTML mode from
+working *are* more important and should be fixed.
+
+The bottom line is that there is a vast amount of content
+on the internet. Some of this just works with this browser.
+Most modern sites that are reworked with css kludges to
+become part of the "Web 2.0 revolution" do not. MyFace,
+SpaceBook, GoogleEarth, Gmail and Youtube are out of the
+question. We are better off using the site's API directly
+to write a custom frontend, or use sites like pwnyoutube.
+
+
+notes
+-----
+
+- The browser does permanent www mirroring. IOW the webcache
+is never cleaned and even has a structure that makes it
+easy to explore.
+
+- ...

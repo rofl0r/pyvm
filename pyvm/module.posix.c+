@@ -1,0 +1,456 @@
+/*
+ *  Posix routines
+ * 
+ *  Copyright (c) 2006, 2007, 2008 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+_module __object__ *access_posix (REFPTR argv[])
+{
+	return PyBool (access (argv [0].CheckStringNZ ()->str,
+		               argv [1].CheckInt ()->i) == 0);
+}
+
+_module __object__ *getcwd_posix ()
+{
+	char buf [2047];
+	if (!getcwd (buf, sizeof buf - 1))
+		RaiseOsError ();
+	return new StringObj (buf);
+}
+
+_module __object__ *readlink_posix (REFPTR argv [])
+{
+	char buf [2047];
+	int c;
+
+	if ((c = readlink (argv [0].CheckStringNZ ()->str, buf, sizeof buf - 1)) == -1)
+		RaiseOsError ();
+	return new StringObj binctor (buf, c);
+}
+
+_module __object__ *rename_posix (REFPTR argv[])
+{
+	if (rename (argv [0].CheckStringNZ ()->str, argv [1].CheckStringNZ ()->str))
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *unlink_posix (REFPTR argv[])
+{
+	unlink (argv [0].CheckStringNZ ()->str);
+	return &None;
+}
+
+_module __object__ *_exit_posix (REFPTR argv[])
+{
+	exit (argv [0].CheckInt ()->i);
+}
+
+_module __object__ *chdir_posix (REFPTR argv[])
+{
+	if (chdir (argv [0].CheckStringNZ ()->str) == -1)
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *mkdir_posix (REFPTR argv[], int argc)
+{
+	int mode = argc == 1 ? 0777 : argv [1].CheckInt ()->i;
+	if (mkdir (argv [0].CheckStringNZ ()->str, mode) < 0)
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *rmdir_posix (REFPTR argv[])
+{
+	if (rmdir (argv [0].CheckStringNZ ()->str) < 0)
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *symlink_posix (REFPTR argv[])
+{
+	if (symlink (argv [0].CheckStringNZ ()->str, argv [1].CheckStringNZ ()->str))
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *chmod_posix (REFPTR argv[])
+{
+	if (chmod (argv [0].CheckStringNZ ()->str, argv [1].CheckInt ()->i))
+		RaiseOsError ();
+	return &None;
+}
+
+_module __object__ *errno_posix (REFPTR argv[])
+{
+	return newIntObj (errno);
+}
+
+_module __object__ *getpid_posix (REFPTR argv[])
+{
+/* static pid_t mypid */
+	return newIntObj (getpid ());
+}
+
+Interrupt OSError (OS_ERROR);
+
+static __object__ *RaiseOsError ()
+{
+	OSError.obj = new StringObj (strerror (errno));
+	throw &OSError;
+}
+
+#ifndef _D_EXACT_NAMLEN
+#define _D_EXACT_NAMLEN(d) strlen ((d)->d_name)
+#endif
+
+_module __object__ *listdir_posix (REFPTR argv [])
+{
+	char *path = argv [0].CheckStringNZ ()->str;
+	DIR *D;
+	dirent *d;
+
+	if (!(D = opendir (path)))
+		RaiseOsError ();
+
+	ListObj *L = new ListObj;
+	while ((d = readdir (D))) {
+		int namlen = _D_EXACT_NAMLEN (d);
+		if (d->d_name [0] == '.' && (namlen == 1
+		|| (namlen == 2 && d->d_name [1] == '.')))
+			continue;
+		L->append (new StringObj binctor (d->d_name, namlen));
+	}
+	closedir (D);
+	return L;
+}
+
+_module __object__ *_stat_posix (REFPTR argv[])
+{
+	return statfunc (argv [0].CheckStringNZ ()->str, stat);
+}
+
+_module __object__ *_lstat_posix (REFPTR argv[])
+{
+	return statfunc (argv [0].CheckStringNZ ()->str, lstat);
+}
+
+static __object__ *statfunc (const char *path, int (*f)(const char*, struct stat*))
+{
+	/* the real 'stat' is a class which implements structseq */
+	struct stat statbuf;
+
+	if (f (path, &statbuf) == -1)
+		RaiseOsError ();
+
+	return new Tuplen (newIntObj (statbuf.st_mode), newIntObj (statbuf.st_ino),
+		 newIntObj (statbuf.st_dev), newIntObj (statbuf.st_nlink),
+		 newIntObj (statbuf.st_uid), newIntObj (statbuf.st_gid),
+		 newIntObj (statbuf.st_size), newIntObj (statbuf.st_atime),
+		 newIntObj (statbuf.st_mtime), newIntObj (statbuf.st_ctime),
+		 newIntObj (statbuf.st_blksize), newIntObj (statbuf.st_blocks),
+		 newIntObj (statbuf.st_rdev));
+}
+
+/*
+ * Open a file and return an integer file descriptor.
+ *
+ * Usually, the builtin function open() is used and it returns a "file object".
+ * this is a special open that's used in the case we need to open non regular
+ * files (fifos, /proc entries, etc). The other open tries to mmap the file if
+ * small. In any case, this is considered an open that can block (true in the
+ * case of a fifo if the other end isn't ready!)
+ */
+_module __object__ *OPEN_posix (REFPTR argv[])
+{
+	char *fnm = argv [0].CheckStringNZ ()->str;
+	int flags = argv [1].CheckInt ()->i;
+	int mode  = argv [1].CheckInt ()->i;
+	RELEASE_GIL
+	int fd = open (fnm, flags, mode);
+	ACQUIRE_GIL
+	if (fd == -1)
+		RaiseOsError ();
+	return newIntObj (fd);
+}
+
+_module __object__ *CLOSE_posix (REFPTR argv[])
+{
+	close (argv [0].CheckInt ()->i);
+	return &None;
+}
+
+_module __object__ *mkfifo_posix (REFPTR argv[])
+{
+	if (mkfifo (argv [0].CheckStringNZ ()->str, 0666))
+		RaiseOsError ();
+	return &None;
+}
+
+/*
+ * pty functions.  When we want to run another program inside an xterminal
+ *  or generally, control its input/output from pyvm, we have to use a
+ *  pseudo-terminal.  That's a rare and very specialized action.
+ *  This openpty is not the same as Python's openpty.
+ *
+ */
+
+int grantpt (int);
+int unlockpt (int);
+char *ptsname (int);
+
+_module __object__ *openpty_posix (REFPTR argv[])
+{
+	// /dev/ptmx are the "UNIX98" pseudo-terminals.
+	// since 10 years have elapsed, we can consider adopted,
+	// otherwise we have to open /dev/pty[pqrs][0-9a-v]
+
+	int cols = argv [0].CheckInt ()->i;
+	int rows = argv [1].CheckInt ()->i;
+	int master = open ("/dev/ptmx", O_RDWR | O_NOCTTY);
+	int slave;
+	char *slave_name;
+	int r;
+	struct winsize ws;
+
+#define ERR(x) { r=x; goto fail; }
+
+	if (master == -1) ERR (1)
+	if (grantpt (master) < 0) ERR (2)
+	/* should store SIGCHL? */
+	if (unlockpt (master) < 0) ERR (3)
+	if (!(slave_name = ptsname (master))) ERR (4);
+	if ((slave = open (slave_name, O_RDWR | O_NOCTTY)) == -1) ERR (5);
+	ws.ws_row = rows;
+	ws.ws_col = cols;
+	ws.ws_xpixel = ws.ws_ypixel = 0;
+	if (ioctl (slave, TIOCSWINSZ, &ws) == -1) ERR (6);
+
+	return new Tuplen (newIntObj (master), newIntObj (slave));
+fail:
+	return newIntObj (r);
+}
+
+_module __object__ *pipe_posix ()
+{
+	int filedes [2];
+	if (pipe (filedes))
+		RaiseNotImplemented ("pipe() failed");
+	return new Tuplen (newIntObj (filedes [0]), newIntObj (filedes [1]));
+}
+
+/*
+ * GIL releasing.  Must have for devices like /dev/dsp but a tiny waste for
+ * real files. Todo is to make these use the poller.
+ */
+
+_module __object__ *write_posix (REFPTR argv[])
+{
+	StringObj *s = argv [1].CheckString ();
+	int fd = argv [0].CheckInt ()->i;
+	RELEASE_GIL
+	int n = write (fd, s->str, s->len);
+	ACQUIRE_GIL
+	return newIntObj (n);
+}
+
+_module __object__ *read_posix (REFPTR argv[])
+{
+	int fd = argv [0].CheckInt ()->i;
+	int nn = argv [1].CheckInt ()->i;
+	char *s = seg_alloc (nn + 1);
+
+	RELEASE_GIL
+	int rt = read (fd, s, nn);
+	ACQUIRE_GIL
+
+	if_unlikely (rt == -1) {
+		seg_free (s);
+		RaiseOsError ();
+	}
+	if (nn != rt)
+		s = seg_realloc2 (s, nn, rt + 1);
+	s [rt] = 0;
+	return new StringObj allocated (s, rt);
+}
+
+/*
+ * new one. same as the `touch` program to update the mtime of a file.
+ */
+_module __object__ *touch_posix (REFPTR argv[])
+{
+	utimbuf u;
+	u.actime = u.modtime = time (0);
+	utime (argv [0].CheckStringNZ ()->str, &u);
+	return &None;
+}
+
+/* */
+_module __object__ *statfs_posix (REFPTR argv[])
+{
+	return newIntObj (statfs (argv [0].CheckString ()->str, (struct statfs*) argv [1].CheckString ()->str));
+}
+
+/*
+ * used by minios.execbin() and openpty()
+ *  exec (path_to_bin, argv-list, env, pty-fd, infd)
+ *
+ * `path_to_bin`: absolute path to executable
+ * `argv-list`: list of strings for arguments. argv[0] == program name
+ * `env`: a list of "key=value" strings for the environment
+ * `pty-fd`: if not "-1" then this is the fd of a pseduo tty and all stdio of the executed
+ *	     program are set to this
+ * `infd`: if not "-1" connect the executed program's stdout _and_ stderr to this.
+ */
+
+_module __object__ *exec_posix (REFPTR argv [], int argc)
+{
+	char *prog  = argv [0].CheckString ()->str;
+	ListObj *L  = ListObj.fcheckedcast (argv [1].o);
+	ListObj *eL = ListObj.fcheckedcast (argv [2].o);
+	int pty_fd  = argv [3].CheckInt ()->i;
+	int infd    = argv [4].CheckInt ()->i;
+	int i;
+	pid_t pid;
+	char *tmp [L->len + 1];
+	char *env [eL->len + 1];
+
+	for (i = 0; i < L->len; i++)
+		tmp [i] = StringObj.fcheckedcast (L->__xgetitem__ (i))->str;
+	tmp [i] = 0;
+	for (i = 0; i < eL->len; i++)
+		env [i] = StringObj.fcheckedcast (eL->__xgetitem__ (i))->str;
+	env [i] = 0;
+
+	switch (pid = fork ()) {
+		case -1: RaiseOsError ();
+		case 0:
+			if (pty_fd != -1) {
+				setsid ();
+				// ---no stderr below here!!---
+#ifdef TIOCSCTTY
+				if (ioctl (pty_fd, TIOCSCTTY, 0) == -1)
+					goto fail;
+#else
+				close (0);
+				close (1);
+				close (2);
+#endif
+				dup2 (pty_fd, 0);
+				dup2 (pty_fd, 1);
+				dup2 (pty_fd, 2);
+				if (pty_fd > 2) close (pty_fd);
+
+			} else if (infd != -1) {
+				close (1);
+				dup2 (infd, 1);
+				close (2);
+				dup2 (infd, 2);
+			}
+			execve (prog, tmp, env);
+		fail:
+			pprint ("execv FAILED!");
+			exit (0);
+	}
+
+	return newIntObj (pid);
+}
+
+/*
+ * waitpid to avoid zombies from exec.
+ *  A possible alternative is:
+ *	install SIGCHLD handler
+ *	handler does a wait() to figure out the pid
+ *	handler releases a lock
+ *	pyvm thread from BIOS sleeping on the lock wakes-up and receives pid
+ *	it releases pid-lock
+ *  But, the zombie exists anyway.  How bad is that?
+ */
+
+_module __object__ *waitpid_posix (REFPTR argv[])
+{
+	int pid = argv [0].CheckInt ()->i;
+	int rval;
+
+	RELEASE_GIL
+	int r = waitpid (pid, &rval, 0);
+	ACQUIRE_GIL
+
+	if (r == -1) rval = -1;
+
+	return newIntObj (rval);
+}
+
+extern char **environ;
+
+/* module */
+
+static const bltinfunc funcs [] = {
+	{ "access",	SETARGC (2, 2), access_posix },
+	{ "chdir",	SETARGC (1, 1), chdir_posix },
+	{ "chmod",	SETARGC (2, 2), chmod_posix },
+	{ "close",	SETARGC (1, 1), CLOSE_posix },
+	{ "errno",	SETARGC (0, 0), errno_posix },
+	{ "__exec",	SETARGC (5, 5), exec_posix },
+	{ "_exit",	SETARGC (1, 1), _exit_posix },
+	{ "getcwd",	SETARGC (0, 0), getcwd_posix },
+	{ "getpid",	SETARGC (0, 0), getpid_posix },
+	{ "listdir",	SETARGC (1, 1), listdir_posix },
+	{ "_lstat",	SETARGC (1, 1), _lstat_posix },
+	{ "mkdir",	SETARGC (1, 2), mkdir_posix },
+	{ "mkfifo",	SETARGC (1, 1), mkfifo_posix },
+	{ "open",	SETARGC (3, 3), OPEN_posix },
+	{ "openpty",	SETARGC (2, 2), openpty_posix },
+	{ "pipe",	SETARGC (0, 0), pipe_posix },
+	{ "read",	SETARGC (2, 2), read_posix },
+	{ "readlink",	SETARGC (1, 1), readlink_posix },
+	{ "rename",	SETARGC (2, 2), rename_posix },
+	{ "rmdir",	SETARGC (1, 1), rmdir_posix },
+	{ "_stat",	SETARGC (1, 1), _stat_posix },
+	{ "statfs",	SETARGC (2, 2), statfs_posix },
+	{ "symlink",	SETARGC (2, 2), symlink_posix },
+	{ "touch",	SETARGC (1, 1), touch_posix },
+	{ "unlink",	SETARGC (1, 1), unlink_posix },
+	{ "waitpid",	SETARGC (1, 1), waitpid_posix },
+	{ "write",	SETARGC (2, 2), write_posix },
+	BENDITEM
+};
+
+static const char *aliases [] = { "remove", "unlink", 0 };
+
+slowcold __object__ *import__posix ()
+{
+	DictObj *env = new DictObj;
+	int i, j;
+	for (i = 0; environ [i]; i++) {
+		for (j = 0; environ [i][j] != '='; j++);
+		env->xsetitem (new StringObj binctor (environ [i], j),
+				new StringObj (environ [i] + j + 1));
+	}
+
+	varval values [] = {
+		{"environ",  env},
+		{"error",    DynExceptions.OSError},
+		{"R_OK",     newIntObj ($R_OK)},
+		{"W_OK",     newIntObj ($W_OK)},
+		{"X_OK",     newIntObj ($X_OK)},
+		{"F_OK",     newIntObj ($F_OK)},
+		{"O_RDONLY", newIntObj ($O_RDONLY)},
+		{"O_RDWR",   newIntObj ($O_RDWR)},
+		{"O_CREAT",  newIntObj ($O_CREAT)},
+		{"O_EXCL",   newIntObj ($O_EXCL)},
+		{"O_WRONLY", newIntObj ($O_WRONLY)},
+		{"O_NOCTTY", newIntObj ($O_NOCTTY)},
+		VENDITEM
+	};
+
+	return new ModuleObj BltinModule ("posix", funcs, aliases, values);
+}

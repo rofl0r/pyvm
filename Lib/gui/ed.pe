@@ -1,0 +1,456 @@
+##  Abtract editor
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+#
+# Base editor (not a widget. this is the data structure)
+#
+
+NULL = chr (0)
+from util import sort2
+from utfutil import utf8_len, utf8_iter, utf8_slice, breakstr_utf
+import utfutil
+
+class ed
+{
+	method __init__ ($vscrx, $vscry, t, $authoring=False, $international=False)
+	{
+		if (international) {
+			$len = utf8_len
+			$delchars = utfutil.delchars_utf
+			$inschars = utfutil.inschars_utf
+		} else {
+			$len = len
+			$delchars = utfutil.delchars_ascii
+			$inschars = utfutil.inschars_ascii
+		}
+
+		$newText (t)
+	}
+
+	method loadText (t)
+		$Line, $Text = $splitText (t);
+
+	method newText (t)
+	{
+		$ln = $lo = $cx = $cy = $voff = 0;
+		$loadText (t);
+		$selection = None;
+	}
+
+	method splitText (t, ln=0)
+	{
+		P = t.split ('\n');
+		if (t and t [-1] == '\n')
+			del P [-1];
+
+		if ($international)
+			lbreak = $authoring ? breakpar_auth_utf : breakpar_utf;
+		else
+			lbreak = $authoring ? breakpar_auth : breakpar;
+
+		T = [];
+		for (n, l in enumerate (P))
+			for (t, o in lbreak (l, $vscrx or 1))
+				T.append ((t, o, n + ln));
+
+		return P, T;
+	}
+
+	method resize_w (w)
+		if (w != $vscrx) {
+			$vscrx = w;
+			$loadText ($getText ());
+			#$loadText ($getText () + '\n');
+			$udl ();
+		}
+
+	method resize_h (h)
+		if (h != $vscry) {
+			$vscry = h;
+			$vadj ();
+		}
+
+	method par2text (l)
+	{
+		if ($cy < len ($Text) and $Text [$cy][2] == l) {
+			n = $cy;
+			while (n and $Text [n - 1][2] == l)
+				n -= 1;
+		} else
+			for (n, i in enumerate ($Text))
+				if (i [2] == l)		# optimize with bisect
+					break;
+
+		e = n;
+		while (e + 1 < len ($Text) and $Text [e + 1][2] == l)
+			e += 1;
+
+		return n, e;
+	}
+
+	method v2l (x, y)
+	{
+		t, o, n = $Text [y];
+		return n, o + x - t [:x].count (NULL);
+	}
+
+	method l2v (l, o)
+	{
+		n = $par2text (l) [0];
+
+		try while ($Text [n][2] == l) {
+			O = $Text [n][1];
+			if (O > o)
+				break;
+			n += 1;
+		}
+		n -= 1;
+		O = $Text [n][1];
+
+		x = 0;
+		o -= O;
+		t = $Text [n][0];
+		while (t [x] == NULL) x += 1;
+		while (o) {
+			o -= 1;
+			x += 1;
+			while (t [x] == NULL) x += 1;
+		}
+
+		return x, n;
+	}
+
+	method udv ()
+	{
+		$ln, $lo = $v2l ($cx, $cy);
+		$vadj ();
+	}
+
+	method udl ()
+	{
+		$cx, $cy = $l2v ($ln, $lo);
+		$vadj ();
+	}
+
+	method vadj ()
+		if !($voff <= $cy < $voff + $vscry)
+			if ($voff > $cy)
+				$voff = $cy;
+			else $voff = $cy - $vscry + 1;
+
+	# cursor movement
+
+	method skiptabs ()
+	{
+		$cx = min ($cx, $len ($Text [$cy][0]) - 1);
+		t = $Text [$cy][0];
+		if (t [$cx] != NULL)
+			return;
+		while (t [$cx] == NULL) {
+			$cx += 1;
+			if ($cx >= $len (t)) {
+				$cx = 0;
+				$cy += 1;
+				t = $Text [$cy][0];
+			}
+		}
+	}
+
+	method key_RIGHT ()
+	{
+		t = $Text [$cy][0];
+		if ($cx >= $len (t) - 1)
+			if ($cy < len ($Text) - 1) {
+				$cx = 0;
+				$cy += 1;
+			} else return;
+		else {
+			$cx += 1;
+			$skiptabs ();
+		}
+		$udv ();
+	}
+
+	method key_LEFT ()
+	{
+		t = $Text [$cy][0];
+		if ($cx == 0)
+			if ($cy) {
+				$cy -= 1;
+				t = $Text [$cy][0];
+				$cx = len (t) - 1;
+			} else return;
+		else $cx -= 1;
+
+		while (t [$cx] == NULL) {
+			if ($cx) $cx -= 1;
+			else {
+				$cy -= 1;
+				t = $Text [$cy][0];
+				$cx = len (t) - 1;
+			}
+		}
+
+		$udv ();
+	}
+
+	method adjend ()
+	{
+		t = $Text [$cy][0];
+		$cx = min ($cx, $len (t) - 1);
+		$skiptabs ();
+		$udv ();
+	}
+
+	method key_UP ()
+		if ($cy) {
+			$cy -= 1;
+			$adjend ();
+		}
+
+	method key_DOWN ()
+		if ($cy < len ($Text) - 1) {
+			$cy += 1;
+			$adjend ();
+		}
+
+	method key_PAGEUP ()
+		if ($cy) {
+			$cy = max (0, $cy - $vscry);
+			$adjend ();
+		}
+
+	method key_PAGEDOWN ()
+		if ($cy < len ($Text) - 1) {
+			$cy += $vscry;
+			$cy = min ($cy, len ($Text) - 1);
+			$adjend ();
+		}
+
+	method key_HOME ()
+	{
+		$lo = 0;
+		$udl ();
+	}
+	method key_END ()
+	{
+		$lo = len ($Line [$ln]);
+		$udl ();
+	}
+
+	method move (cx, cy)
+	{
+		$cy = max (0, min (cy + $voff, len ($Text) - 1));
+		$cx = max (0, cx);
+		$adjend ();
+	}
+
+	# modify text
+
+	method displace (p, dn)
+		if (dn) for (i in range (p, len ($Text))) {
+			t, o, n = $Text [i];
+			$Text [i] = t, o, n + dn;
+		}
+
+	method chline (ln, lt)
+	{
+		P, T = $splitText (lt + '\n', ln);
+		s, e = $par2text (ln);
+		$Line [ln:ln+1] = P;
+		$Text [s:e+1] = T;
+		$displace (s + len (T), len (P) - 1);
+	}
+
+	method insert (c)
+	{
+		l = $Line [$ln]
+		$chline ($ln, $inschars (l, $lo, c))
+		$key_RIGHT ()
+	}
+
+	method delete1 ()
+	{
+		l = $Line [$ln];
+		if ($lo == len (l)) {
+			if ($ln + 1 == len ($Line))
+				return;
+			s, e = $par2text ($ln + 1);
+			$displace (e + 1, -1);
+			l = l + $Line [$ln + 1];
+			del $Line [$ln + 1];
+			del $Text [s:e+1];
+			$chline ($ln, l);
+			return;
+		}
+		$chline ($ln, $delchars (l, $lo, 1))
+	}
+
+	method key_BACKSPACE ()
+		if ($cy or $cx) {
+			$key_LEFT ();
+			$delete1 ();
+		}
+
+	# visualize
+
+	method pad (l)
+	{
+		l = l.replace (NULL, ' ').replace ('\t', ' ');
+		l = l.replace ('\n', ' ');
+		return l + ' '* ($vscrx - $len (l));
+	}
+
+	method cursor ()
+	{
+		if (0 <= $cy - $voff < $vscry)
+			return $cx, $cy - $voff;
+		return None;
+	}
+
+	method lpos ()
+		return $ln, $lo;
+
+	method bound ((x, y))
+		if (y < $voff) return 0, 0;
+		else if (y >= $voff + $vscry) return $vscrx, $vscry - 1;
+		else return x, y - $voff;
+
+	method produce ()
+	{
+		vl = [$pad (x [0]) for (x in $Text [$voff:$voff + $vscry])];
+		if (len (vl) < $vscry)
+			vl.extend ([' ' * $vscrx] * ($vscry - len (vl)));
+
+		return vl;
+	}
+
+	# selection
+
+	method start_selection ()
+		$selection = $lpos ();
+
+	method clear_selection ()
+		$selection = None;
+
+	method produce_selection ()
+	{
+		if ($selection is None)
+			return None;
+
+		L = [(0, 0)] * $vscry;
+		(c0x, c0y), (c1x, c1y) = [$bound ($l2v (*x))
+			  for (x in sort2 ($selection, ($ln, $lo)))];
+
+		if (c0y == c1y)
+			L [c0y] = c0x, c1x;
+		else {
+			L [c0y] = c0x, $vscrx;
+			L [c1y] = 0, c1x;
+			for (i in range (c0y + 1, c1y))
+				L [i] = 0, $vscrx;
+		}
+
+		return L;
+	}
+
+	method selection_data ()
+	{
+		if (!$selection)
+			return ""
+		y1, x1 = $selection
+		y2, x2 = $ln, $lo
+		if (y1 > y2 or (y1 == y2 and x1 > x2))
+			x1, y1, x2, y2 = x2, y2, x1, y2
+		if (y1 == y2)
+			return $Line [y1][x1:x2]
+		s = [$Line [y1][x1:]]
+		for (y in xrange (y1+1, y2))
+			s<< $Line [y]
+		s<< $Line [y2][:x2]
+		return "\n".join (s)
+	}
+
+	method have_selection ()
+		return $selection is not None;
+
+	method delete_selection ()
+	{
+# unixxx
+		(c0n, c0o), (c1n, c1o) = sorted (($selection, $lpos ()));
+		$ln, $lo = c0n, c0o;
+		if (c0n == c1n) {
+			L = $Line [c0n];
+			$chline (c0n, L [:c0o] + L [c1o:]);
+		} else {
+			L = $Line [c0n][:c0o] + $Line [c1n][c1o:];
+			$chline (c0n, L or '\n');
+			if (!L) { c0n += 1; c1n+=1; }	# SF bug 23775991631
+			del $Line [c0n+1:c1n+1];
+			$loadText ($getText ());
+		}
+		$clear_selection ();
+		$udl ();
+	}
+
+	# data
+
+	method getText ()
+		return '\n'.join ($Line) + '\n';
+}
+
+def tmptabs (s)
+{
+	if ('\t' not in s)
+		return s;
+
+	S = [];
+	n = 0;
+	for (i in s) {
+		S.append (i);
+		n += 1;
+		if (i != '\t')
+			continue;
+
+		n2 = ((n + 8) / 8) * 8;
+		for (i in range (n2-n))
+			S.append (NULL);
+		n = n2;
+	}
+
+	return ''.join (S);
+}
+
+gen breakpar (l, x)
+{
+	ex = tmptabs (l + '\n');
+	poff = 0;
+	off = 0;
+
+	while (len (ex) > off + x) {
+		s = ex [off:off+x];
+		yield s, poff;
+		off += x;
+		poff += x - s.count (NULL);
+	}
+
+	yield ex [off:], poff;
+}
+
+gen breakpar_utf (l, x)
+{
+	ex = tmptabs (l + '\n')
+	poff = 0
+
+	while (ex) {
+		s, ex = breakstr_utf (ex, x)
+		yield s, poff
+		poff += x - s.count (NULL)
+	}
+}

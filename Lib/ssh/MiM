@@ -1,0 +1,39 @@
+Man-in-the-middle handling
+
+ SSL solves that with the use of verified certificates, of verified
+ certificates ... until a central authority.  But what if there is
+ a MiM attack between us and the central authority?
+ Still, this is more suitable for a protocol like HTTP where we
+ do not connect to one well-known server.
+
+ SSH solves that by keeping a local copy of the server's public key.
+ If this key was given to us through non-standard channels (eg. piece
+ of paper by server's administrator), we are definitelly OK.
+ Otherwise, MiM can happen, but there is a high risk that MiM will
+ be exposed if we try to connect from a different network, etc.
+ So because MiM attacks from ISPs would be a scandal, this is rather
+ safe.
+
+ (The implementation of SSH in pyvm *refuses* to update a different
+ public key from the server.  In this case the application terminates
+ and a message is sent to the user that he should edit the file with
+ the stored public keys and remove the server's entry)
+
+ A final method that we do here in order to make the MiM exposure
+ easier is that, once the SSH session is up, the user is presented
+ with two strings.  The first is the hexlified SHA1 digest of the
+ server-to-client key.  The other is the hexlified SHA1 digest of
+ the client-to-server key.  Called MiMA and MiMB.
+
+ For custom protocols, paranoid users can verify that they have
+ the same strings by telling each other information about them.
+ If not, we have MiM.
+ This cannot be applied on standard protocols like SSH(telnet),
+ SFTP, etc.  But for SSH-over-IRC, for example, this ... could ... work!
+
+ With this method we can catch "automatic MiM".
+ Custom MiM where a real person sits in the middle, will have to
+ be counterparted with intelligent users.
+
+ Once a secure channel is setup and we have verified that there
+ is no MiM, it can be used for the transmission of public keys.

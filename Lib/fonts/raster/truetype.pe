@@ -1,0 +1,413 @@
+##  TrueType parser
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# http://developer.apple.com/fonts/TTRefMan/index.html
+
+__autosem__
+
+C = @DLL.Import ("ttf", "-O3 -Wall -D%s" % (sys.byteorder=="little" ? "LE" : "BE"), pelf=1)
+
+__bind__ = ["C"]
+
+from pspath import Path
+
+class sfntparser (**@datastream.data_parser)
+{
+	rvdisp = { 2: "r16b", -2: "r16bs", 4: "r32b", -1: "r8s", }
+
+	method rv (n)
+		return n -> int ? $($rvdisp [n])() : $read (int (n))
+
+	method rvalues (vdef)
+	{
+		d = {}
+		for (name, n in vdef) {
+			v = $rv (n)
+			if(name) d [name] = v
+		}
+		return d
+	}
+
+	method rvlist (*vl)
+		return [$rv (i) for (i in vl)]
+
+	method ritems (f, n)
+		return [f () for (None in *n)]
+
+	method rfix ()
+		return $r16bs () / 16384.0
+
+	method subtable (offset)
+		return sfntparser ($data, $offset0 + offset)
+}
+
+class TTF (@fonts.raster.rasterizer.BaseRasterizer)
+{
+	method Init (data, **kw)
+	{
+		$FontName = $filename
+
+		$p = sfntparser (data)
+		hdr = $p.read (4)
+		if (hdr == "OTTO") OTTO = True
+		else if (hdr == "\0\1\0\0") OTTO = False
+		else raise Error ("Not a ttf")
+
+		numtab, None, None, None = $p.rvlist (2, 2, 2, 2)
+
+		tables = {}
+		for (None in *numtab) {
+			name, chekcsum, offset, length = $p.rvlist ("4", 4, 4, 4)
+			tables [name] = offset, length
+		}
+
+		$tables = tables
+		$data = $p.data
+
+		if (OTTO) {
+			print tables
+			cff = $read_table ("CFF ")
+			data = cff.rest ()
+			import cff
+			cff.parse (data)
+			#print ords (cff.rest () [:4])
+			print "OK"
+		} else {
+			$load_head ()
+			$load_charmap ()
+			$load_metrics ()
+			$load_loca ()
+			$glyfs = $read_table ("glyf").rest ()
+		}
+
+		# free
+		$data = None
+		$p.data = None
+		$p = None
+	}
+
+	method glyph_names ()	# fixme
+		return ["%i" % x for (x in $cmap)]
+
+	method exec_glyph (ctm, g)
+	{
+		path = Path (ctm)
+		idx = g
+		contours = $load_a_glyf (idx)
+
+		lineto, conicto = path.lineto, path.conicto
+		for (c in contours) {
+			x0, y0 = c [0][-2:]
+			path._move (x0, y0)
+			path.open_contour ()
+			for (xy in c [1:])
+				if (len (xy) == 2) 
+					lineto (*xy)
+				else conicto (*xy)
+			path.close_contour ()
+		}
+
+		path.wx, path.lbear = $hMetrics [2*idx], $hMetrics [2*idx+1]
+
+		return path
+	}
+
+	method char2id (c)
+		return $cmap [ord (c)] ?? 0
+	method name2id (n)
+		return $cmap [int (n)]
+	method utf2id (n)
+		return $cmap [n]
+
+	method px2adv (adv, px, em, dbg=0)
+	{
+		# In metrics calculation decimals in the px size do not matter.
+		# IOW: the advance for a glyph is the same whether at 13.0 or 13.1 or 13.2 px
+		# This seems to be what freetype does...
+		px = lround (px)
+		return lround ((px*adv*64) / em)
+	}
+
+	method advance_of (idx, px, dbg=0)
+		return $px2adv ($hMetrics [2*idx], px, $UPE, dbg)
+
+	method height_at (px)
+		return px * $LineHeight /$UnitsPerEM
+
+	# -------------------------------------------------------------------
+
+	method read_table (name)
+	{
+		offset, length = $tables [name]
+		return sfntparser ($data, offset, length)
+	}
+
+	# Head table
+
+	method load_head ()
+	{
+		$head = $read_table ("head").rvalues ((
+			("version", 4),
+			("font_revision", 4),
+			("", 4),
+			("", 4),
+			("flags", 2),
+			("units_per_EM", 2),
+			("", 4),
+			("", 4),
+			("", 4),
+			("", 4),
+			("xmin", -2),
+			("ymin", -2),
+			("xmax", -2),
+			("ymax", -2),
+			("mac_style", 2),
+			("lowest_rec_ppem", 2),
+			("font_direction", 2),
+			("index_to_loc_format", 2),
+			("glyph_data_format", 2)))
+
+		$UnitsPerEM = $UPE = float ($head ["units_per_EM"])
+		$BBox = [$head [x] for (x in ["xmin", "ymin", "xmax", "ymax"])]
+
+		maxp = $read_table ("maxp")
+		maxp.skip (4)
+		$numGlyphs = maxp.r16b ()
+	}
+
+	# --- char map ---
+
+	method load_charmap ()
+	{
+		t = $read_table ("cmap")
+		t.r16b ()
+		ntbl = t.r16b ()
+		for (None in *ntbl) {
+			platform, platform2, offset = t.rvlist (2, 2, 4)
+			if.break (platform == 3) {
+				s = t.subtable (offset)
+				if (s.r16b () != 4)
+					raise Error ("Only format type 4 supported in cmap!")
+				$ucs = $cmap = $cmap_format4 (s)
+			}
+		} else raise Error ("Cannot parse cmap")
+	}
+
+	method cmap_format4 (s)
+	{
+		xx = array ("i", 2 * $numGlyphs)
+		nn = C.parse_cmap_fmt4 (s.data, s.offset, xx, len (xx))
+		nn /= 2
+		cmap = iidict ()
+		# (in the vm)
+		for (n in xrange (0, 2*nn, 2))
+			cmap [xx [n]] = xx [n + 1]
+		return cmap
+	}
+
+	# --- metrics ---
+	method load_metrics ()
+	{
+		hhea = $read_table ("hhea").rvalues ((
+			("version", 4),
+			("ascender", 2), ("descender", -2), ("linegap", 2), ("", 2), ("", 2),
+			("", 2), ("", 2), ("", 2), ("", 2), ("", 2),
+			("", 2), ("", 2), ("", 2), ("", 2), ("", 2),
+			("numhm", 2)))
+
+		$LineHeight = hhea ["ascender"] - hhea ["descender"] + hhea ["linegap"]
+
+		t = $read_table ("hmtx")
+		$hMetrics = array ("i", 2 * $numGlyphs)
+		numhm = hhea ["numhm"]
+		C.parse_hmetrics ($numGlyphs, numhm, t.data, t.offset, $hMetrics)
+	}
+
+	# --- glyph outlines ---
+
+	# The "loca" section tells us where is each glyph in the "glyf" section
+
+	method load_loca ()
+	{
+		t = $read_table ("loca")
+		glen = $tables ["glyf"][1]
+
+		if ($head ["index_to_loc_format"]) {
+			n = t.left () / 4
+			$loca = array ("i", n + 1)
+			C.read_loc_1 (t.data, t.offset, $loca, n)
+			$loca [-1] = glen
+			return
+		}
+
+		n = t.left () / 2
+		$loca = array ("i", n + 1)
+		C.read_loc_0 (t.data, t.offset, $loca, n)
+		$loca [-1] = glen
+	}
+
+	method load_a_glyf (n)
+	{
+		offset = $loca [n]
+		size = $loca [n+1] - offset
+
+		if (!size)
+			return []
+		s = sfntparser ($glyfs, offset, size)
+		r8 = s.r8
+		ncon, xmin, ymin, xmax, ymax = s.rvlist (-2, -2, -2, -2, -2)
+
+		if (ncon == -1) {
+			# A compound glyph: created with one or more other glyphs
+			# possibly scaled, rotated and/or moved.
+			contours = []
+			rfix = s.rfix
+			do {
+				flags, index = s.rvlist (2, 2)
+				subcontours = $load_a_glyf (index)
+				if (flags & 1)
+					dx, dy = s.rvlist (-2, -2)
+				else dx, dy = s.rvlist (-1, -1)
+
+				xx = yy = 1.0
+				xy = yx = 0.0
+				if (flags & 8)
+					xx = yy = rfix ()
+				else if (flags & 0x40) {
+					xx = rfix ()
+					yy = rfix ()
+				} else if (flags & 0x80) {
+					xx = rfix ()
+					yx = rfix ()
+					xy = rfix ()
+					yy = rfix ()
+				}
+				transform_contours (subcontours, xx, yy, xy, yx)
+				if (flags & 2)
+					move_contours (subcontours, dx, dy)
+				else {
+					# lack of testing...
+					print "ARGS ARE NOT XY VALUES! Not implemented in ttf"
+					raise Error
+				}
+				contours.extend (subcontours)
+			} while (flags & 0x20)
+			return contours
+		}
+
+		if (!ncon)
+			return []
+
+		# read the ends
+		ends = array ("i", ncon)
+		C.glyf_ends (s.data, s.offset, ends, ncon)
+		s.skip (2 * ncon)
+
+		# Skip IL commands
+		s.skip (s.r16b ())
+
+		np = ends [-1]
+
+		# read flags
+		flags = array ("i", np + 1)
+		ss = C.glyf_flags (s.data, s.offset, flags, np)
+		s.skip (ss)
+
+		# read points
+		xp = array ("i", np + 1)
+		yp = array ("i", np + 1)
+		ss = C.glyf_points (s.data, s.offset, flags, xp, yp, np)
+		s.skip (ss)
+
+		xp = xp.tolist ()
+		yp = yp.tolist ()
+		flags = flags.tolist ()
+		points = zip (flags, xp, yp)
+
+		st = 0
+		contours = []
+		for (e in ends) {
+			e += 1
+			contours << expand_contour (points [st:e])
+			st = e
+		}
+
+		return contours
+	}
+}
+
+# We have a list of (flag, x, y) tripplets.  If the flag is 0 the point
+# is off-line which means it is the central point of a conic curve.  If two
+# sequential points have flag 0 the intermediate on-line point must be
+# calculated.  This function does that and eventually generates a list of
+# drawing operations, either LINETO, or CURVETO
+def expand_contour (points)
+{
+	# This works as long as the first point has non zero flag
+	ec = []
+	pp = None
+	# add the first point to the end, in order to close the shape
+	points.append (points [0])
+
+	for (f, x, y in points)
+		if (f) {
+			if(!pp) ec.append ([x, y])	# LINETO
+			else {
+				ec.append ([pp [0], pp [1], x, y])	# CURVETO
+				pp = None
+			}
+		} else if (!pp) {
+			pp = x, y
+		} else {
+			x0, y0 =  pp
+			mx = (x0 + x) / 2
+			my = (y0 + y) / 2
+			ec.append ([x0, y0, mx, my])
+			pp = x, y
+		}
+
+	return ec
+}
+
+# local transformation for compound subglyphs
+
+def transform_vec (x, y, xx, yy, xy, yx)
+	return  int (x * xx + y * xy), int (y * yy + x * yx)
+
+def transform_contours (contours, xx, yy, xy, yx)
+{
+	xyzzy = xx, yy, xy, yx
+	if (xyzzy == (1.0, 1.0, 0.0, 0.0))
+		return
+	for (c in contours)
+		for (cc in c)
+			if (len (cc) == 2) {
+				cc [0], cc [1] = transform_vec (cc [0], cc [1], xx, yy, xy, yx)
+			} else {
+				cc [0], cc [1] = transform_vec (cc [0], cc [1], xx, yy, xy, yx)
+				cc [2], cc [3] = transform_vec (cc [2], cc [3], xx, yy, xy, yx)
+			}
+}
+
+def move_contours (contours, dx, dy)
+	for (c in contours)
+		for (cc in c)
+			if (len (cc) == 2) {
+				cc [0], cc [1] = cc [0] + dx, cc [1] + dy
+			} else {
+				cc [0], cc [1] = cc [0] + dx, cc [1] + dy
+				cc [2], cc [3] = cc [2] + dx, cc [3] + dy
+			}
+
+if (__name__ == __main__)
+{
+	R = TTF (sys.argp.filename_ex ())
+	for (i in *300) {
+#		R.render_glyph (R.char2id ("i"), 13 + i/5.0)
+		R.render_glyph (i, 13 + i/5.0)
+	}
+}

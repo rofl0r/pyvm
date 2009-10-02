@@ -1,0 +1,36 @@
+namespace select_rect
+{
+	method get_pixels (xx0, yy0, xx1, yy1)
+	{
+		if (xx0 == xx1) {
+			yy0, yy1 = min (yy0, yy1), max (yy0, yy1);
+			L = [$get_pixel (xx0, yy) for (yy in range (yy0, yy1))];
+		} else {
+			xx0, xx1 = min (xx0, xx1), max (xx0, xx1);
+			L = [$get_pixel (xx, yy0) for (xx in range (xx0, xx1))];
+		}
+		return (xx0, yy0, xx1, yy1), L;
+	}
+
+	method put_pixels ((xx0, yy0, xx1, yy1), L)
+	{
+		if (xx0 == xx1) {
+			yy0, yy1 = min (yy0, yy1), max (yy0, yy1);
+			for (yy, vv in zip (range (yy0, yy1), L))
+				$put_pixel (xx0, yy, vv);
+		} else {
+			xx0, xx1 = min (xx0, xx1), max (xx0, xx1);
+			for (xx, vv in zip (range (xx0, xx1), L))
+				$put_pixel (xx, yy0, vv);
+		}
+	}
+
+	method save_rect (x0, y0, x1, y1)
+		return $get_pixels (x0, y0, x1, y0),
+			$get_pixels (x0, y1, x1, y1),
+			$get_pixels (x0, y0, x0, y1),
+			$get_pixels (x1, y0, x1, y1);
+
+	method restore (args)
+		for (i in args) $put_pixels (*i);
+}

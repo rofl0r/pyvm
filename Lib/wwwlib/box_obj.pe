@@ -1,0 +1,200 @@
+__autosem__
+
+from graphics import ImageFile
+from wwwlib.basic import wwdatafile
+
+# replaced images
+class Image
+{
+	SCREEN_BPP = 3
+	NotLoaded = ImageFile (wwdatafile ("img.gif")).read_image ()
+	Broken = ImageFile (wwdatafile ("broken.gif")).read_image ()
+	Clip = None
+	realw = realh = None
+	onclick = None
+	has_value = False
+
+	content = True
+	method __init__ ($node, $src, page_url, $ionce)
+	{
+		$file = None
+		url = page_url.generate (src)
+
+		# size attributes (html or css)
+		$spw = node.iattr ("width", node.css.get ("width")) or None
+		$sph = node.iattr ("height", node.css.get ("height")) or None
+		if !($spw -> int)
+			$spw = None
+		else $spw = minmax (0, $spw, 2680)
+		if !($sph -> int)
+			$sph = None
+		else $sph = minmax (0, $sph, 2680)
+
+		if (($sph is None and $spw is None) and src) {
+			# page loaded before, maybe we have "size hints"
+			if (sh = page_url.get_size_hint (url))
+				$spw, $sph = sh
+			else if (url.Local) 
+				$set_file (url)
+		}
+		if (url.Local and !$file)
+			$set_file (url)
+		$height = $sph is None ? $NotLoaded.h : $sph
+	}
+
+	method set_file (url)
+	{
+		if (url.Status != "OK") {
+			$file = False
+			return False
+		}
+
+		try {
+			try $file = $ionce [$spw, $sph, url.uid]
+			except {
+				$file = ImageFile (url.File)
+				$file.image = None
+				$ionce [$spw, $sph, url.uid] = $file
+			}
+			w, h = $file.size ()
+			$realw = w
+			$realh = h
+		} except {
+			print "image failed", url, url.File
+			$file = False
+			return False
+		}
+
+		if (w == $spw and h == $sph)
+			return False
+		if ($sph is None and $spw is None)
+			$spw, $sph = w, h
+		else if ($sph is None)
+			$sph = h * $spw / w
+		else if ($spw is None)
+			$spw = w * $sph / h
+		$height = $sph
+		return True
+	}
+
+	method width ()
+		return $spw is None ? $NotLoaded.w : $spw
+
+	method render_to (x, y, d, href)
+	{
+		if ($node.getattr ("usemap")) {
+			try m = $node.root ().maps [$node.getattr ("usemap") [1:]]
+			except print "NO MAP:", $node.getattr ("usemap")
+			else if (areas = parse_map (x, y, m)) {
+				areas.append ([x, y, $width (), $height, href])
+				href = areas
+			}
+		}
+		d.add_image (self, x, y, $width (), $height, href or $onclick, $src)
+	}
+
+	method transparent ()
+		return $file and $file.alphatab
+
+	method get_image ()
+	{
+		if (!$file)
+			return $file is None ? $NotLoaded : $Broken
+		if (!$file.image) {
+			$file.image = $file.read_image_bpp ($SCREEN_BPP)
+			if (($spw, $sph) != ($realw, $realh))
+				$file.image = $file.image.xresize ($spw, $sph)
+		}
+		return $file.image
+	}
+
+	method dump (lvl)
+		print " "*lvl, "image", $src
+}
+
+# Parse an AREA for use by an image
+
+def parse_map (x0, y0, m)
+{
+	# XXX: doesn't handle <input type=text usemap> correctly. must coop with Form...
+	if (!m.areas) {
+		areas = []
+		anchors = []
+		for (k in m.iterall ()) {
+			if (k.tag not in ("a", "area"))
+				continue
+
+			# XXX: square the circle
+			if.continue (k.lattr ("shape") != "rect")
+				print "MAP uses other kind of shape:", k.dattr ("shape")
+			if.continue (!(area = k.getattr ("coords")))
+				print "AREA without coords:", k.attributes
+			if (!(href = k.getattr ("href")))
+				continue
+
+			try lx, ty, rx, by = [int (x) for (x in area.split (','))]
+			except continue
+
+			w = rx - lx
+			h = by - ty
+			if (w <=0 or h <= 0)
+				continue
+			(k.tag == "a" ? anchors : areas).append ([lx, ty, w, h, href])
+		}
+		m.areas = anchors or areas
+	}
+	return [x0+x, y0+y, w, h, href for (x, y, w, h, href in m.areas)]
+}
+
+class iframe
+{
+	content = True
+
+	method __init__ (node)
+	{
+		$src = node.getattr ("src")
+		$w = node.iattr ("width", 10)
+		$height = node.iattr ("height", 10)
+	}
+
+	method width ()
+		return $w
+
+	method render_to (x, y, d)
+	{
+		d.add_iframe (x, y, $w, $height, $src)
+	}
+
+	method dump (lvl)
+		print " "*lvl, "IFRAME"
+}
+
+# controls (input, textarea, etc) are both dom nodes and graphical objects.
+# add the relevant methods to them
+
+namespace ControlMethods
+{
+	method width ()
+		return $widget.w
+	method getvalue ()
+		return $widget.Form.GetValue ()
+	method render_to (x, y, d)
+		d.add_widget ($widget, x, y)
+	method has_value ()
+		return $widget.has_value
+	method attach_widget ($widget, form)
+	{
+		$height = widget.h
+		widget.vwidget = self
+		widget.form = form
+	}
+	method ypos (n=None)
+		return $vparent ? $vparent.ypos (self) : 0
+	find_text = void
+}
+
+from wwwlib.dom import DOM
+DOM.NodeInput.__dict__.update (ControlMethods.__dict__)
+DOM.NodeTextarea.__dict__.update (ControlMethods.__dict__)
+DOM.NodeOption.__dict__.update (ControlMethods.__dict__)
+DOM.NodeSelect.__dict__.update (ControlMethods.__dict__)

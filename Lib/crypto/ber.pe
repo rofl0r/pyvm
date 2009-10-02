@@ -1,0 +1,55 @@
+__autosem__
+from datastream import data_parser
+from crypto.longs import PKCToLong
+
+# BER encoding. The way to bundle together a bunch of longs in PKC format,
+# used in X509 certificates, SSL and SSH-private-key format.
+
+# XXXX: this is not yet suitable for use in the `tls` module... fix.
+
+def BER (pp)
+{
+	if (!pp.left ())
+		return None
+
+	idt = pp.r8 () & 31
+	if (idt == 31)
+		raise Error ("Bad IDT")
+	size = pp.r8 ()
+	if (size & 0x80) {
+		t = size & 0x7f
+		if (t == 1)
+			size = pp.r8 ()
+		else if (t == 2)
+			size = pp.r16b ()
+		else raise Error ("BER too big")
+	}
+	data = pp.read (size)
+
+	if (idt == 16) {
+		pp2 = data_parser (data)
+		items = []
+		while ((i = BER (pp2)) is not None)
+			items.append (i)
+		return items
+	}
+	if (idt == 2) 
+		return PKCToLong (data)
+	raise Error ("Unimplemented BER type")
+}
+
+def parse_BER (data)
+	return BER (data_parser (data))
+
+def writed (idt, data)
+{
+	size = len (data)
+	if (size < 128)
+		size = "%c" %size
+	else if (size < 256)
+		size = "%c%c" %(0x81, size)
+	else if (size < 65536)
+		size = "%c%MH" %(0x82, size)
+	else raise Error ()
+	return "%c"%idt + size + data
+}

@@ -1,0 +1,154 @@
+__autosem__
+
+from graphics import ImageFile
+from wwwlib.basic import FontManager, font_cache
+import profile
+
+# if set to true and www is executed with "profile-enabled pyvm: ppyvm",
+# it will profile the *second* cascade. So open up the desired page and
+# hit reload. This is done to avoid some cold cache issues and show only
+# the true profile of the cascade code.
+PROFILEIT = False
+
+if (PROFILEIT)
+	RUN=0
+
+# Fill in the $css attribute of all the nodes of the HTML tree.
+def cascade_document (dom)
+{
+	fc = font_cache
+	getcss = dom.url.css.cascade
+	u = {}
+
+	def cache (css)
+	{
+		fp = css [2:6]
+		try font = fc [fp]
+		except font = fc [fp] = FontManager.openx (fp [1], fp [0], fp [2], fp [3], True)
+		d = {
+			"display": css [0],
+			"white-space": css [1],
+			"font-size": css [2],
+			"font": font,
+			"sizeof": font.isizeof,
+			"maxh":font.maxh
+		}
+		return u [css] = d
+	}
+
+	SS = dom.url.css.STDSIZES
+	def rel_fontsize (s, r)
+	{
+		# calculation of smaller/larger hints: nsStyleUtil.cpp
+		if (s < SS [0])
+			return r == "larger" ? s + 1 : s - 1
+		if (s > SS [-1])
+			return r == "larger" ? s * 1.5 : s / 1.5
+		try {
+			i = SS.index (s)
+			if (r == "larger") {
+				try return SS [i + 1]
+				return s * 1.5
+			} else {
+				if (i) return SS [i - 1]
+				return s / 1.5
+			}
+		}
+		for (nn, ss in enumerate (SS))
+			if.break (ss > s)
+				larger = nn
+		smaller = larger - 1
+		rel = (s - SS [smaller]) / (SS [larger] - SS [smaller])
+		if (r == "larger") {
+			try xlarger = SS [larger + 1]
+			except xlarger = SS [larger] * 1.5
+			return SS [larger] + rel * (xlarger - SS [larger])
+		}
+		if (smaller) xsmaller = SS [smaller - 1]
+		else xsmaller = SS [smaller] - 1
+		return xsmaller + rel * (SS [smaller] - xsmaller)
+	}
+
+	def compute_font_size (css, pcss)
+	{
+		css = list (css)
+		if (css [2] -> int)
+			css [2] = css [2] * pcss [2] / 100.0
+		else if (css [2] -> str)
+			css [2] = rel_fontsize (pcss [2], css [2])
+		return tuple (css)
+	}
+
+	def cascade (pcss, node, prods, slibing)
+	{
+		node.css, prods, slibing = getcss (node, prods, slibing)
+
+		css = tuple_or (pcss, node.css ["#"])
+		if !(css [2] -> float)
+			css = compute_font_size (css, pcss)
+
+		try node.css2 = u [css]
+		except node.css2 = cache (css)
+
+		s = ()
+		for (node in node.kids)
+			if (node.tag)
+				s = cascade (css, node, prods, s)
+		return slibing
+	}
+
+	# entry
+	pcss = "inline", 0, dom.url.css.BASESIZE, "serif", False, False
+
+	global RUN
+	with (profile.Profile (PROFILEIT and RUN==1))
+		cascade (pcss, dom, (), ())
+
+	if (PROFILEIT)
+		RUN += 1
+	dom.url.css.done ()
+}
+
+# used by the renderer
+class css_image_db
+{
+	SCREEN_BPP = 3
+
+	method __init__ ($dom_root)
+	{
+		$db = {}
+		$mtc = {}
+	}
+
+	method open (src)
+	{
+		try return $db [src.uid]
+		if !(url = src.load_cached ())
+			return
+		try i = ImageFile (url.File).read_image_bpp ($SCREEN_BPP)
+		except return
+		i.mega_tile = $mega_tile
+		return $db [src.uid] = i
+	}
+
+	method mega_tile (img, repeat)
+	{
+		MTN = 200
+		# repeating tiles is done by constructing "mega-tiles" which are
+		# at least 200 pixels wide in the repeat direction and then
+		# blitting these as images
+		try return $mtc [(img, repeat)]
+
+		w, h = img.w, img.h
+		if (repeat == "repeat-x")
+			mtl = w > MTN ? img : img.repeat_x (MTN / w + 1)
+		else if (repeat == "repeat-y")
+			mtl = h > MTN ? img : img.repeat_y (MTN / h + 1)
+		else if (repeat == "repeat") {
+			mtl = w > MTN ? img : img.repeat_x (MTN / w + 1)
+			mtl = h > MTN ? mtl : mtl.repeat_y (MTN / h + 1)
+		}
+
+		return $mtc [(img, repeat)] = mtl
+	}
+}

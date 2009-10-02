@@ -1,0 +1,59 @@
+##  Long number representations
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Long numbers represented as strings
+
+# MPI: The format of SSH
+# PKC: The format of PKCS standard (SSL, etc)
+# PYVM: hexlified PKC
+
+# MPI and PKC are almost the same.  A subtle difference is that in the case of
+# MPI we append zeros if the highest bit is 1
+
+__autosem__
+
+def MPIToLong (s)
+{
+	if (s [0] == "\0") s = s [1:]
+	L = Long (0)
+	for (i in s)
+		L = (L << 8) + ord (i)
+	return L
+}
+
+def LongToMPI (l)
+{
+	s = unhexlify ("".join (list (reversed (str (l).split ("-")))).lower ())
+	while (s.sw ("\0"))
+		s = s [1:]
+	if (ord (s [0]) & 0x80)
+		s = "\0" + s
+	return s
+}
+
+def PKCToLong (s)
+{
+	L = Long (0)
+	for (i in s)
+		L = (L << 8) + ord (i)
+	return L
+}
+
+def LongToPKC (l)
+{
+	s = unhexlify ("".join (list (reversed (str (l).split ("-")))))
+	return s
+}
+
+OS2IP = PKCToLong
+I2OSP = LongToPKC
+
+def PYVMToLong (s)
+	return PKCToLong (unhexlify (s))
+
+def LongToPYVM (i)
+	return hexlify (LongToPKC (i))

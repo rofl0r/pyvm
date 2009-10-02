@@ -1,0 +1,325 @@
+__autosem__
+from twidget import twidget
+from ed import ed
+from util import enum, izip
+import utfutil
+
+###################################
+
+class editor (twidget)
+{
+	method Init (tw=1, th=1, font=None, $editable=True, fg=None, bg=None, **kw)
+	{
+		font = font or ($international ? $wm.fixed_utf_font () : $wm.tfont)
+		if ($international) {
+			$len = utfutil.utf8_len
+			$strdiff = utfutil.strdiff_utf
+			$gslice = utfutil.gslice_utf
+			$breakstr = utfutil.breakstr_utf
+			$inschars = utfutil.inschars_utf
+		} else {
+			$len = len
+			$strdiff = utfutil.strdiff_ascii
+			$gslice = utfutil.gslice_ascii
+			$breakstr = utfutil.breakstr_ascii
+			$inschars = utfutil.inschars_ascii
+		}
+
+		twidget.Init (self, tw, th, font, **kw)
+		$E = ed ($tw, $th, '', international=$international)
+		$cur = None
+		$fg = fg is None ? $A.editor_fg : fg
+		$bg = bg is None ? $A.editor_bg : bg
+	}
+
+	editor_init = Init
+
+	method load_text (t)
+	{
+		$E.newText (t)
+		$sReact ()
+	}
+
+	method LoadText (t)
+	{
+		$load_text (t)
+		$Draw ()
+	}
+
+	method get_text ()
+		return $E.getText ();
+
+	method put_char (s, x, y, tp=0)
+	{
+		fg, bg = $fg, $bg;
+		if (tp) bg, fg = fg, bg;
+		$draw_text (s, x, y, fg, bg);
+	}
+
+	method put_line (s, y, hl=0, x=0)
+		if (hl) $draw_text (s, x, y, $A.color_white, $A.color_dblue);
+		else $draw_text (s, x, y, $fg, $bg);
+
+	method put_sel_line (s, y, (p1, p2))
+		if (p1 == p2)
+			$put_line (s, y);
+		else if (p1 == 0 and p2 == $len (s))
+			$put_line (s, y, 1);
+		else if (p1 == 0) {
+			s1, s2 = $breakstr (s, p2)
+			$put_line (s1, y, 1);
+			$put_line (s2, y, 0, p2);
+		} else {
+			s1, s2 = $breakstr (s, p1)
+			s2, s3 = $breakstr (s2, p2-p1)
+			$put_line (s1, y, 0);
+			$put_line (s2, y, 1, p1);
+			$put_line (s3, y, 0, p2);
+		}
+
+	method draw_cursor (tp)
+		if ($editable and $cur is not None)
+			$put_char ($gslice ($txt [$cur [1]], $cur [0], 1),
+				   $cur [0], $cur [1], tp);
+
+	# resize
+
+	method tresize_w ()
+		$E.resize_w ($tw);
+
+	method tresize_h ()
+		$E.resize_h ($th);
+
+	# redraw partial
+
+	method tOnRedraw (x, y, w, h)
+	{
+		x /= $fx; y /= $fy; w = w / $fx + 1; h = h / $fy + 2;
+		for (i in range (max (y-1, 0), min (y + h, len ($txt)))) {
+#xxx
+			t = $txt [i];
+			$txt [i] = $inschars (t, x, "\0"*w)#t [:x] + chr (0) * w + t [x+w:];
+		}
+		$Update ();
+	}
+	# Update draw
+
+	method Update ()
+	{
+		txt = $E.produce ();
+		txtsel = $E.produce_selection ();
+
+		if (($txtsel, txtsel).count (None) == 1)
+			return $Draw ();
+
+		if (txtsel) {
+			for (y in range (len (txt)))
+				if ($txt [y] != txt [y]
+				 or txtsel [y] != $txtsel [y])
+					$put_sel_line (txt [y], y, txtsel [y]);
+			$txt = txt;
+			$txtsel = txtsel;
+		} else {
+			$draw_cursor (0);
+			for (y, (o, n) in enum (izip ($txt, txt)))
+				if (o != n) {
+					i, ns = $strdiff (o, n)
+					$put_line (ns, y, x=i);
+				}
+			$cur = $E.cursor ();
+			$txt = txt;
+			if ($isKeyWidget ())
+				$draw_cursor (1);
+		}
+	}
+
+	# scroll control
+
+	method getTVOh ()
+		return len ($E.Text), $th, $E.voff;
+
+	method setTVOh (d=None, o=None)
+	{
+		if (o is not None)
+			$E.voff = o
+		else {
+			dx = abs (d) == 1 ? d : 5 * d
+			$E.voff = minmax (0, $E.voff + dx, max (len ($E.Text) - $h / $fy, 0))
+		}
+		$Update ()
+	}
+
+	method move (x, y)
+		$E.move (x, y);
+
+	# selections
+
+	method arrowSelection ()
+	{
+		$E.start_selection ();
+		ft = 0;
+		for (k in $A.followXYArrows ()) {
+			if (!ft) {
+				ft = 1;
+				$selectionGet ();
+			}
+			getattr ($E, 'key_'+k) ();
+			$Update ();
+			$sReact ();
+			$wm.flush ();
+		}
+	}
+
+	method onSelectionLose ()
+	{
+		$E.clear_selection ()
+		if ($isVisible ())
+			$Draw ()
+	}
+
+	#
+
+	method tOnClick (x, y)
+	{
+		if ($E.have_selection ()) {
+			$E.clear_selection ()
+			$selectionGiveup ()
+		}
+		$setKeyWidget ()
+		$E.move (x, y)
+		$Update ()
+		if ($mouse_pressed ()) {
+			ft = 0
+			for (x, y in $A.followMouse ()) {
+				if (!ft) {
+					ft = 1
+					$E.start_selection ()
+					$selectionGet ()
+				}
+				$E.move ((x - $absx ()) / $fx, (y - $absy ()) / $fy)
+				$Update ()
+				$sReact ()
+			}
+		}
+		return True
+	}
+
+	method enterKeyWidget ()
+	{
+		$cur = $E.cursor ();
+		$draw_cursor (1);
+	}
+
+	method leaveKeyWidget ()
+		if (!$E.have_selection ())
+			$draw_cursor (0);
+		
+
+	method tDraw ()
+	{
+		$outline ('sunken');
+		$txt = $E.produce ();
+		$txtsel = $E.produce_selection ();
+
+		if ($txtsel) {
+			for (y, (s, p) in enum (izip ($txt, $txtsel)))
+				$put_sel_line (s, y, p);
+			return;
+		}
+
+		for (y, s in enum ($txt))
+			$put_line (s, y);
+		$cur = $E.cursor ();
+		if ($isKeyWidget ())
+			$draw_cursor (1);
+	}
+
+	method onKey (k)
+	{
+		if (!$editable)
+			return $ybar.onKey (k);
+
+		if ($E.have_selection ()) {
+			if (k not in $A.ALLARROW)
+				$E.delete_selection ();
+			else
+				$E.clear_selection ();
+			$selectionGiveup ();
+			if (k in ('DEL', 'BACKSPACE'))
+				k = 'DRAW';
+		}
+
+		if (k == 'SHIFT') {
+			$arrowSelection ();
+			return 1;
+		}
+
+		try F = getattr ($E, 'key_' + k);
+		except {
+			if (k == 'DEL')
+				$E.delete1 ();
+			else if ((len (k) == 1 and
+				(32 <= ord (k) < 127 or k in '\t\n')) or
+				($international and k and ord (k [0]) >= 160))
+				$E.insert (k);
+			else if (k != 'DRAW') return 0;
+		} else F ();
+
+		$Update ();
+		$sReact ();
+		return 1;
+	}
+
+	namespace clipboard
+	{
+		method can_copy ()
+			return $E.have_selection () ? 1 : -1
+
+		method copy ()
+			if (txt = $E.selection_data ()) {
+				$wm.Copy (txt)
+				$E.clear_selection ()
+				$selectionGiveup ()
+				$Draw ()
+			}
+
+		method cut ()
+			if (txt = $E.selection_data ()) {
+				$wm.Copy (txt)
+				$E.delete_selection ()
+				$selectionGiveup ()
+				$Draw ()
+			}
+
+		method paste ()
+		{
+			k = $wm.Paste ()
+			if (!k) return
+			if ($E.have_selection ()) {
+				$E.delete_selection ()
+				$selectionGiveup ()
+			}
+			for (k in k)
+				$E.insert (k)
+			$Draw ()
+			if (!$isKeyWidget ())
+				$setKeyWidget ()
+		}
+	}
+
+	method rMenu ()
+		return [
+			["Copy", $clipboard.can_copy, $clipboard.copy],
+			["Paste", 1, $clipboard.paste],
+			None,
+			["Cut", $clipboard.can_copy, $clipboard.cut],
+		]
+
+	#
+
+	method setEditable (v)
+		if (bool (v) != $editable) {
+			$editable = bool (v);
+			$Draw ();
+		}
+}

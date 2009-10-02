@@ -1,0 +1,147 @@
+##  process information from /proc
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# tested linux on only! BSDs have /proc?
+# `man proc` for more info
+
+__autosem__
+
+import os
+
+uids = { }
+
+def load_uids ()
+	for (l in open ("/etc/passwd"))
+		if (!l.sw ("#"))
+			try {
+				name, None, uid = l.split (":")[:3]
+				uids [int (uid)] = name
+			}
+
+def read_proc (d)
+{
+	fd = os.openfd ("/proc/" + d, os.O_RDONLY, 0)
+	data = os.read (fd, 2000)
+	os.close (fd)
+	return data
+}
+
+def proc_stat (d)
+	return os.stat ("/proc/" + d)
+
+def proc_list (d)
+	return os.listdir ("/proc/" + d)
+
+def processes ()
+	for (f in proc_list (""))
+		try {
+			int (f)
+			yield Process (f)
+		}
+
+class Process
+{
+	STAT = STATUS = None
+
+	method __init__ ($pid)
+		$p = $pid + "/"
+
+	method exists ()
+		return havefile ("/proc/" + $pid)
+
+	method cmdline ()
+		return read_proc ($p + "cmdline").replace ("\0", " ")
+
+	method user ()
+		try {
+			uid = proc_stat ($p).st_uid
+			try return uids [int (uid)]
+			return str (uid)
+		}
+
+	method nof ()
+		return str (len (proc_list ($p + "fd"))) ?? "?"
+
+	method status ()
+	{
+		if ($STATUS)
+			return $STATUS
+		s = {}
+		for (l in read_proc ($p + "status").split ("\n")) {
+			k, None, v = l.partition (":")
+			s [k] = v.strip ()
+		}
+		return $STATUS = s
+	}
+
+	method stat ()
+	{
+		if ($STAT)
+			return $STAT
+		return $STAT = read_proc ($p + "stat").split ()
+	}
+
+	method nth ()
+		return $status ().get ("Threads", "?")
+
+	method VmRSS ()
+	{
+		try r = $status ()["VmRSS"]
+		except return "-"
+		v = int (r.partition (" ")[0])
+		return "%.1fM" % (v / 1024.0)
+	}
+
+	method starttime ()
+		return $stat ()[21]
+
+	method exe ()
+		return os.readlink ("/proc/%s/exe"%$pid) ?? "?"
+}
+
+SELF = Process (str (os.getpid ()))
+
+USAGE = "procps, a tool like `ps`,`lsof`, etc.
+
+Usage:
+ procps		: show all pyvm processes
+ procps 'a'	: show processes of current user
+ procps 'aa'	: show processes of all users
+"
+
+if (__name__ == __main__)
+{
+	load_uids ()
+	pyvm = SELF.exe ()
+	whoami = SELF.user ()
+
+	if (!sys.argp.have_args ()) cmd = ""
+	else cmd = sys.argp.pop_one_arg ()
+
+	if (!cmd) {
+		L = [["PID", "RSS", "FDs", "THs", "CMDLINE"]]
+		for (p in processes ())
+			if (p.exe () == pyvm)
+				L<< (str (p.pid), p.VmRSS (), p.nof (), p.nth (), p.cmdline ())
+
+		print @misc.tabprint (80, ["l", "l", "l", "l", "r"], -1, L)
+	} else if (cmd == "a") {
+		L = [["PID", "RSS", "FDs", "THs", "CMDLINE"]]
+		for (p in processes ())
+			if (p.user () == whoami)
+				L<< (str (p.pid), p.VmRSS (), p.nof (), p.nth (), p.cmdline ())
+
+		print @misc.tabprint (80, ["l", "l", "l", "l", "r"], -1, L)
+
+	} else if (cmd == "aa") {
+		L = [["PID", "USER", "RSS", "FDs", "THs", "CMDLINE"]]
+		for (p in processes ())
+			L<< (str (p.pid), p.user (), p.VmRSS (), p.nof (), p.nth (), p.cmdline ())
+
+		print @misc.tabprint (80, ["l", "r", "l", "l", "l", "r"], -1, L)
+	}
+}

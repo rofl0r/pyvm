@@ -1,0 +1,505 @@
+##  Base widget class
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import wdomain as domain
+from util import kwget
+from math import sqrt
+import ultext
+
+class widget
+{
+	# every widget has x, y, w, h and p
+	# x, y is the offset of the widget in the parent
+	# w, h is the size of the widget
+	# p is the parent
+
+	wm = None
+
+	method __init__ (*args, **kwargs)
+	{
+		$A = $wm = domain.data.wm
+		$international = "international" in kwargs ?
+				 kwargs.pop ("international") : $wm.International
+		if ("elastic" in kwargs)
+			$elastic = kwargs.pop ("elastic")
+		$root = domain.data.rootwin
+		$Init (*args, **kwargs)
+	}
+
+	# The constructor of derrived classes should be "Init".
+	# __init__ should never be overriden.
+
+	method Init ($x=0, $y=0, $w=0, $h=0, $p=None)
+	{
+		# make sure widget.__init__ hasn't been overriden
+		if (not $wm)
+			raise Error ("ATTENTION: widgets should not use __init__!!!")
+		if (p is None)
+			domain.add_child (self)
+	}
+
+	widget_init = Init;
+
+	method box ()
+		return $x, $y, $w, $h
+
+	method rebase ($x, $y);
+
+	method ignore (*x)
+		return ;
+
+	method vdump (lv=0)
+	{
+		print lv*" ", $__name__, $box ();
+		for (c in $children ())
+			c.vdump (lv+2);
+	}
+
+	# some units can be specified in pixels or a string in which
+	# case it's converted to the size of it with the std font.
+	method clen (l)
+		return l -> str ? $wm.buttonfont.isizeof (l) : l
+
+	# resize. we override _resize_[wh]
+
+	elasticW = elasticH = elastic = None
+
+	method _resize_h (dh)
+		if ($elastic or $elasticH) $h += dh;
+
+	method _resize_w (dw)
+		if ($elastic or $elasticW) $w += dw;
+
+	minW = minH = 0
+
+	method resize_h (dh)
+	{
+		h = $h
+		if (dh < 0 and h > $minH)
+			dh = max (dh, $minH - h)
+		$_resize_h (dh)
+		return $h - h
+	}
+
+	method resize_w (dw)
+	{
+		w = $w
+		if (dw < 0 and w > $minW)
+			dw = max (dw, $minW - w)
+		$_resize_w (dw)
+		return $w - w
+	}
+
+	method resize (dw, dh)
+	{
+		$resize_w (dw)
+		$resize_h (dh)
+	}
+
+	# circulation
+
+	# Drawing primitives
+
+	method draw_line_wh (x, y, w, h, col=None, c=None)
+		return $draw_line (x, y, x+w, y+h, col, c)
+
+	method draw_line (x0, y0, x1, y1, col=None, c=None)
+		return $p.draw_line ($x + x0, $y + y0, $x + x1, $y + y1, col, self)
+
+	method fill_rect (x, y, w, h, col=None, c=None)
+		return $p.fill_rect ($x + x, $y + y, w, h, col, self)
+
+	method fill_rect_outlined (x, y, w, h, col1, col2)
+	{
+		$fill_rect (x, y, w, h, col1)
+		$draw_line_wh (x, y, w, 0, col2)
+		$draw_line_wh (x, y, 0, h, col2)
+		$draw_line_wh (x, y+h, w, 0, col2)
+		$draw_line_wh (x+w, y, 0, h, col2)
+	}
+
+	method fill_circle (x, y, r, col, c=None)
+	{
+		r2 = r*r
+		for (yy in xrange (-r, r)) {
+			xx = int (sqrt (r2 - yy*yy))
+			$draw_line (x - xx, y + yy, x + xx, y + yy, col, self)
+		}
+	}
+
+	method draw_string (s, x, y, fg=None, font=None, bg=None, c=None)
+	{
+		if (fg is None) fg = $wm.strfg;
+		if (bg is None) bg = $wm.strbg;
+		if (!font) font = $wm.strfont;
+		return $p.draw_string (s, $x + x, $y + y, fg, font, bg, self);
+	}
+
+	method xdraw_string (s, x, y, fg=None, font=None, bg=None, c=None)
+	{
+		$draw_string (s, x, y, fg, font, bg, c)
+		return font.isizeof (s)
+	}
+
+	method draw_char (s, x, y, fg, font, bg, c=None)
+		return $p.draw_char (s, $x + x, $y + y, fg, font, bg, self)
+
+	method visible (w=None)
+		return $p.visible (self);
+
+	method show_image (img, x, y, sx=0, sy=0, w=3200, h=3200, c=None)
+		return $p.show_image (img, $x + x, $y + y, sx, sy, w, h, self);
+
+	# current active list
+
+	method to_ilist (x, y, L)
+	{
+		L.append (self);
+
+		for (c in $children ())
+			if (c.xy_in (x, y))
+				return c.to_ilist (x - c.x, y - c.y, L);
+	}
+
+	method xy_in (x, y)
+		return $x <= x <= $x + $w and $y <= y <= $y + $h;
+
+	method rxy_in (x, y)
+		return 0 <= x <= $w and 0 <= y <= $h;
+
+	method y_in (y) return $y <= y <= $y + $h;
+	method x_in (x) return $x <= x <= $x + $w;
+
+	method fxy_in (x, y)
+	{
+		ax, ay = $absx (), $absy ();
+		return ax <= x <= ax + $w and ay <= y <= ay + $h;
+	}
+
+	method children ()
+		return ();
+
+	# Setup code
+
+	method setup_widgets ()
+	{
+		for (c in $children ())
+			c.setup_widgets ();
+		$__setup__ ();
+	}
+
+	method __setup__ ();
+
+	#
+	method intersection (x, y, w, h)
+	{
+		x1 = $x + $w
+		y1 = $y + $h
+		x2 = x + w
+		y2 = y + h
+		if (x2 < $x or x1 < x or y2 < $y or y1 < y)
+			return 
+		sx = max (x, $x)
+		sy = max (y, $y)
+		return sx - $x, sy - $y, min (x1, x2) - sx, min (y1, y2) - sy
+	}
+
+	# key widget
+
+	method setKeyWidget (w=None)
+		$p.setKeyWidget (self);
+
+	method getKeyWidget ()
+		return $p.getKeyWidget ();
+
+	method KeyWidget ()
+		return self;
+
+	# selections
+
+	method selectionGiveup ()
+		$root.selectionGiveup ();
+
+	method selectionGet ()
+		$root.setSelectionOwner (self);
+
+	# more advanced
+
+	method draw_blank (col=None)
+		$fill_rect (0, 0, $w, $h, col is not None ? col : $A.color_bg);
+
+	method draw_rect (x, y, w, h, c, funky=0)
+	{
+		if (type (c) is tuple)
+			if (len (c) == 4)
+				c0, c1, c2, c3 = c;
+			else c0, c2 = c1, c3 = c;
+		else c0 = c1 = c2 = c3 = c;
+
+		if (!funky) {
+			$draw_line (x, y, x+w, y, c0);
+			$draw_line (x, y, x, y+h, c1);
+			$draw_line (x+w, y, x+w, y+h, c2);
+			$draw_line (x, y+h, x+w, y+h, c3);
+		} else {
+			D = funky;
+			cw = $A.color_white;
+			$draw_line (x+D, y, x+w-D, y, c0);
+			$draw_line (x+D, y+1, x+w-D, y+1, cw);
+			$draw_line (x, y+D, x, y+h-D, c0);
+			$draw_line (x+1, y+D, x+1, y+h-D, cw);
+			$draw_line (x+w, y+D, x+w, y+h-D, c0);
+			$draw_line (x+w+1, y+D, x+w+1, y+h-D, cw);
+			$draw_line (x+D, y+h, x+w-D, y+h, c0);
+			$draw_line (x+D, y+h+1, x+w-D, y+h+1, cw);
+			$draw_line (x+D, y, x, y+D, c0);
+			$draw_line (x+w-D, y, x+w, y+D, c0);
+			$draw_line (x+D, y+h, x, y+h-D, c0);
+			$draw_line (x+w-D, y+h, x+w, y+h-D, c0);
+		}
+	}
+
+	Outline = False;
+
+	method outline (kind='rect', D=0, funky=0, col=None)
+	{
+		if (col is not None) u = d = col
+		else if (not (kind -> str)) {
+			d = u = kind;
+		} else if (kind == 'white') {
+			d = u = $A.color_white;
+		} else if (kind in ('sunken', 'raised')) {
+			d, u = $A.color_shaded, $A.color_light;
+			if (kind == 'sunken')
+				u, d = d, u;
+		} else if (kind == 'flat')
+			d = u = $A.color_bg;
+		else	d = u = $A.color_shaded;
+
+		$draw_rect (0+D, 0+D, $w-2*D, $h-2*D, (u, d), funky);
+	}
+
+	method fill_yrest (yq, col)
+	{
+		rest = $h % yq;
+		if (rest)
+			$fill_rect (0, $h - rest, $w, rest, col);
+	}
+
+	# clipped drawing (make sure that operation does not draw outsize the bbox of the widget)
+
+	namespace clipped
+	{
+		method fill_rect (x, y, w, h, col=None, c=None)
+		{
+			box = $intersection (x, y, w, h)
+			if (!box) return
+			bx, by, bw, bh = box
+			$fill_rect (bx, by, bw, bh, col, self)
+		}
+
+		method draw_string (s, x, y, fg, font, bg, c=None)
+		{
+			if !(x < 0 or y < 0 or x + font.isizeof (s) > $w or y + $font.maxh > $h)
+				return $draw_string (s, x, y, fg, font, bg)
+			img = $font.ImageText (s, fg, bg)
+			$clipped.show_image (img, x, y)
+			return $font.isizeof (s)
+		}
+
+		method show_image (image, x, y, sx=0, sy=0, w=1000, h=1000, c=None)
+		{
+			sw = min (w, image.w - sx)
+			sh = min (h, image.h - sy)
+			box = $intersection (x, y, sw, sh)
+			if (!box) return
+			bx, by, bw, bh = box
+			if (bx != x) sx += bx - x
+			if (by != y) sy += by - y
+			$show_image (image, bx, by, sx, sy, bw, bh)
+		}
+	}
+
+	# Underlined text (for hotkeys).  The syntax is using backslashes
+
+	method draw_ulstring (s, x, y, fg=None, font=None, bg=None, maxw=5000)
+	{
+		if (fg is None) fg = $wm.strfg;
+		if (bg is None) bg = $wm.strbg;
+		if (!font) font = $wm.strfont;
+
+		mh = font.size ()[1] - 3
+		for (u, s in ultext.split_underlines (s)) {
+			$draw_string (s, x, y, fg, font, bg)
+			ww = font.isizeof (s)
+			if (u) $draw_line (x, y + mh, x + ww, y + mh, fg)
+			x += ww
+		}
+	}
+
+	method ulstring_len (s, font)
+		return sum ([font.isizeof (s) for (None, s in ultext.split_underlines (s))])
+
+	# xy
+
+	method absy (y=0)
+		return $y + $p.absy () + y
+
+	method absx (x=0)
+		return $x + $p.absx () + x
+
+	method toabsxy (x, y)
+		return x + $absx (), y + $absy ()
+
+	method relx (x)
+		return x - $absx ()
+
+	method rely (y)
+		return y - $absy ()
+
+	method relxy (x, y)
+		return x - $absx (), y - $absy ()
+
+	method wherein ()
+		return $relxy (*$wm.B.where ())
+
+	method endx ()
+		return $x + $w
+
+	method endy ()
+		return $y + $h
+
+	# grabbing
+
+	method followAxisMotion (axis)
+		for (y in $A.followAxisMotion (axis))
+			yield y - (axis == 'Y' ? $absy : $absx) ()
+
+	method followMouse ()
+		for (x, y in $A.followMouse ())
+			yield x - $absx (), y - $absy ()
+
+	# app
+
+	method onMasterKey (k)
+		$onKey (k)
+
+	method onPClick (x, y)
+		return $onClick (x - $x, y - $y)
+
+	# ---- Public ----- Events
+
+	method onClick (x, y)
+		return 0
+
+	method mouse_pressed ()
+		return $wm.mouse_pressed ()
+
+	rMenu = void
+
+	method onRightClick (x, y)
+		if (M = $rMenu ()) {
+			$wm.Run_Menu ($absx (x), $absy (y), M)
+			return True
+		} else return 0
+
+	method Draw ()
+		return 0
+
+	method onRedraw (x, y, w, h)
+		return $Draw ()
+
+	EnterFocus = LeaveFocus = void
+
+	# Key event handling:
+	# Every widget interested in handling keys, should define its own `onKey` method.
+	# onKey should return true if the key has been consumed.
+	# The method `preOnKey` can be overriden in *instances*.  It's used for some
+	# special key handling for specific instances and if it returns False, `onKey`
+	# will be run next.  This is done by containers.
+
+	method preOnKey (k)
+		return 0;
+
+	method onKey (k)
+		return 0;
+
+	method leaveKeyWidget ()
+		# received when the widget is no longer the current
+		# keyboard handler
+		$Draw ();
+
+	method enterKeyWidget ()
+		# this is received when the widget has become the
+		# current keyboard handler
+		$outline (D=1);
+
+	method enter_tabgroup ()
+		if (domain.data.tabgroup -> list)
+			domain.data.tabgroup.append (self)
+
+	method nextKeyWidget ()
+	{
+		if (!$Tnext) return 0
+		$Tnext.setKeyWidget ()
+		return 1
+	}
+
+	method prevKeyWidget ()
+	{
+		if (!$Tnext) return 0
+		p = self
+		while (p.Tnext is not self)
+			p = p.Tnext
+		p.setKeyWidget ()
+		return 1
+	}
+
+	# first widget that processes the wheel wins (unlike other toolkits
+	# which assign the scroll wheel handling to the active key widget)
+	method onWheel (w)
+		return
+
+	# misc
+
+	method isKeyWidget ()
+		return $getKeyWidget () is self
+
+	method isVisible ()
+		return $p.visible (self)
+
+	method hide ()
+		return
+
+	method unhide ()
+		return
+
+	enabled = True
+
+	method set_enable ($enabled)
+		$Draw ()
+
+	method disable ()
+		$set_enable (False)
+
+	#
+	method asyncDraw (flush=False)
+		(flush ? $wm.async_flush : $wm.async) ($Draw)
+
+	method modrect ()
+	{
+		ax, ay = $absx (), $absy ()
+		$wm.modrect (ax, ay, ax + $w, ay + $h)
+	}
+
+	method move ($x, $y);
+}
+
+# TODO: use "traced" variables so when the value changes some
+# code is invoked.

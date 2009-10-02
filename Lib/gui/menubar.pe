@@ -1,0 +1,55 @@
+__autosem__
+from widget import widget
+
+# Menu bar howto.
+# The menubar is initialized with a list of tuples where the first item
+# is the item name and the other the list that is used to construct the
+# pulldown menu.  See pulldown.pe for definition of that list
+
+class menubar (widget)
+{
+	method Init ($items, **kw)
+	{
+		$elasticH = False
+		$font = $wm.dfontb
+		if ("h" not in kw)
+			kw ["h"] = $font.size ()[1]
+		if ("w" not in kw)
+			kw ["w"] = sum ([$font.isizeof (i) for (i, None in $items)])
+		$widget_init (**kw)
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+		x0 = 0
+		for (i, None in $items) {
+			$draw_ulstring (i, x0, 1, $wm.color_txt, $font, $wm.color_bg)
+			x0 += $ulstring_len (i + "  ", $font)
+		}
+	}
+
+	method onClick (x, y)
+	{
+		x0 = 0
+		for (i, m in $items) {
+			try iter (m)
+			except m = m ()
+			x0 += $font.isizeof (i + "  ")
+			if.break (x < x0)
+				$wm.Run_Menu ($absx (), $absy () + $h, m)
+		}
+	}
+
+	method Open (n)
+	{
+		x0 = 0
+		for (i, m in $items) {
+			try iter (m)
+			except m = m ()
+			x0 += $font.isizeof (i + "  ")
+			if.break (i == n)
+				$wm.Run_Menu ($absx (), $absy () + $h, m)
+		}
+	}
+}

@@ -1,0 +1,25 @@
+__autosem__
+
+import os
+
+USAGE = """pyvm mklink <file>+ <destination-directory>
+Move relative symbolic links to another directory. Useful
+because downloaded stuff from the web is just symlinked
+to the storage area.
+"""
+
+destdir = sys.argp.argv.pop ()
+if (!os.path.isdir (destdir))
+	sys.argp.help ()
+
+if (destdir [-1] != "/" and destdir != ".")
+	destdir += "/"
+
+for (a in sys.argp.argv) {
+	SRC = os.abspath (os.readlink (a))
+	DST = destdir + os.basename (a)
+	if.continue (os.access (DST))
+		print "%s already exists. Won't move" %DST
+	os.symlink_relative (SRC, destdir + os.basename (a))
+	os.remove (a)
+}

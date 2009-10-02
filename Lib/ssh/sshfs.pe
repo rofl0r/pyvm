@@ -1,0 +1,110 @@
+##  ssh filesystem with FUSE
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# read-only mount
+class sshfs_ro
+{
+	ReadOnly = True
+
+	method __init__ ($sftp, entire=False, **kw)
+	{
+		$home = entire ? "" : $sftp.realpath (".")
+		print "OK"
+	}
+
+	method do_getattr (path)
+		try return $sftp.stat ($home + path)
+
+	method do_readdir (path)
+		return $sftp.listdir ($home + path).keys ()
+
+	method do_open (path, flags)
+		return True
+
+	method do_read (offset, size, path)
+		return $sftp.readfile ($home + path, offset=offset, size=size)
+}
+
+# write access but not overwrite/delete/truncate
+class sshfs_wsafe (**sshfs_ro)
+{
+	ReadOnly = False
+
+	method do_create (path, mode)
+	{
+		path = $home + path
+		$sftp.writefile (path, "", creat=True, trunc=False, mode=mode)
+		return True
+	}
+
+	method do_write (path, offset, data)
+	{
+		$sftp.writefile ($home + path, data, offset, trunc=False, creat=False)
+		return len (data)
+	}
+
+	method do_mkdir (path, mode)
+	{
+		$sftp.mkdir ($home + path, mode=mode)
+		return True
+	}
+}
+
+# full write
+class sshfs_rw (**sshfs_wsafe)
+{
+	method do_truncate (path, size)
+	{
+		path = $home + path
+		$sftp.writefile (path, "", creat=False, trunc=True)
+		return True
+	}
+}
+
+USAGE = """pyvm sshfs [options] <mount-point> <host>
+
+	<host> is read from user/etc/ssh-hosts
+	Options can be
+
+	-d	: debug messages
+	-D	: turn on FUSE debug messages
+	-e	: entire fs (start from remote root, not home dir)
+	-ro	: readonly mount
+	-fullrw	: full read/write features
+
+ In the default mode of operation, it is not possible to remove files
+ or overwrite/truncate any existing files.  It is only possible to create
+ new files. This is a safety mode becuase the program is BETA.
+
+RESTRICTIONS:
+
+ - At the moment removing files and directories is not implemented. Use sshell
+   to do that. chmod/chown isn't implemented either, use sshell.
+ - This implementation doesn't work well with files bigger than 2GB (1<<31).
+   Programs are considered broken until proven correct through testing and it
+   has not been possible to test such a setup. Send mail.
+ - Symlinks not implemented yet.
+ - As the base SSH implementation, REKEY is not supported. The mount may
+   die after about 1 hour or when several MBs have been transferred. Also hard to
+   test.
+ - Generally, this implementation is useful in write-safe mode in combination
+   with cptree to rsync remote trees.
+"""
+
+if (__name__ == __main__)
+{
+	oe, de, De, ro, rw = sys.argp.check_switches ("-e", "-d", "-D", "-ro", "-fullrw")
+	mp, alias = sys.argp.nargs (2)
+	hostname, username, password, privkey = @ssh.hostalias.get (alias)
+	print "Connecting..."
+	SFTP = @ssh.sftp.SSH_SFTP (hostname, 22, username, password, privkey)
+	print "OK. mounting ssh fs"
+	sshfs = ro ? sshfs_ro : rw ? sshfs_rw : sshfs_wsafe
+	@fuse.fuse.mounter (mp, sshfs (SFTP, entire=oe), debug=de, debug_fuse=De).run ()
+}

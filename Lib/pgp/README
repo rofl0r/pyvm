@@ -1,0 +1,62 @@
+PGP (the specification) is a file format.
+PGP (the program) is a database that uses the format to import keys and use
+these keys to sign/verify/crypt content.
+
+HOWTO:
+------
+
+Export keys from GnuPG and import in gpg.pe:
+
+	gpg --armor --export > KEYS
+	pyvm gpg import KEYS
+
+Verify the signature of Python-2.6.tar.bz2:
+
+	pyvm gpg verify Python-2.6.tar.bz2.asc
+
+Import secret keys:
+
+	gpg --armor --export-secret-keys > KEYS
+	pyvm gpg import-private KEYS
+
+Sign a file:
+
+	pyvm gpg sign Message.txt
+
+This implementation is more useful for verifying signed messages.
+
+
+Limitations:
+------------
+
+- No encryption/decryption, only sign/verify
+
+- Implemented algorithms are RSA and DSA (as GnuPG)
+
+- The verification/signature can only do "detached signatures".
+
+- Only "armored" radix-64 messages are usable.
+
+- Currently there is a bug and we cannot import Philip R. Zimmermann's key
+  that is distributed with gnupg/doc/samplekeys.asc
+  (the problem is that signature packet with digest start "07 d1" occurs twice.
+   the first check fails, while the second is OK.  How do we know that a failed
+   sigcheck may be ignored?)
+  This bug reflects the status of this implementation :)
+
+Possibly Insecure
+=================
+
+I haven't read/understood the entire RFC 4880.  A lot of this code was done by
+simply scavaging the GnuPG source code.  I've implemented what was needed to
+be able to verify some signatures.  But gpg.pe does not do all the necessary
+sanity checks on PGP packets so, it may be very possible to forge some
+signatures through broken packets (which GnuPG would detect early).
+
+Another issue is that gpg.pe does not check key revokations.
+
+At the moment, the security of gpg.pe is based on the fact that attackers
+would not know if the user will use GnuPG or gpg.pe and thus not attempt
+to send forged packets that would be detected by GnuPG.
+
+If you are very serious about security, double-check the operation of gpg.pe

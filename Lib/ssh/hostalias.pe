@@ -1,0 +1,24 @@
+__autosem__
+
+def get (alias)
+{
+	aliases = @misc.etc_read ("ssh-hosts", 5)
+
+	for (k, hostname, username, password, privkey in aliases)
+		if (k == alias)
+			break
+	else.for {
+		print "Alias [%s] not found in etc/ssh-hosts" %alias
+		exit ()
+	}
+
+	if (privkey == "*") privkey = None
+	else privkey = readfile (HOME + "user/etc/" + privkey + "/ssh.pri")
+
+	if (password == "*")
+		if (!privkey)
+			password = raw_input ("Enter password for %s@%s (visible!):" %(hostname, username))[:-1] ?? exit ()
+		else password = None
+
+	return hostname, username, password, privkey
+}

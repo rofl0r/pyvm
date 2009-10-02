@@ -1,0 +1,9 @@
+
+The files
+
+   ast, pycodegen, consts, future, misc, pyassem, symbols, visitor
+
+are taken from python's standard library distribution and are subject to
+the PSF license.
+
+the other files and the modifications are released under GNU GPL.

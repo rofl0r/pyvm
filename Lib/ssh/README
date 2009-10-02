@@ -1,0 +1,41 @@
+This is a minimal ssh implementation.
+
+SSH is an interesting protocol which basically:
+
+1. Creates a secure connection.
+
+	- Using diffie-hellman creates a key.
+	- The server sends its public key which
+	  can be used to verify the server and avoid MiM.
+	- Encrypts all data with aes128-cbc.
+
+2. Once the link is secured it can invoke various
+   other sub-protocols, for user authentication, custom
+   applications, data multiplexing in multiple "channels",
+   etc.
+
+So basically, although SSH could be used to secure a link,
+in fact it is a bit more complex because it works on a
+client-server setup with well-known services.
+
+---
+The code here, besides the transport layer, implements the
+"secure shell" application.
+
+
+Peer mode
+---------
+
+There is a new extension which is the "peer mode".
+This mode is suitable for securing a link and using exactly
+one channel for this link without invoking an application.
+
+The peer mode can be used, for example in IRC DCC connections
+where the two peers wish to talk securely and there is no
+notion of client-server.  Just a p2p link.
+
+For the peer mode, we have a SSHServer class.
+
+Running the file transport.pe will open a p2p link in localhost,
+create two threads and have the threads secure the link with
+"SSH peer mode", and then send ping-pongs.

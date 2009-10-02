@@ -1,0 +1,105 @@
+##  Window layers
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+#
+# Winstack.  Given a rectangle/line and a list of windows,
+# calculate which parts of the rect/line are not covered
+# by the windows.
+#
+# This can be done in C, but for few windows the py version
+# is worth it.
+#
+
+def visible_rect ((x0, y0, w0, h0), (x1, y1, w1, h1))
+{
+	xx0 = x0 + w0;
+	yy0 = y0 + h0;
+	xx1 = x1 + w1;
+	yy1 = y1 + h1;
+
+	if (xx0 < x1 or x0 > xx1 or yy0 < y1 or y0 > yy1)
+		return [[x0, y0, w0, h0]];
+
+	W = [];
+	if (y0 < y1) {
+		W.append ([x0, y0, w0, y1 - y0]);
+		y0 = y1;
+	}
+	if (yy0 > yy1) {
+		W.append ([x0, yy1, w0, yy0 - yy1]);
+		yy0 = yy1;
+	}
+	if (x0 < x1) {
+		W.append ([x0, y0, x1 - x0, yy0 - y0]);
+		x0 = x1;
+	}
+	if (xx0 > xx1)
+		W.append ([xx1, y0, xx0 - xx1, yy0 - y0]);
+
+	return W;
+}
+
+def visible_line ((x0, y0, x1, y1), (rx, ry, rw, rh))
+{
+	rxx = rx + rw;
+	ryy = ry + rh;
+
+	if (x0 == x1) {
+		if (y0 > y1) y0, y1 = y1, y0;
+		if (x0 < rx or x0 > rxx or y0 > ryy or y1 < ry)
+			return [[x0, y0, x1, y1]];
+		if (y0 < ry) W = [[x0, y0, x0, ry]];
+		else W = [];
+		if (y1 > ryy) W.append ([x0, ryy, x0, y1]);
+		return W;
+	}
+
+	if (y0 == y1) {
+		if (x0 > x1) x0, x1 = x1, x0;
+		if (y0 < ry or y0 > ryy or x0 > rxx or x1 < rx)
+			return [[x0, y0, x1, y1]];
+		if (x0 < rx) W = [[x0, y0, rx, y0]];
+		else W = [];
+		if (x1 > rxx) W.append ([rxx, y0, x1, y0]);
+		return W;
+	}
+
+	if (min (x0, x1) > rxx or max (x0, x1) < rx or min (y0, y1) > ryy or max (y0, y1) < ry)
+		return [[x0, y0, x1, y1]];
+
+	# N/A
+	return [];
+}
+
+def visible (R, Wins, f)
+{
+	ins = [R];
+
+	for (w in Wins) {
+		outs = [];
+		for (r in ins)
+			outs.extend (f (r, w));
+		ins = outs;
+	}
+
+	return outs;
+}
+
+def stack_rects (R, Wins)
+	return visible (R, Wins, visible_rect);
+
+def stack_lines (R, Wins)
+	return visible (R, Wins, visible_line);
+
+#
+if (__name__ == '__main__') {
+	W = [10, 10, 100, 100];
+	F = [80, 15, 50, 50];
+	print visible_rect (F, W);
+	def f () for (i in xrange (10000)) visible_rect (F, W);
+	print modules.time.timeit (f);
+}

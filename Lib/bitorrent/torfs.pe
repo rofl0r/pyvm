@@ -1,0 +1,172 @@
+##  Torrent filesystem
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from net import bencode
+
+class torrent_methods
+{
+	ReadOnly = True
+
+	method __init__ ($base, $dirs, $files, $plen);
+
+	method do_getattr (path)
+		if (path in $dirs)
+			return "dr--r--r--"
+		else if (path in $files)
+			return "-r--r--r--", $files [path][2]
+
+	method do_readdir (path)
+		if (path in $dirs)
+			return $dirs [path]
+
+	method do_open (path, flags)
+		return path in $files
+
+	method do_read (offset, size, path)
+	{
+		if (path not in $files)
+			return
+		piece, poffs, psize = $files [path]
+		if (offset) {
+			if (offset >= psize)
+				return ""
+			poffs += offset
+			psize -= offset
+			if (poffs > $plen) {
+				piece += poffs / $plen
+				poffs = poffs % $plen
+			}
+		}
+		data = ""
+		psize = min (psize, size)
+		while (psize > 0) {
+			f = open ($base + "%i.p"%piece)
+			f.seek (poffs)
+			inp = $plen - poffs
+			if (inp < psize) {
+				data += f.read (inp)
+				f.close ()
+				psize -= inp
+				poffs = 0
+				piece += 1
+			} else {
+				data += f.read (psize)
+				f.close ()
+				break
+			}
+		}
+		return data
+	}
+}
+
+USAGE = """
+Usage: pyvm torfs [-a] <mount-point> <torrent-directory>
+
+ torfs makes a pseudo-filesystem that can be used to access the contents
+ of downloaded torrents without actually having to extract them.  This makes
+ it possible to use the contents of torrents and at the same time seed them
+ without duplicating the data.
+
+ with `-a` <torrent-directory> will be scanned for any subdirectories that
+ are complete downloaded torrents, and all of them will be mounted under
+ the mount point.
+"""
+
+def open_tordir (tordir, fail=True)
+{
+	try metafile = bencode.decode (readfile (tordir + "metainfo"))
+	except
+		if (fail) exit ("Couldn't read %s/metainfo. Not a torrent directory?" %tordir)
+		else return False
+
+	T = @bitorrent.torrent.Torrent (dir=tordir, validate=False)
+	twant = len (T.want)
+	ttot = twant + len (T.have)
+	if (T.want) {
+		if (fail) {
+			print "This torrent is not fully downloaded. want %.2f%%" %(twant * 100.0 / ttot)
+			print "mounting incomplete torrents is not implemented."
+		}
+		return False
+	}
+	del T
+
+	offset = 0
+	poffset = 0
+	files = {}
+	dirs = {"/":[]}
+	info = metafile ["info"]
+	plen = info ["piece length"]
+	name = info ["name"]
+
+	if (havefile (tordir + "MOUNTNAME"))
+		try name = readfile (tordir + "MOUNTNAME").partition ("\n")[0].strip ()
+
+	if ("files" not in metafile ["info"]) {
+		files ["/" + name] = 0, 0, info ["length"]
+		dirs ["/"].append (name)
+	} else for (t in info ["files"]) {
+		path = t ["path"]
+		length = t ["length"]
+		fullpath = "/" + "/".join (path)
+		files [fullpath] = poffset, offset, length
+		offset += length
+		poffset += offset / plen
+		offset = offset % plen
+		bp = ""
+		for (i in *(len (path) - 1)) {
+			bp += "/" + path [i]
+			if (bp not in dirs)
+				dirs [bp] = []
+			d = path [i+1]
+			if (d not in dirs [bp])
+				dirs [bp].append (d)
+		}
+		bp = path [0]
+		if (bp not in dirs ["/"])
+			dirs ["/"].append (bp)
+	}
+
+	return dirs, files, plen, name
+}
+
+if (__name__ == __main__)
+{
+	subs = sys.argp.check_switch ("-a")
+	mp, tordir = sys.argp.nargs (2)
+
+	if (tordir [-1] != "/")
+		tordir += "/"
+
+	if (!subs) {
+		try dirs, files, plen, name = open_tordir (tordir)
+		except exit ()
+		t = @fuse.fuse.mounter (mp, torrent_methods (tordir, dirs, files, plen))
+		t.run ()
+	} else {
+		import os
+
+		T = {}
+		for (subdir in os.listdir_fullpath (tordir))
+			if (os.path.isdir (subdir) and havefile (subdir + "/metainfo")) {
+				dir = subdir + "/"
+				if (x = open_tordir (dir, 0)) {
+					dirs, files, plen, name = x
+					print "Mounting torrent:" ,subdir, tordir+name
+					if (name in T)
+						print "NAME ALREADY EXISTS!", name
+					else T [name] = torrent_methods (dir, dirs, files, plen)
+				}
+			}
+		if (T) {
+			t = @fuse.fuse.union_mounter (mp, T)
+			t.run ()
+		} else print "No complete torrents found."
+	}
+}

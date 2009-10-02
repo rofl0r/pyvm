@@ -1,0 +1,18 @@
+# Actually everything below /user is not to be tracked.
+# We just want the directory hierachy and maybe some template
+# files for etc/
+# 
+*
+!.gitignore
+!tmp
+!UNIX-IPC
+!myprograms
+!etc
+!wcache
+!README
+!PGP
+!highscores
+!usenet
+!appdata
+!lockfiles
+!mail

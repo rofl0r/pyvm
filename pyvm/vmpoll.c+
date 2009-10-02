@@ -1,0 +1,162 @@
+/*
+ *  Implementations of notifiers based on the poller library
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+extern int Request_ms (long, int, int, int);
+extern int Request (long, int, long long int, int);
+extern void setNotify (void (*)(long, int));
+extern void startPeriodicTimer (int (*)(), int);
+extern void Cancel (long);
+extern REFPTR devnull;
+extern PyFuncObj *block_thread ();
+
+//
+// notifier object
+//  used by various parts of the code to declare their own
+//  action upon notification.  The default action is to
+//  store the current task and put it on the running list
+//  later.
+//
+
+NotifyObj.NotifyObj ()
+{
+	T = RC;
+	T->poller = this;
+}
+
+void NotifyObj.set_retval (__object__ *o)
+{
+	if (T) T->vm->S.STACKTOP [-1] = o;
+}
+
+bool NotifyObj.do_notify (int)
+{
+	if (T) {
+		T->move_running ();
+		T->poller = 0;
+	}
+	return true;
+}
+
+//
+// functions to request polling on a file descriptor.
+//  they block the current task (which is removed from
+//  the running-list)
+//
+
+__object__ *vmsleep (long long int us)
+{
+	Request ((long) new NotifyObj, -1, us, 0);
+	block_thread ()->call (devnull, &devnull, 0);
+	return &CtxSw;
+}
+
+__object__ *vmpollin (NotifyObj *o, int fd, int timeout)
+{
+	Request_ms ((long) o, fd, timeout, 0);
+	block_thread ()->call (devnull, &devnull, 0);
+	return &CtxSw;
+}
+
+void vmrepollin (NotifyObj *o, int fd, int timeout)
+{
+	// unused. we had some issues at some point, but it
+	// seems this isn't required any more.
+	Request_ms ((long) o, fd, timeout, 0);
+}
+
+__object__ *vmpollout (NotifyObj *o, int fd, int timeout)
+{
+	Request_ms ((long) o, fd, timeout, 1);
+	block_thread ()->call (devnull, &devnull, 0);
+	return &CtxSw;
+}
+
+//
+// cancel polling
+//
+
+void vmintr (Task *T)
+{
+	NotifyObj *N = T->poller;
+	N->T = 0;
+	Cancel ((long) N);
+	T->poller = 0;
+}
+
+//
+// wake up -- called by the poller
+//
+
+void vmNotify (long token, int timedout)
+{
+	DoSched |= SCHED_YIELD;
+	acquire_the_gil ();
+	NotifyObj *N = (NotifyObj*) token;
+	if (N->do_notify (timedout))
+		delete N;
+	release_the_gil (1);
+}
+
+//
+// periodic timer, sets the DoSched flag every 2 ms.
+// if the request hasn't been processed by the main
+// interpreter loop over 50 times (100ms), then the
+// timer hibernates and stops ticking.  Until the
+// main loop regains control and restarts the timers.
+//
+
+
+int Tick ()
+{
+static	int SchedPass = -40;
+	if (DoSched & SCHED_PERIODIC)
+		++SchedPass;
+	else SchedPass = 0;
+
+	if_unlikely (SchedPass > 300) {
+		if (vm_deadlock ())
+			fprintf (stderr, "VM Deadlocked!\n");
+		SchedPass = 0;
+		DoSched |= SCHED_HIBERNATE;
+		// (xxx: a good time for garbage collection?)
+		return 0;
+	}
+
+	DoSched |= SCHED_PERIODIC;
+	return 1;
+}
+
+// the vm is in a deadlock state if all the threads are waiting on locks
+static bool vm_deadlock ()
+{
+	for (Task *T = RALL; T; T = T->_next)
+		if (T->state == TH_BLOCKED || T->state == TH_RUNNING || T->LOCKER.o == &None)
+			return false;
+	return !!RALL;
+}
+
+void start_timer ()
+{
+	startPeriodicTimer (Tick, SCHED_EVERY_MS);
+}
+
+///////////////////////////////////////////////////
+
+static slowcold class InitVmpoll : InitObj
+{
+	int priority = INIT_LAST;
+	void todo ()
+	{
+		setNotify (vmNotify);
+	}
+};

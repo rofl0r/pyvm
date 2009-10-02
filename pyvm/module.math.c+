@@ -1,0 +1,111 @@
+/*
+ *  Math routines
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+/* ----* math wrappers *---- */
+
+static inline double todouble (__object__ *o)
+{
+	return FloatObj.isinstance (o) ? FloatObj.cast (o)->f :
+		(double) IntObj.checkedcast (o)->i;
+}
+
+#define DEFWRAP1(PF, LF) \
+	_module __object__ *PF ## _math (REFPTR argv [])\
+	{\
+		return new FloatObj (LF (todouble (argv [0].o)));\
+	}
+
+#define DEFWRAP2(PF, LF) \
+	_module __object__ *PF ## _math (REFPTR argv [])\
+	{\
+		return new FloatObj (LF (todouble (argv [0].o), todouble (argv [1].o)));\
+	}
+
+#define DEFWRAP1S(X) DEFWRAP1(X, X)
+#define DEFWRAP2S(X) DEFWRAP2(X, X)
+
+DEFWRAP1S (acos)
+DEFWRAP1S (asin)
+DEFWRAP1S (atan)
+DEFWRAP1S (sqrt)
+DEFWRAP1S (tan)
+DEFWRAP1S (tanh)
+DEFWRAP1S (cos)
+DEFWRAP1S (cosh)
+DEFWRAP1S (sin)
+DEFWRAP1S (sinh)
+DEFWRAP1S (exp)
+DEFWRAP1S (log10)
+DEFWRAP1S (ceil)
+DEFWRAP1S (fabs)
+DEFWRAP1S (floor)
+DEFWRAP2S (atan2)
+DEFWRAP2S (fmod)
+DEFWRAP2S (hypot)
+DEFWRAP2S (ldexp)
+DEFWRAP2S (pow)
+
+//frexp
+//modf
+
+_module __object__ *iceil_math (REFPTR argv[])
+{
+	return newIntObj (ceil (todouble (argv [0].o)));
+}
+
+_module __object__ *sqr_math (REFPTR argv[])
+{
+	double d = todouble (argv [0].o);
+	return new FloatObj (d*d);
+}
+
+_module __object__ *log_math (REFPTR argv [], int argc)
+{
+	if (argc == 1)
+		return new FloatObj (log (todouble (argv [0].o)));
+	return new FloatObj (log (todouble (argv [0].o)) / log (todouble (argv [1].o)));
+}
+
+/* module */
+
+static const bltinfunc funcs [] = {
+	{ "acos",	SETARGC (1, 1), acos_math },
+	{ "asin",	SETARGC (1, 1), asin_math },
+	{ "atan",	SETARGC (1, 1), atan_math },
+	{ "sqrt",	SETARGC (1, 1), sqrt_math },
+	{ "tan",	SETARGC (1, 1), tan_math },
+	{ "tanh",	SETARGC (1, 1), tanh_math },
+	{ "cos",	SETARGC (1, 1), cos_math },
+	{ "cosh",	SETARGC (1, 1), cosh_math },
+	{ "sin",	SETARGC (1, 1), sin_math },
+	{ "sinh",	SETARGC (1, 1), sinh_math },
+	{ "exp",	SETARGC (1, 1), exp_math },
+	{ "log10",	SETARGC (1, 1), log10_math },
+	{ "ceil",	SETARGC (1, 1), ceil_math },
+	{ "iceil",	SETARGC (1, 1), iceil_math },
+	{ "fabs",	SETARGC (1, 1), fabs_math },
+	{ "floor",	SETARGC (1, 1), floor_math },
+	{ "atan2",	SETARGC (2, 2), atan2_math },
+	{ "fmod",	SETARGC (2, 2), fmod_math },
+	{ "hypot",	SETARGC (2, 2), hypot_math },
+	{ "ldexp",	SETARGC (2, 2), ldexp_math },
+	{ "pow",	SETARGC (2, 2), pow_math },
+	{ "log",	SETARGC (1, 2), log_math },
+	{ "sqr",	SETARGC (1, 2), sqr_math },
+	BENDITEM
+};
+
+slowcold __object__ *import__math ()
+{
+	return new ModuleObj BltinModule ("math", funcs);
+}

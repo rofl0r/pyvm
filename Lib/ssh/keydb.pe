@@ -1,0 +1,49 @@
+
+# keyDB is a database where we store the public keys of servers
+# (and generally any known public keys).  Every time we connect
+# to the server we request its public key again.  If it changed
+# we should either update it in the DB or alert the user of the
+# possibility that this is not who we think it is.
+
+class Error (Exception);
+
+pubkeys = HOME + "user/pubkeys.txt";
+
+def read_keys ()
+{
+	D = {};
+	try O = open (pubkeys);
+	except { }
+	else
+		for (i in O) {
+			i = i [:-1];
+			if (!i or i [0] == '#') continue;
+			id, exp, mod = i.split ();
+			D [id] = exp, mod;
+		}
+	return D;
+}
+
+def write_keys (D)
+{
+	F = open (pubkeys, "w");
+	for (id in D.keys ().sort ())
+		F.write ("%s %s %s\n" %(id, D [id][0], D [id][1]));
+}
+
+def use_key (id, exp, mod)
+{
+	exp, mod = exp.hexlify (), mod.hexlify ();
+	db = read_keys ();
+	if (id not in db) {
+		db [id] = exp, mod;
+		write_keys (db);
+		return;
+	}
+	if (db [id] != (exp, mod)) {
+		print db [id];
+		print exp, mod;
+		raise Error ("Public Key of [%s] changed!  Delete its entry"+
+			     " from %s to proceed!" %pubkeys);
+	}
+}

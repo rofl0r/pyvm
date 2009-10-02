@@ -1,0 +1,40 @@
+__autosem__
+
+# To be rewritten according to alsamixer
+
+nostdin ()
+
+USAGE = """usage: setvol [ ["vol"|"pcm"|"mic"|"igain"] <0..100>]
+ When one of "vol", "pcm", "mic", "igain" is specified the apropriate mixer
+ channel's volume is set.  If only a volume level is specified it will set
+ both the "vol" and "pcm" channels with that value.
+ Without arguments the volumes will be printed.
+
+ NOTE: setvol uses the OSS interface to change the volume and that
+  is not good enough for newer HDA devices. If setvol fails, use
+  the standard `alsamixer` program, until setvol is adapted to alsa.
+"""
+
+from audio.dev import volume, get_volume
+
+args = sys.argp.nargs (0, 2)
+
+if (!args) {
+	for (n, d in enumerate (["vol", "pcm", "mic", "igain"]))
+		print d, get_volume (n)
+	exit ()
+}
+
+if (len (args) == 1) {
+	v = int (args [0])
+	volume.set_volume (v)
+	volume.set_pcm (v)
+} else {
+	dev, vol = args
+	vol = int (vol)
+	if (dev == "vol") volume.set_volume (vol)
+	else if (dev == "pcm") volume.set_pcm (vol)
+	else if (dev == "mic") volume.set_mic (vol)
+	else if (dev == "igain") volume.set_igain (vol)
+	else sys.argp.help ()
+}

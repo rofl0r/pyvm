@@ -1,0 +1,19 @@
+The documentation of pyvm is not very good at this moment.
+One reason for that is that because the project does not have
+fixed APIs and is constantly changing due to non backwards
+compatibility, some things were left undocumented.
+
+Since it is a very dynamic evolving toolchain, the documentation
+should also be more "dynamic".  The goal is to eventually
+explain everything as the code evolves.
+
+In the meantime, as a hacker, you may get stuck even when
+trying to do something simple.  For example, there are some
+things that the VM does not do properly and should be avoided
+because their behavior is unstable, undefined or even crashes,
+and there is usually a better way to do the same thing.
+The problem is that you don't know which these things are!
+
+If you are trying to do something simple and you're stuck,
+send e-mail to:
+	sxanth@ath.forthnet.gr

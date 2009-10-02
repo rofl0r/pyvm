@@ -1,0 +1,414 @@
+__autosem__
+from widget import widget, domain
+import utfutil
+from _unicode import utf8_len, utf8_iter, utf8_n
+from utfutil import utf8_slice, int2utf8
+
+#
+# simple text entry widget (without label)
+#
+# This is a tad more complicated because we want to avoid drawing the entire
+# text for simple changes. i.e. when the cursor moves we want to paint only
+# two chars.
+#
+
+class textin (widget)
+{
+	Tnext = None
+
+	method Init (font=None, **kw)
+	{
+		$enter_tabgroup ()
+
+		$font = font or ($international ? $wm.fixed_utf_font () : $wm.tfont)
+		$len = $international ? utf8_len : len
+		if ($international) {
+			$delchars = utfutil.delchars_utf
+			$inschars = utfutil.inschars_utf
+		} else {
+			$delchars = utfutil.delchars_ascii
+			$inschars = utfutil.inschars_ascii
+		}
+
+		$dw, $dh = $font.size ()
+		$s = ''
+		$cursor = $offset = 0
+		kw ['h'] = $dh + 2
+		if ('w' not in kw)
+			if ('tw' in kw) {
+				kw ['w'] = kw ['tw'] * $dw + 4
+				del kw ['tw']
+			}
+		if (kw.get ("fixed", False)) {
+			$can_resize = False
+			kw.pop ("fixed")
+		}
+
+		$widget_init (**kw)
+		$tw = $w / $dw
+
+		$lasttext = $tw * [' ']
+		$selected = None
+		$enabled = True
+	}
+
+	textin_init = Init
+
+	can_resize = True
+
+	# resize
+
+	method _resize_w (dw)
+	{
+		if (!$can_resize) return
+		$w += dw
+		$tw = $w / $dw
+		$adjOffset ()
+		$lasttext = $tlist ()
+	}
+
+	# text
+
+	method DrawChar (n, cc)
+	{
+		if (len (cc) != 1 and cc [-1] in "sx") {
+			c = cc [:-1]
+			m = cc [-1]
+		} else {
+			c = cc
+			m = ""
+		}
+		fg, bg = $A.color_textin_fg, $A.color_textin_bg
+		if (m == 's') fg, bg = bg, $A.color_textin_ss
+		else if (m == 'x' and $isKeyWidget ()) bg, fg = fg, bg
+		$fill_rect (n * $dw + 1, 2, $dw, $dh, bg)
+		$draw_string (c, n * $dw + 1, 2, fg=fg, bg=bg, font=$font)
+	}
+
+	method DrawText (t=None)
+	{
+		if (!t) {
+			t = $lasttext
+			lt = [None] * len (t)
+		} else lt = $lasttext
+
+		for (n, (lp, ln) in enumerate (zip (lt, t)))
+			if (lp != ln)
+				$DrawChar (n, ln)
+		$lasttext = t
+	}
+
+	method showCursor ()
+	{
+		n = $cursor - $offset
+		if ($len ($lasttext [n]) > 1 and $lasttext [n][-1] in 'sx') 
+			return
+		$lasttext [n] += 'x'
+		c = $lasttext [n]
+		$DrawChar (n, c)
+	}
+
+	method hideCursor ()
+	{
+		n = $cursor - $offset
+		if ($len ($lasttext [n]) > 1 and $lasttext [n][-1] in 'sx') {
+			c = $lasttext [n] = $lasttext [n][:-1]
+			$DrawChar (n, c)
+		}
+	}
+
+	# misc
+
+	method xtrans (x)
+		return min (x, $w - $dw) / $dw
+
+	method adjOffset ()
+		if ($cursor - $offset >= $tw)
+			$offset = 1 + $cursor - $tw
+		else if ($cursor < $offset)
+			$offset = $cursor
+		else if ($len ($s) - $offset < $tw)
+			$offset = max (1 + $len ($s) - $tw, 0)
+
+	method cursorKey (k)
+		if (k == 'LEFT') {
+			if ($cursor) $cursor -= 1
+		} else if (k == 'RIGHT') {
+			if ($cursor < $len ($s))
+				$cursor += 1
+		} else if (k == 'HOME')
+			$cursor = 0
+		else if (k == 'END')
+			$cursor = $len ($s)
+
+	method tlist ()
+		if (!$international) {
+			txt = $s [$offset:$offset + $tw]
+			txt += ' ' * max ($tw - len (txt), 0)
+			return list (txt)
+		} else {
+			txt = utf8_slice ($s, $offset, $tw)
+			txt += ' ' * max ($tw - utf8_len (txt), 0)
+			return [int2utf8 (x) for (x in utf8_iter (txt))]
+		}
+
+	# text selection
+
+	method mouse_select ()
+		for (xx in $followAxisMotion ('X')) {
+			xx = xx/$dw
+			$cursor = max (0, min ($offset + xx, $len ($s)))
+			yield 0
+		}
+
+	method do_selection (F)
+	{
+		c0 = $cursor
+		ft = 0
+
+		for (x in F ()) {
+			if (!ft) {
+				ft = 1
+				$selectionGet ()
+			}
+
+			$adjOffset ()
+			text = $tlist ()
+			if (c0 > $cursor) {
+				s = $cursor - $offset
+				e = min (c0 - $offset, $tw-1)
+			} else {
+				s = max (c0 - $offset, 0)
+				e = $cursor - $offset
+			}
+
+			for (i in xrange (s, e+1))
+				text [i] += 's'
+
+			$DrawText (text)
+			$wm.flush ()
+		}
+
+		if (ft) $selected = sorted ((c0, $cursor))
+	}
+
+	method free_selection ()
+	{
+		$selected = None
+		$selectionGiveup ()
+		$lasttext = $tlist ()
+		if ($isVisible ())
+			$DrawText ()
+	}
+
+	method onSelectionLose ()
+		$free_selection ()
+
+	method SelectionData ()
+	{
+		s, e = $selected
+		return $s [s:e+1]
+	}
+
+	# widget
+
+	method Draw ()
+	{
+		$draw_blank ($A.color_textin_bg)
+		$outline (col=$A.color_textin_ol)
+		$DrawText ()
+	}
+
+	method onClick (x, y)
+	{
+		if (!$enabled)
+			return
+		if ($selected)
+			$free_selection ()
+		$setKeyWidget ()
+		$hideCursor ()
+		$cursor = max (0, min ($offset + $xtrans (x), $len ($s)))
+		$showCursor ()
+		if ($mouse_pressed ())
+			$do_selection ($mouse_select)
+		return True
+	}
+
+	namespace clipboard
+	{
+		method can_copy ()
+			return $selected ? 1 : -1
+
+		method copy ()
+		{
+			$wm.Copy ($SelectionData ())
+			$free_selection ()
+		}
+
+		method cut ()
+		{
+			s, e = $selected
+			$clipboard.copy ()
+			$s = $delchars ($s, s, e+1-s)
+			$cursor = s
+			$lasttext = $tlist ()
+			$DrawText ()
+		}
+
+		method paste ()
+		{
+			k = $wm.Paste ()
+			if (!k) return
+			if ($selected) {
+				s, e = $selected
+				$s = $delchars ($s, s, e+1-s)
+				$cursor = s
+			}
+			$s = $inschars ($s, $cursor, k)
+			$cursor += len (k)
+			$lasttext = $tlist ()
+			$DrawText ()
+			if (!$isKeyWidget ()) {
+				$setKeyWidget ()
+				$showCursor ()
+			}
+		}
+	}
+
+	method clear ()
+		$setText ("")
+
+	method rMenu ()
+		return [
+			["Copy",  $clipboard.can_copy, $clipboard.copy],
+			["Paste", 1, $clipboard.paste],
+			["Cut",   $clipboard.can_copy, $clipboard.cut],
+			["clear", 1, $clear],
+		]
+
+	method enterKeyWidget ()
+		$showCursor ()
+
+	method leaveKeyWidget ()
+		if (!$selected)
+			$hideCursor ()
+
+	method onKey (k)
+	{
+		if (k == "SHIFT")
+			return
+
+		if ($wm.key_shift and k in ["LEFT", "RIGHT", "HOME", "END"]) {
+			if ($selected)
+				ss0 = $selected [0] == $cursor ? $selected [1] : $selected [0]
+			else ss0 = $cursor
+			$cursorKey (k)
+			$selected = [ss0, $cursor].sort ()
+			$adjOffset ();
+
+			s, e = $selected
+			text = $tlist ();
+
+			for (i in xrange (s, e+1)) {
+				i -= $offset
+				if (0 <= i < $tw)
+					text [i] += 's'
+			}
+
+			$DrawText (text)
+			return 1
+		}
+
+		if ($selected) {
+			if (k in ('UP', 'DOWN'))
+				return 0;
+			s, e = $selected;
+			$free_selection ();
+			if (k not in ["LEFT", "RIGHT", "HOME", "END", "SHIFT", "CTRL", "ALT"]) {
+				$s = $delchars ($s, s, e+1-s)
+				$cursor = s;
+				if (k in ('BACKSPACE', 'DEL'))
+					k = 'DRAW';
+			}
+		}
+
+		if (len (k) == 1 and 32 <= ord (k) <= 126 or
+		($international and k and ord (k [0]) >= 160)) {
+			$s = $inschars ($s, $cursor, k)
+			$cursor += 1;
+		} else if (k == 'BACKSPACE') {
+			if ($cursor) {
+				$s = $delchars ($s, $cursor-1, 1)
+				$cursor -= 1;
+				if ($offset)
+					$offset -= 1;
+			}
+		} else if (k == 'DEL') {
+			if ($cursor < $len ($s))
+				$s = $delchars ($s, $cursor, 1)
+		} else if (k in ('LEFT', 'RIGHT', 'END', 'HOME')) {
+			$cursorKey (k);
+		} else if (k == '\n') {
+			return $onEnter ();
+		} else if (k == "\t" and $Tnext) {
+			$Tnext.setKeyWidget ();
+			return 1;
+		} else if (k in ('UP', 'DOWN')) {
+			$cursor_updown (k == "UP")
+		} else if (k != 'DRAW')
+			return 0;
+
+
+		$adjOffset ();
+
+		text = $tlist ();
+		text [$cursor - $offset] += 'x';
+
+		$DrawText (text);
+		return 1;
+	}
+
+	method cursor_updown (up)
+		return up ? $prevKeyWidget () : $nextKeyWidget ()
+
+	# textin specifics
+
+	method onEnter ()
+		return $nextKeyWidget ()
+
+	method setText ($s, cursor=None)
+	{
+		text = $tlist ();
+		if (cursor is not None) {
+			$cursor = cursor;
+			$adjOffset ();
+			text [$cursor - $offset] += 'x';
+			$setKeyWidget ();
+		} else  $cursor = $offset = 0;
+
+		$selected = None;
+		$DrawText (text);
+		$Draw ();
+	}
+
+	method getText ()
+		return $s.strip ()
+}
+
+from container import hcontainer
+from label import label
+
+def text_entry (title, **kw)
+{
+	with (hcontainer ()) {
+		label (title)
+		e = textin (**kw)
+	}
+	return e
+}
+
+def text_entryf (title, **kw)
+{
+	kw ["fixed"] = True
+	return text_entry (title, **kw)
+}

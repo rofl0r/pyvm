@@ -1,0 +1,141 @@
+__autosem__
+from widget import widget
+from basecontainer import basecontainer
+
+#
+# A union is a container of widgets which displays the "current" widget.
+# Something like tabs.
+#
+
+class union (basecontainer)
+{
+	method Init (**kw)
+	{
+		$base_init (**kw)
+		$c = []
+		$kh= {}
+		$current = None
+	}
+
+	method children ()
+		yield $current
+
+	method setup_widgets ()
+	{
+		for (c in $c)
+			c.setup_widgets ()
+		$__setup__ ()
+	}
+
+	method arrange ()
+	{
+		$active = 0
+		$current = $c [0]
+		$resize (0, 0)
+	}
+
+	method vdump (lv=0)
+	{
+		print lv*" ", $__name__, $box ();
+		for (c in $c)
+			c.vdump (lv+2);
+	}
+
+	# draw only one
+
+	method visible (w)
+		return $current is w ? $p.visible (self) : False
+
+	# widgets may request to draw (from some event) even if not "visible"
+
+	method draw_line (x0, y0, x1, y1, col, c)
+		if (c is $current)
+			widget.draw_line (self, x0, y0, x1, y1, col)
+
+	method draw_string (s, x, y, fg, font, bg, c)
+		if (c is $current)
+			widget.draw_string (self, s, x, y, fg, font, bg)
+
+	method fill_rect (x, y, w, h, col, c=None)
+		if (c is $current or c is None)
+			widget.fill_rect (self, x, y, w, h, col)
+
+	method show_image (img, x, y, sx, sy, w, h, c=None)
+		if (c is $current or c is None)
+			widget.show_image (self, img, x, y, sx, sy, w, h)
+
+	# resize
+	method _resize_w (dw)
+	{
+		m = max ([i.w for (i in $c)])
+		for (i in $c) {
+			i.resize_w (m - i.w + dw)
+			i.x = 0
+		}
+		$w = max ([i.w for (i in $c)])
+	}
+
+	method _resize_h (dh)
+	{
+		m = max ([i.h for (i in $c)])
+		for (i in $c) {
+			i.resize_h (m - i.h + dh)
+			i.y = 0
+		}
+		$h = max ([i.h for (i in $c)])
+	}
+
+	method setKeyWidget (w=None)
+		if (w is None) {
+			if ($keyw)
+				$keyw.leaveKeyWidget ()
+			$keyw = w
+		} else if (w is $current) {
+			$keyw = w
+			w.enterKeyWidget ()
+			$p.setKeyWidget (self)
+		}
+
+	#
+	method Switch (x)
+	{
+		if (x -> int)
+			x = $c [x]
+
+		if (x == "other")
+			x = $current is None ? $c [0] : $c [$c [0] == $current ? 1 : 0]
+
+		if (x == $current)
+			return False
+		$hide ()
+		$keyw = $current = x
+		$unhide ()
+		$draw_blank ()
+		$Draw ()
+		return True
+	}
+
+	method switcher (x)
+		return def () $Switch (x)
+
+	# adding one more "tab" later on
+	method begin_add1 ()
+	{
+		$wm.Domain.begin ($root, $wm)
+		$wm.Domain.add_packer (self)
+		$prel = len ($c)
+	}
+
+		# here, construct the widget
+
+	method end_add1 ()
+	{
+		$wm.Domain.pop_packer (self)
+		$wm.Domain.end ()
+		if ($prel != len ($c)) {
+			$resize (0, 0)
+			$c [-1].setup_widgets ()
+		}
+		$prel = None
+	}
+}

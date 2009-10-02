@@ -1,0 +1,111 @@
+__autosem__
+from fonts.unicode import int2utf8
+
+from _unicode import utf8_len, utf8_iter, utf8_n, utf8_list
+
+# utf8_n: how many bytes are used for `n` utf-8 characters?
+
+# Get substring. `offset` and `n` are utf-8 chars
+def utf8_slice (s, offset, n)
+{
+	if (n < 0 or offset < 0)
+		raise Error ("negative indexes not supported")
+	c1 = utf8_n (s, 0, offset)
+	c2 = utf8_n (s, offset, n)
+	return s [c1:c1+c2]
+}
+
+# slice to end
+def utf8_slice_e (s, offset)
+{
+	if (offset < 0)
+		raise Error ("negative indexes not supported")
+	c1 = utf8_n (s, 0, offset)
+	return s [c1:]
+}
+
+slice_utf = utf8_slice
+
+def slice_ascii (s, offset, n)
+	return s [offset:offset+n]
+
+
+#
+
+def breakstr_utf (s, offset)
+{
+	if (offset < 0)
+		raise Error ("negative indexes not supported")
+	c = utf8_n (s, 0, offset)
+	return s [:c], s [c:]
+}
+
+def breakstr_ascii (s, offset)
+	return s [:offset], s [offset:]
+
+
+# Glyph slice.  The `offset` is glyphs
+def gslice_utf (s, goffset, n)
+{
+	if (n < 0 or offset < 0)
+		raise Error ("negative indexes not supported")
+	offset = utf8_n (s, 0, goffset)
+	c = utf8_n (s, offset, n)
+	return s [offset:offset+c]
+}
+
+def gslice_ascii (s, goffset, n)
+	return s [goffset:goffset+n]
+
+# Delete chars
+
+def delchars_ascii (s, offset, n)
+	return s [:offset] + s [offset+n:]
+
+def delchars_utf (s, offset, n)
+{
+	s1 = utf8_slice (s, 0, offset)
+	n = utf8_n (s, len (s1), n)
+	return s1 + s [len (s1)+n:]
+}
+
+# insert chars, `offset` is bytes
+
+def inschars_ascii (s, offset, ins)
+	return s [:offset] + ins + s [offset:]
+
+def inschars_utf (s, offset, ins)
+{
+	if (offset < 0)
+		raise Error ("negative indexes not supported")
+	s1 = utf8_slice (s, 0, offset)
+	return s1 + ins + s [len (s1):]
+}
+
+# skip the common part in the start and end.
+
+def strdiff_ascii (o, n)
+{
+	for (i in xrange (len (n)))
+		if (o [i] != n [i])
+			break
+	for (j in xrange (len (n)-1, 0, -1))
+		if (o [j] != n [j])
+			break
+	if (i) i -= 1
+	return i, n [i:j+2]
+}
+
+def strdiff_utf (o, n)
+{
+	ol = utf8_list (o)
+	nl = utf8_list (n)
+	for (i in xrange (len (nl)))
+		if (ol [i] != nl [i])
+			break
+	for (j in xrange (len (nl)-1, 0, -1))
+		if (ol [j] != nl [j])
+			break
+	if (i) i -= 1
+	return i, utf8_slice (n, i, j+2-i)
+}

@@ -1,0 +1,273 @@
+__autosem__
+from twidget import twidget
+
+def padstring (s, l)
+{
+	i = len (s);
+	return i < l ? s + ' ' * (l - i) : s [:l];
+}
+
+#
+# The list widget can display a threaded mode where items starting with
+# "+\|" are converted to junction-corner-line.
+# But this is not a tree view. The entire hierarchy is shown.
+#
+
+class List (twidget)
+{
+	method Init ($Threaded=False, *args, **kw)
+	{
+		twidget.Init (self, *args, **kw);
+		$L = ();
+		$current = None;
+		$selection = None;
+		$offset = 0;
+	}
+
+	list_init = Init
+
+	# list accessors. can be overriden
+	method LEN () return len ($L);
+	method ITH (i) return $L [i];
+	method IDX (c) return $L.index (c);
+
+	# or as a list
+	method iniItems ($L, $current=None, $offset=0);
+	method setItems ($L, $current=None, $offset=0)
+	{
+		$sReact ();
+		$Draw ();
+	}
+
+	# list changed
+	method Refresh (L=None)
+	{
+		if ($current is not None and L is not None and $L is not None)
+			c = $ITH ($current);
+		if (L is not None)
+			$L = L;
+		$sReact ();
+		if ($current is not None and $L is not None)
+			try $setCurrent ($IDX (c));
+			except {
+				$current = None;
+				$offset = 0;
+			}
+		$Draw ();
+	}
+
+	# tools
+	method draw_text2 (s, x, y, hl, bold=False, bg=None, fg=None)
+	{
+		if (hl and not fg and not bg) {
+			fg = $A.color_txt;
+			bg = $isKeyWidget () ? $A.color_blue : $A.color_shaded;
+		} else {
+			if (!fg) fg = $A.color_txt;
+			if (!bg) bg = $A.color_white;
+			if (hl) fg, bg = bg, fg;
+		}
+
+		xx = [];
+		if ($Threaded)
+		try while (s.lstrip ()[0] in "\\|+") {
+			st = s.lstrip () [0];
+			w, None, r = s.partition (st);
+			s = w + " " + r;
+			xx.append ((st, len (w)));
+		}
+
+		$draw_text (s, x, y, fg, bg, bold);
+
+		for (sym, w in xx) {
+			c = $A.color_dblue;
+			dx = $fx / 2;
+			x0 = w * $fx + dx;
+			y0 = y * $fy;
+			dy = $fy / 2;
+			if (sym == "\\") {
+				$draw_line (x0, y0, x0, y0 + dy, c);
+				$draw_line (x0+1, y0 + dy, x0 + dx, y0 + dy, c);
+			} else {
+				$draw_line (x0, y0, x0, y0 + 2 * dy, c);
+				if (sym == "+")
+					$draw_line (x0+dx, y0 + dy, x0+dx/2, y0 + dy, c);
+			}
+		}
+	}
+
+	method drawItem (n, t, hl=0)
+		$draw_text2 (padstring (t, $tw), 0, n, hl);
+
+	#
+#	method enterKeyWidget ()
+
+	# scroll control
+	method getTVOh ()
+		return $LEN (), $th, $offset;
+
+	method setTVOh (d=None, o=None)
+	{
+		oo = $offset
+		if (o is not None)
+			$offset = o
+		else {
+			o = abs (d) == 1 ? d : $th * d
+			$offset = minmax (0, $offset + o, max (0, $LEN () - $th)) 
+		}
+
+		if (oo != $offset)
+			$Draw ()
+	}
+
+	method to_bottom ()
+	{
+		$setTVOh (o=max (0, $LEN () - $th));
+		$sReact ();
+	}
+
+	#
+
+	method DrawCurrent (hl)
+		if ($current is not None and 0 <= $current - $offset < $th)
+			$drawItem ($current - $offset, $ITH ($current), hl);
+
+	method Select (i)
+	{
+		if (i >= $LEN ())
+			return;
+		if ($selection) {
+			$selection = None;
+			$Draw ();
+		}
+		$DrawCurrent (0);
+		$current = i;
+		$DrawCurrent (1);
+		$onSelect (i);
+	}
+
+	method SelectValue (v)
+		$Select ($IDX (v));
+
+	method NoSelect ()
+	{
+		$DrawCurrent (0);
+		$current = None;
+	}
+
+	method tDraw ()
+	{
+		xr = xrange ($offset, min ($offset + $th, $LEN ()));
+		$outline ('sunken');
+		if (not $selection) {
+			for (n in xr)
+				$drawItem (n - $offset, $ITH (n), n == $current);
+		} else {
+			s0, s1 = $selection;
+			s0 = max (0, s0);
+			s1 = max (0, s1);
+			for (n in xr)
+				$drawItem (n - $offset, $ITH (n), s0 <= n <= s1);
+		}
+		if (n < $offset + $th) {
+			y = (n+1-$offset) * $fy;
+			$fill_rect (0, y, $w, $h - y, $A.color_white);
+		}
+	}
+
+	# todo, partial redraw
+
+	method tresize_h ()
+	{
+		if ($LEN () - $offset < $th)
+			$to_bottom ();
+	}
+
+	method setCurrent ($current)
+	{
+		cc = current - $offset;
+		if (cc < 0 or cc >= $th) 
+			$offset = min (max (current - $th / 2, 0), $LEN () - $th);
+		$sReact ();
+	}
+
+	#redraw
+
+	method tOnClick (x, y)
+	{
+		$setKeyWidget ();
+		$Select ($offset + y);
+	}
+
+	method arrowSelection ()
+	{
+		if ((c = st = $current) is None)
+			return;
+		for (k in $A.followVArrows ()) {
+			if (k == 'UP') c -= 1;
+			else if (k == 'DOWN') c += 1;
+			else if (k == 'PAGEUP') c -= $th;
+			else c += $th;
+			c = minmax (0, c, $LEN () - 1);
+			if (not (0 <= c - $offset < $th))
+				$offset = c < $offset ? c : 1 + c - $th;
+			$selection = min (c, st), max (c, st);
+			$Draw ();
+			$sReact ();
+		}
+	}
+
+	method onKey (k)
+	{
+		c = $current;
+		o1 = o0 = $offset;
+
+		if (k in ('UP', 'DOWN', 'PAGEUP', 'PAGEDOWN')) {
+			if (c is None)
+				c = o1;
+			if (k == 'UP') {
+				c -= 1;
+				if (c < o1 + $th / 2 and o1)
+					o1 -= 1;
+			} else if (k == 'DOWN') {
+				c += 1;
+				if (c > o1 + $th / 2 and o1 + $th < $LEN ())
+					o1 += 1;
+			} else if (k == 'PAGEUP')
+				c -= $th-1;
+			else c += $th-1;
+		} else if (k == 'SHIFT') {
+			$arrowSelection ();
+			return 1;
+		} else if (k == '\n') {
+			$onOpen ($current);
+			return 1;
+		} else if (k == 'DEL') {
+			try $onDelete ($selection or $current);
+			except return 1;
+		} else return 0;
+
+		c = minmax (0, c, $LEN () - 1);
+
+		if (not (0 <= c - o1 < $th))
+			o1 = c < o1 ? c : 1 + c - $th;
+
+		if (o1 != o0) {
+			$offset = o1;
+			$Draw ();
+			$sReact ();
+		}
+
+		if (c != $current)
+			$Select (c);
+		return 1;
+	}
+
+	# API
+
+	method onSelect (i) 
+		return;
+
+	method onOpen (i)
+		$onSelect (i);
+}

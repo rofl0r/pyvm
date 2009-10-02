@@ -1,0 +1,356 @@
+##  DNS Protocol/Resolver
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+#
+# Get host by name
+#
+
+import socket
+from random 	import random_int32 as rand
+from misc	import dictfilt
+
+VERBOSE = __name__ == __main__
+
+#
+# The DNS protocol is quite complex although we are really using
+# only about 10% from it for gethostbyname().
+#
+# Instead of reading the RFCs, this implementation is based on following
+# what other implementations do.  That's pydns and uClibc.
+#
+
+namespace Type
+{
+	A     = 1
+	NS    = 2
+	CNAME = 5
+	SOA   = 6
+	PTR   = 12
+	MX    = 15
+}
+
+# TODO. Parse the entire packet with a function into a dict.
+
+###### Construct a DNS request packet #########
+
+def makeheader (id=0, qr=0, opcode=0, aa=0, tc=0, rd=0, ra=0, z=0, rcode=0,
+		qdcount=0, ancount=0, nscount=0, arcount=0)
+	return '%MH%MH%MH%MH%MH%MH' %(id,
+			(qr & 1) << 15 |
+			(opcode & 15) << 11 |
+			(aa & 1) << 10 |
+			(tc & 1) << 9 |
+			(rd & 1) << 8 |
+			(ra & 1) << 7 |
+			(z & 7) << 4 |
+			(rcode & 15), qdcount, ancount, nscount, arcount)
+
+def addname (qname)
+	return ''.join ([chr (len (i)) + i for (i in qname.split ('.'))]) + '\0'
+		
+def makequestion (qname, qtype, qclass)
+	return addname (qname) + '%MH%MH' %(qtype, qclass)
+
+def assemblePacket (host, qtype = Type.A, id = 0)
+	return makeheader (id = id, opcode = 0, rd = 1, qdcount = 1) +
+		 makequestion (host, qtype = qtype, qclass = 1)
+
+###### Parse a DNS reply packet #############
+
+from datastream import data_parser
+
+class pPacket
+{
+	method __init__ ($PACKET, qid)
+	{
+		$dp = data_parser (PACKET)
+		$header = $getheader ()
+		# DNS attack avoidance
+		if ($header ['id'] != qid)
+			raise Error ("BAD ID")
+	}
+
+	method getheader ()
+	{
+		id, x, qdcount, ancount, nscount, arcount = $dp.nr16b (6)
+		qr     = (x >> 15) & 1
+		opcode = (x >> 11) & 15
+		aa     = (x >> 10) & 1
+		tc     = (x >> 9) & 1
+		rd     = (x >> 8) & 1
+		ra     = (x >> 7) & 1
+		z      = (x >> 4) & 7
+		rcode  = x & 15
+		return dictfilt (locals (), ['x'])
+	}
+
+	method getname2 (dp)
+	{
+		name = ''
+		while (1) {
+			c = dp.r8 ()
+			if ((c & 0xc0) == 0xc0) {
+				ptr = ((c & 0x3f) << 8) | dp.r8 ()
+				return $getname2 (data_parser ($PACKET [ptr:]))
+			}
+			if (c == 0)
+				break
+			name += dp.read (c) + '.'
+		}
+		return name [:-1]
+	}
+
+	method getname ()
+		return $getname2 ($dp)
+
+	method getquestion ()
+		return {
+			'name': $getname (),
+			'qtype': $dp.r16b (),
+			'qclass': $dp.r16b (),
+		}
+
+	method getreplyheader ()
+	{
+		name = $getname ()
+		rrtype, klass, ttl, rdlength = $dp.r16b (), $dp.r16b (), $dp.r32b (), $dp.r16b ()
+		return dictfilt (locals (), ['self'])
+	}
+
+	method getreply ()
+	{
+		hdr = $getreplyheader ()
+
+		rrtype = hdr ['rrtype']
+		if (rrtype in (Type.CNAME, Type.NS, Type.PTR))
+			hdr ['data'] = $getname ()
+		else if (rrtype == Type.A)
+			hdr ['data'] = $dp.r32l ()
+		else if (rrtype == Type.MX) {
+			p2 = $dp.read (2)
+			name = $getname ()
+			hdr ['data'] = p2, name
+		} else print "Unknown dns reply type %i ignored" %hdr ['rrtype']
+
+		return hdr
+	}
+}
+
+#
+# make packet, send, return reply
+#
+
+gen query (host, qtype, id=0, times=3)
+{
+	# network down: what happens in this case? I've seen 3 different cases
+	# 1) on a PPPoE link when there is no PPP connection there *is* some
+	#    kind of DNS server on 10.0.0.138 which answers "Not Found".
+	# 2) There is no DNS server that answers.
+	# 3) routing is misconfigured and there is no network. requests are sent
+	#    and they are timed-out after a long time.
+	#
+	# Given the above, we cannot tell between "network down" and "host not found"
+	# errors at this point. Make both return None and detect this at another level
+	# (by pinging NETHOST at resolv.pe to be precise)
+
+	P = assemblePacket (host, qtype=qtype, id=id)
+	S = socket.socket (socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+	nslist = NSLIST [:]
+	# (?) exactly after issuing ppp-up, pinging the nameserver works
+	# but getting UDP requests from it doesn't. So this thing below
+	# were we retry 3 times, is a workaround...
+	for (i in *times)
+		for (ns in nslist)
+			try {
+				if (VERBOSE)
+					print "Trying:", ns
+				# put the current NS first in the NSLIST,
+				# if it succeeds, it'll be tried first next time.
+				NSLIST.remove (ns)
+				NSLIST.insert (0, ns)
+				S.connect ((ns, 53))
+				S.send (P, timeout=4.2)
+				yield S.recv (timeout=4.7)
+			} except { 
+				# (reorder NSList)
+				print "dns: failed nameserver [%s]" %ns
+				##print sys.exc_info ()
+			}
+	print "dns-error: No nameserver!"
+}
+
+#
+#
+
+def extract_IP (packet, id)
+{
+	# Search a reply packet for an answer of type 'A'
+	# The 'data' of this packet is the IP address.
+	P = pPacket (packet, id)
+	hdr = P.header
+
+	if (hdr ['rcode']) {
+		if (VERBOSE)
+			print 'dns: No answer in packet (rcode=%i)' % hdr ['rcode']
+		return None
+	}
+
+	for (i in range (hdr ['qdcount']))
+		q = P.getquestion ()
+	for (i in range (hdr ['ancount'])) {
+		q = P.getreply ()
+		if (q ['rrtype'] == Type.A)
+			return socket.inet_ntoa (q ['data'])
+	}
+
+	if (VERBOSE)
+		print 'dns: No answer in packet'
+}
+
+##### gethostbyname #####
+
+DNSSEM = @thread.sem (5)
+
+def _gethostbyname (host)
+{
+	if (IsIP (host))
+		return host
+	with (DNSSEM) {
+		qid = rand () >> 16
+		for (R in query (host, Type.A, id=qid)) {
+			ip = extract_IP (R, qid)
+			if (ip)
+				return ip
+		}
+	}
+}
+
+##### reverse lookup ######
+
+revcache = {}
+
+def revlookup (ip)
+{
+	try return revcache [ip]
+
+	host = '.'.join (list (reversed (ip.split ('.')))) + '.in-addr.arpa'
+
+	with (DNSSEM) {
+		qid = rand () >> 16
+		for (R in query (host, Type.PTR, id=qid, times=1)) {
+			P = pPacket (R, qid)
+			hdr = P.header
+
+			if (hdr ['rcode'])
+				continue
+
+			for (i in range (hdr ['qdcount']))
+				q = P.getquestion ()
+			for (i in range (hdr ['ancount'])) {
+				q = P.getreply ()
+				if (q ['rrtype'] == Type.PTR)
+					return revcache [ip] = q ['data']
+			}
+		}
+		raise Error ("reverse lookup of [%s] failed" %ip)
+	}
+}
+
+
+##### DNS Caching ######
+# caching is done locally, per process and the goal is
+# to avoid socket -> connect -> send -> recv
+#
+# Two reasons to invalidate the cache:
+# 1) it has gotten too big
+# 2) if the program is running for too long, we should
+#    detect changes
+#
+# I think the most important reason is (2), and at the moment
+# the entire cache is destroyed every X hours.
+#
+# we don't need to lock the Cache for multithreading.
+# The current implementation is rather atomic.
+#
+
+NSCache = {}
+NSCache_time = now ()
+
+def gethostbyname (host)
+{
+	global NSCache, NSCache_time
+
+	if (IsIP (host))
+		return host
+
+	if ('dyndns' in host)
+		return _gethostbyname (host)
+
+	try return NSCache [host]	# atomic
+
+	if (now () - NSCache_time > 2*60*60 or len (NSCache) > 1000) {
+		NSCache_time = now ()
+		NSCache = {}
+	}
+
+	return NSCache [host] = _gethostbyname (host)
+}
+
+def gethostbyname_nocache (host)
+{
+	if (IsIP (host))
+		return host
+	return _gethostbyname (host)
+}
+
+#### initialization ######
+
+nsre = @re.re (r'nameserver\s([\d\.]*)')
+
+def __init__ ()
+{
+	global IsIP, NSLIST
+	IsIP = @re.compile (r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').matches
+
+	# should we read /etc/hosts ?
+
+	# Load nameserver from /etc/resolv.conf (PYVM_HOME?)
+
+	NSLIST = []
+	for (f in ("/etc/ppp/resolv.conf", "/etc/resolv.conf")) {
+		try F = open (f)
+		except continue
+
+		for (l in F)
+			if (M = nsre (l))
+				NSLIST.append (M [1])
+	}
+
+	if (!NSLIST)
+		print "Nothing in /etc/resolv.conf and /etc/ppp/resolv.conf!"
+#	NSLIST = ["195.170.0.1"] + NSLIST
+}
+
+__init__ ()
+
+# enable host lookup in socket module
+
+socket.gethostbyname = gethostbyname
+
+if (__name__ == '__main__')
+{
+	USAGE = """pyvm dns <hostname> | "rev" <ip>"""
+
+	a1 = sys.argp.pop_one_arg ()
+	if (a1 == "rev")
+		print revlookup (sys.argp.one ())
+	else
+		print gethostbyname (a1)
+}

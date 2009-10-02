@@ -1,0 +1,32 @@
+from container import vcontainer;
+from label import label;
+from space import space;
+
+def Message (wm, message, font=None)
+{
+	if (font is None)
+		font = wm.dfont;
+
+	message = message.split ('\n');
+	SIZEY = max (len (message) * font.h + 20, 50) + 30;
+	SIZEX = max (min (640, max ([font.isizeof (i) for (i in message)])), 200);
+	ww, wh = wm.basewin.w, wm.basewin.h;
+	W = wm.toplev (max (ww/2-SIZEX/2, 0), max (wh/2 - SIZEY, 0), SIZEX+15, SIZEY);
+	V = vcontainer (w=SIZEX, h=SIZEY, outlined=1, title='Message');
+		for (i in message)
+			label (i, font=font);
+		space ();
+	V.pack ();
+	def V.onClick (*a)
+		raise "OK";
+	V.onKey = V.onClick;
+
+	W.resize (0, 0);
+	W.resize_w (SIZEX - W.w);
+	W.resize_h (SIZEY - W.h);
+	V.draw_blank ();
+	W.Draw ();
+	wm.flush ();
+	try wm.MainLoop ();
+	W.Close ();
+}

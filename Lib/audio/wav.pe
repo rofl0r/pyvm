@@ -1,0 +1,116 @@
+##  WAV audio
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+## Need tests
+
+__autosem__
+
+namespace C
+{
+	locals ().update (@DLL.Clib ("wav", "-O3 -Wall", pelf=1))
+
+	PCM      = 1
+	MSADPCM  = 2
+	IMAADPCM = 0x11
+}
+
+class wav
+{
+	method __init__ (filename)
+	{
+		d = $d = @datastream.file_parser (filename)
+
+		first = d.rn (4)
+		if (first == "RIFF") {
+			wavelen = d.r32l ()
+			d.match_raise ("WAVE")
+		} else {
+			wavelen = ord32l (first)
+			d.match_raise ("WAVE")
+		}
+
+		def read_chunk ()
+			return d.rn (4), d.r32l ()
+
+		while (1) {
+			magic, length = read_chunk ()
+			if (magic in ("fact", "LIST"))
+				d.skip (length)
+			else break
+		}
+
+		if (magic != "fmt ")
+			raise Error ("Complex WAVE not supported")
+
+		encoding, $channels, $frequency, byterate, None, bitsperpixel = d.unpack_le ("HHiiHH")
+print encoding, $channels, $frequency, byterate, None, bitsperpixel
+		resta = length > 16 ?  d.rn (length - 16) : ""
+print resta, length
+
+		if (encoding == C.PCM)
+			$read = bitsperpixel == 8 ? $read_u8 : $read_s16
+		else if (encoding == C.MSADPCM) ;
+		else raise Error ("WAV not implemented %i/%i" %(encoding, bitsperpixel))
+
+		while (1) {
+			magic, length = read_chunk ()
+			if (magic != "data")
+				d.skip (length)
+			else break
+		}
+
+		$left = length
+		$duration = (8.0 * length) / ($channels * bitsperpixel * $frequency)
+	}
+
+	method read_u8 (n=65546)
+	{
+		n = min (n, $left)
+		u8 = $d.rn (($left = n))
+		s16 = _buffer (2 * len (u8))
+		C.u8tos16 (u8, s16, len (u8))
+		return s16
+	}
+
+	method read_s16 (n=65536)
+	{
+		n = min (n, $left)
+		return $d.rn (($left = n))
+	}
+}
+
+# raw 44100, 16bits, signed little endian (format of audio CD)
+
+class rawpcm
+{
+	method __init__ (filename)
+	{
+		$f = open (filename)
+		$duration = "not implemented"
+		$frequency = 44100
+		$channels = 2
+	}
+
+	method read (n=65536)
+		return $f.read (n)
+}
+
+# play a wav
+
+if (__name__ == __main__)
+{
+	raw = sys.argp.check_switch ("-r")
+	w = (raw ? rawpcm : wav) (sys.argp.filename_ex ())
+
+	print 'duration:', w.duration
+	dv = @audio.dev.AudioDev ()
+	print 'freq, channels:', w.frequency, w.channels
+	dv.grab (w.frequency, w.channels)
+	while (data = w.read ())
+		dv.play (data)
+	@time.sleep (1.0)
+}

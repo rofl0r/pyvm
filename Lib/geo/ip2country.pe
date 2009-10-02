@@ -1,0 +1,21 @@
+__autosem__
+
+# (XXX: test for big endian system and abort)
+
+table = readfile (HOME + "Lib/geo/geotab")
+
+C = @DLL.Import ("geo", "-O3 -Wall", pelf=1)
+C.inittab (table, len (table) / 6)
+
+def inet_addr (x)
+	return ord32b ("".join (["%c" %int (i) for (i in x.split ("."))]))
+
+def ip2country (ip)
+{
+	r = _buffer (2)
+	C.lookup (inet_addr (ip), r)
+	return r
+}
+
+if (__name__ == __main__)
+	print ip2country (sys.argp.one_arg ())

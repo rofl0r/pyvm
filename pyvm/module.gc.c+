@@ -1,0 +1,60 @@
+/*
+ *  Interface to garbage collection
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+extern REFPTR _GC_LIST;
+
+static __object__ *gc_collect (REFPTR [])
+{
+	int o = gc_enabled;
+	gc_enabled = true;
+	weakref_collect ();
+	GC_collect (_GC_LIST);
+	gc_enabled = o;
+	return &None;
+}
+
+extern unsigned int allocated_memory;
+
+static __object__ *gc_memory (REFPTR[])
+{
+	return new IntObj (allocated_memory);
+}
+
+int gc_enabled = true;
+
+static __object__ *enable_gc (REFPTR [])
+{
+	gc_enabled = true;
+	return &None;
+}
+
+static __object__ *disable_gc (REFPTR [])
+{
+	gc_enabled = false;
+	return &None;
+}
+
+/* module */
+
+static bltinfunc funcs [] = {
+	{ "collect",	0, gc_collect },
+	{ "memory",	0, gc_memory },
+	{ "enable",	0, enable_gc },
+	{ "disable",	0, disable_gc },
+	BENDITEM
+};
+
+slowcold __object__ *import_gc ()
+{
+	return new ModuleObj BltinModule ("gc", funcs);
+}

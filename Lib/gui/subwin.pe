@@ -1,0 +1,64 @@
+from encapsulator import encapsulator;
+
+class subwin (encapsulator)
+{
+# like encaps, but:
+#	__init__ : title
+#	it has a bar (draw/borders) : title (todo much later minimize)
+#	onPress -> bar
+
+}
+
+'''
+	method __init__ ()
+		$subw = None;
+
+	method _resize_w (dw)
+		$w += dw;
+
+	method _resize_h (dh)
+		$h += dh;
+
+	method checksub ()
+		if ($subw is None)
+			$subw = $root.B.subwin ($x + $p.absx(), $y + $p.absy(), $w, $h);
+
+	method rebase ($x, $y)
+	{
+		$checksub ();
+		$subw.move ($x + $p.absx (), $y + $p.absy ());
+	}
+
+	method hide ()
+	{
+		$checksub ();
+		$subw.hide ();
+	}
+
+	method unhide ()
+	{
+		$checksub ();
+		$subw.unhide ();
+	}
+
+	method absx ()
+		return 0;
+
+	method absy ()
+		return 0;
+
+	method draw_line (x0, y0, x1, y1, col=None, c=None)
+		$subw.draw_line (x0, y0, x1, y1, col);
+
+	method fill_rect (x, y, w, h, col=None, c=None)
+		$subw.fill_rect (x, y, w, h, col);
+
+	method draw_string (s, x, y, fg=None, font=None, bg=None, c=None)
+		$subw.draw_string (s, x, y, fg, font, bg);
+
+	method show_image (img, x, y, sx=0, sy=0, w=3200, h=3200, c=None)
+		$subw.show_image (img, x, y, sx, sy, w, h);
+
+#method Draw ()
+#$fill_rect (0, 0, $w, $h, $A.color_blue);
+}''';

@@ -1,0 +1,134 @@
+/*
+ *  main function
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "include.h"
+#include "dynlib.h"
+#include "config.h"
+
+extern void init_modules ();
+extern void segv (int);
+extern void sigpipe (int);
+extern void sigint (int);
+extern PyFuncObj *BIOS_func (__object__*);
+extern void *get_boot_ctx ();
+
+static slow void boot_bios ()
+{
+	/*
+	** We call a python function (or module -- it's the same)
+	** Because of stackless the function call returns a vm_context.
+	** Then we call main_thread() with this context which really
+	** enters boot_pyvm(). We must also prepare the context to
+	** have the static boot_ctx as its caller and initialize
+	** the outmost exception handler.
+	*/
+
+	StringObj *dot = new StringObj (".");
+	if (access (PYVM_HOME "pyvm/BIOS.pyc", R_OK)) {
+		/* BIOS.pyc not found (or broken) -- not tested lately */
+		REFPTR RETVAL;
+		REFPTR module = new ModuleObj (dot, Interns.__main__);
+		REFPTR MAIN = load_compiled ("pyvm", module.o);
+		globalocals->xsetitem (Interns.__file__, new StringObj ("pyvm"));
+		REFPTR startfunc = new PyFuncObj (MAIN.o, globalocals, globalocals);
+		REFPTR bootfunc = BIOS_func (startfunc.o);
+		{
+			/*-*-*-*-*-*-*-*-*-*-*-*-*/
+			REFPTR x;
+			bootfunc->call (x, &x, 0);
+			/*-*-*-*-*-*-*-*-*-*-*-*-*/
+
+			/* default exception handling block. used by sys.exc_info
+			   when there is no active exception handling block.  */
+			//except0 [0] = bootfunc.as_func->codeobj;
+			bootfunc.as_func->exc_loc = 0;
+			CtxSw.vm->LTOS = 1;
+			CtxSw.vm->LOOPS [0].setup_type = TYPE_HB;
+			//CtxSw.vm->LOOPS [0].stacktop = except0;
+		}
+		CtxSw.vm->caller = 0;
+	} else {
+		// This is the common case
+		REFPTR module = new ModuleObj (dot, Interns.BIOS);
+		REFPTR MAIN = load_compiled (PYVM_HOME "pyvm/BIOS.pyc", module.o);
+		REFPTR startfunc = new PyFuncObj (MAIN.o, globalocals, globalocals);
+		REFPTR x;
+		startfunc->call (x, &x, 0);
+		//except0 [0] = startfunc.as_func->codeobj;
+		startfunc.as_func->GC_ROOT ();
+		CtxSw.vm->caller = get_boot_ctx ();
+	}
+
+	// we have our main context
+	new Task (CtxSw.vm, 0, 0)->make_current ();
+	main_thread ();
+}
+
+extern void set_sys_argv (int, char**);
+
+static void sigfpe (int)
+{
+	whereami ();
+	RaiseFPE ();
+}
+
+extern void start_timer ();
+int DoSched;
+
+extern void print_thread_status (int);
+
+void killvm ()
+{
+	fprintf (stderr, "======= vmkill =====\n");
+	/* these functions access the vm without holding the GIL.
+	   so fatal errors are possible but killvm is called assuming
+	   that the vm is in some kind of fatal lockup.  */
+	OUT->flush ();
+	whereami ();
+	print_thread_status (1);
+	OUT->flush ();
+	delete OUT;
+
+	abort ();
+}
+
+/* by default we return error(1), unless everything goes as planned
+   and the BIOS changes this to 0 and then returns */
+int ExitVal = 1;
+int istty;
+
+int main (int argc, char **argv)
+{
+	istty = isatty (1);
+	termios ts;
+	if (istty)
+		tcgetattr (0, &ts);
+	signal (SIGSEGV, segv);
+	signal (SIGPIPE, sigpipe);
+	signal (SIGINT,  sigint);
+	signal (SIGFPE,  sigfpe);
+
+	set_sys_argv (argc, argv);
+
+	initialize ();
+	start_timer ();
+	init_modules ();
+
+	boot_bios ();
+
+	// try to flush these streams
+	delete OUT;
+	delete ERR;
+	if (istty)
+		tcsetattr (0, TCSAFLUSH, &ts);
+
+	return ExitVal;
+}

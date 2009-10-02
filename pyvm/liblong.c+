@@ -1,0 +1,666 @@
+/*
+ *  Long integer numbers
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+ * A long is a sequence of 32-bit unsigned int digits (LSD first), and a sign.
+ * The code is far from ready for 64-bit mode CPUs.
+ *
+ * Right now we provide:
+ *	add, sub, mul, divrem, powmod, shift, cmp
+ * and later for the rest.
+ *
+ */
+#include "include.h"
+#include "liblong.h"
+#include "mallok.h"
+
+#define FAST_MODEXP
+
+static inline int min (int a, int b) { return a < b ? a : b; }
+static inline int max (int a, int b) { return a > b ? a : b; }
+
+typedef unsigned int digit;
+typedef unsigned long long ull;
+typedef long long ll;
+
+unsigned int *Long.Alloc (int n)
+{
+	return (unsigned int*) __malloc ((aloc = n) * sizeof (int));
+}
+
+static Long.Long (int s, unsigned int *d, int g=1)
+{
+	sign = g;
+	memcpy (D = Alloc (size = s), d, s * 4);
+}
+
+Long.Long (Long L)
+{
+	ctor (L.size, L.D, L.sign);
+}
+
+Long.Long (int i)
+{
+	sign = i < 0 ? -1 : 1;
+	D = Alloc (size = 1);
+	D [0] = abs (i);
+}
+
+Long.~Long ()
+{
+	if (D) __free (D);
+}
+
+void Long.__size (int s, int g)
+{
+	D = Alloc (s);
+	sign = g;
+	size = 1;
+}
+
+static Long *Long.dupn (bool rev=false)
+{
+	adj ();
+	return new Long (size, D, rev ? -sign : sign);
+}
+
+static void Long.adj ()
+{
+	size = aloc;
+	while (size > 1 && !D [size - 1]) --size;
+}
+
+static void Long.expand (int ds)
+{
+	/* make sure that there is room to store 'ds' digits more than size */
+	if (ds + size < aloc)
+		return;
+	D = __realloc (D, (aloc = (size + ds)) * 4);
+	memset (D + size, 0, ds * 4);
+}
+
+static void Long.expandto (int a)
+{
+	if (aloc < a) {
+		D = __realloc (D, (aloc = a) * 4);
+		memset (D + size, 0, (aloc - size) * 4);
+	}
+}
+
+static void Long.shrink (int ds)
+{
+	D = __realloc (D, (aloc -= ds )* 4);
+}
+
+bool Long.iszero ()
+{
+	adj ();
+	for (int i = 0; i < size; i++)
+		if (D [i]) return false;
+	return true;
+}
+
+int Long.cmp (int i)
+{
+	if ((i < 0 && sign > 0) || (i > 0 && sign < 0))
+		return sign;
+	if (size > 1)
+		return sign;
+	if (i == 0) {
+		if (D [0] == 0)
+			return 0;
+		return sign;
+	}
+	if (D [0] == abs (i))
+		return 0;
+	return sign * (D [0] > abs (i));
+}
+
+int Long.cmp (Long L)
+{
+	if (sign != L.sign)
+		return sign;
+	if (size != L.size)
+		return sign * (size - L.size);
+	for (int i = size - 1; i >= 0; i--)
+		if (D [i] != L.D [i])
+			return sign * (D [i] > L.D [i] ? 1 : -1);
+	return 0;
+}
+
+//####################################################
+#include "bn.c"
+
+static bool Long.less_than (Long L)
+{
+	if (L.size > size) return true;
+	if (L.size < size) return false;
+	for (int i = size - 1; i >= 0; i--)
+		if (D [i] != L.D [i])
+			return D [i] < L.D [i];
+	return false;
+}
+
+static Long *x_add (Long L1, Long L2)
+{
+	if (L1.size < L2.size)
+		return x_add (L2, L1);
+
+	int s = L1.size + 1;
+	unsigned int r [s];
+	bn_add (L2.D, L2.size, L1.D, L1.size, r);
+	while (s > 1 && !r [s - 1]) --s;
+	return new Long (s, r, L1.sign);
+}
+
+static Long *x_sub (Long L1, Long L2, int g=1)
+{
+	int i;
+
+	if (L1.size < L2.size) {
+		return x_sub (L2, L1, -1);
+	} else if (L1.size == L2.size && g == 1) {
+		for (i = L1.size - 1; i >= 0; i--)
+			if (L1.D [i] != L2.D [i])
+				break;
+		if (i < 0)
+			return new Long (0);
+		if (L1.D [i] < L2.D [i]) 
+			return x_sub (L2, L1, -1);
+	}
+
+	int s = L1.size;
+	unsigned int r [s];
+	bn_sub (L1.D, L1.size, L2.D, L2.size, r);
+	while (s > 1 && !r [s - 1]) --s;
+	return new Long (s, r, g);
+}
+
+static void Long.i_sub (Long L)
+{
+	bn_sub (D, size, L.D, L.size, D);
+	adj ();
+}
+
+static Long *_add (Long L1, Long L2)
+{
+	Long *p;
+	int s = L1.sign * L2.sign;
+
+	if (s > 0) {
+		p = x_add (L1, L2);
+		p->sign = L1.sign;
+	} else {
+		p = x_sub (L1, L2);
+		p->sign *= L1.sign;
+	}
+
+	return p;
+}
+
+static Long *_sub (Long L1, Long L2)
+{
+	Long *p;
+	int s = L1.sign * L2.sign;
+
+	if (s > 0) {
+		p = x_sub (L1, L2);
+		p->sign *= L1.sign;
+	} else if (s < 0) {
+		p = x_add (L1, L2);
+		p->sign = L1.sign;
+	} else {
+		if (L1.sign) return L1.dupn ();
+		if (L2.sign) return L2.dupn (1);
+		return new Long (0);
+	}
+
+	return p;
+}
+
+static Long *_mul (Long L1, Long L2)
+{
+	if (L1.size > L2.size)
+		return _mul (L2, L1);
+
+	int s = L1.size + L2.size;
+	unsigned int r [s];
+	bn_multiply (L1.D, L1.size, L2.D, L2.size, r);
+	while (s > 1 && !r [s - 1]) --s;
+	return new Long (s, r, L1.sign * L2.sign);
+}
+
+static void Long.lshift (int n)
+{
+	int i;
+	unsigned long long tmp = 0;
+
+	if (n / 32) {
+		int d = n / 32, s = size;
+
+		expand (d);
+		for (i = s - 1; i >= 0; i--)
+			D [i + d] = D [i];
+		for (i = 0; i < d; i++)
+			D [i] = 0;
+		size += d;
+		if (!(n %= 32))
+			return;
+	}
+
+	for (i = 0; i < size; i++) {
+		tmp = ((ull) D [i] << n) | tmp;
+		D [i] = tmp;
+		tmp >>= 32;
+	}
+
+	if (tmp) {
+		expand (1);
+		D [i] = tmp;
+		++size;
+	}
+}
+
+static void Long.rshift (int n)
+{
+	int i;
+	unsigned long tmp1 = 0, tmp2;
+
+	if (n / 32) {
+		int d = n / 32;
+
+		for (i = d; i < size; i++)
+			D [i - d] = D [i];
+
+		for (i = size-d; i < size; i++) D [i] = 0;
+		size -= d;
+		shrink (d);
+
+		if (!(n %= 32)) {
+			return;
+		}
+	}
+
+	for (i = size - 1; i >= 0; i--) {
+		tmp2 = D [i] << (32 - n);
+		D [i] >>= n;
+		D [i] |= tmp1;
+		tmp1 = tmp2;
+	}
+
+	adj ();
+}
+
+static int Long.num_bits ()
+{
+	return bitcount (D, size);
+}
+
+static inline void Long.rshift1 ()
+{
+	int i;
+
+	for (i = 0; i < size - 1; i++)
+		D [i] = (D [i] >> 1) | (D [i + 1] << 31);
+	if (!(D [i] >>= 1))
+		--size;
+}
+
+static inline void Long.lshift1 ()
+{
+	int i = size - 1;
+
+	if (D [i] & 0x80000000)
+		++size;
+
+	for (; i >= 0; i--) {
+		if (D [i] & 0x80000000)
+			D [i + 1] |= 1;
+		D [i] <<= 1;
+	}
+}
+
+/*
+ * Division. openSSL slow method.
+ */
+static void x_div (Long L1, Long L2, Long **dr, Long **rm)
+{
+	if (L1.less_than (L2)) {
+		if (dr) *dr = new Long (0);
+		else goto have_rm;
+		if (rm) have_rm:
+			*rm = new Long (L1);	// XXXX: sign = L1.sign
+		return;
+	}
+
+	int nm = L1.num_bits ();
+	int nd = L2.num_bits ();
+	int i, rs, ds;
+
+	// do division via absolute value, and adjust the signs later
+	rs = L2.sign;
+	if (rs < 0) L2.sign = 1;
+	ds = L1.sign;
+	if (ds < 0) L1.sign = 1;
+
+	Long dv (0);
+	Long rem (L1);
+	Long D (L2);
+
+	dv.expand ((nm - nd) / 32);
+	D.lshift (nm - nd);
+	for (i = 0; i <= nm - nd; i++) {
+		dv.lshift1 ();
+		if (!rem.less_than (D)) {
+			dv.D [0] |= 1;
+			rem.i_sub (D);
+		}
+		D.rshift1 ();
+	}
+
+	L1.sign = ds;
+	L2.sign = rs;
+
+	if (rm) {
+		rem.sign = ds;
+		*rm = rem.dupn ();
+	}
+
+	if (dr) {
+		dv.sign = ds * rs;
+		*dr = dv.dupn ();
+	}
+}
+
+/*
+ * Remainder. Like division but without keeping track of result
+ */
+static Long *x_rem (Long L1, Long L2)
+{
+	if (L1.less_than (L2))
+		return new Long (L1);	// XXXX: sign = L1.sign
+
+	int nm = L1.num_bits ();
+	int nd = L2.num_bits ();
+	int i, rs, ds;
+
+	// do division via absolute value, and adjust the signs later
+	rs = L2.sign;
+	if (rs < 0) L2.sign = 1;
+	ds = L1.sign;
+	if (ds < 0) L1.sign = 1;
+
+	Long rem (L1);
+	Long D (L2);
+
+	D.lshift (nm - nd);
+	for (i = 0; i <= nm - nd; i++) {
+		if (!rem.less_than (D))
+			rem.i_sub (D);
+		D.rshift1 ();
+	}
+
+	L1.sign = ds;
+	L2.sign = rs;
+
+	return rem.dupn ();
+}
+
+/* dividing a long with an int is much faster. atm, only the modulo is done */
+unsigned int x_rem1 (Long L, unsigned int n)
+{
+	unsigned long long rem = 0;
+	int i = L.size - 1;
+
+	for (; i >= 0; i--) {
+		rem = (rem << 32) + L.D [i];
+		unsigned int hi = rem / n;
+		rem -= hi * n;
+	}
+	return (unsigned int) rem;
+}
+
+#ifndef FAST_MODEXP
+static int Long.testbit (int n)
+{
+	return !!(D [n / 32] & (1 << (n % 32)));
+}
+
+/*
+ * (B**E) % M
+ * very useful in asymmetric cryptography
+ */
+static Long *x_pow (Long B, Long E, Long M)
+{
+	int n = E.num_bits ();
+	Long *z = new Long (1);
+	Long *r;
+
+#define MUL(X,Y) {\
+		r = _mul (X, Y);\
+		delete z; z = r;\
+		r = x_rem (z, M);\
+		delete z; z = r;\
+	}
+#define MOD(X) \
+	r = x_rem (X, M);\
+	delete X; X = r;
+
+	Long *B2 = _mul (B, B);
+	MOD (B2);
+	Long *B3 = _mul (B2, B);
+	MOD (B3);
+
+	while (n) {
+		if (n == 1) {
+			MUL (z, z)
+			if (E.testbit (--n))
+				MUL (z, B)
+		} else {
+			MUL (z, z)
+			MUL (z, z)
+			int b = 2*E.testbit (n-1) + E.testbit (n-2);
+			n -= 2;
+			if (b == 3) MUL (z, B3)
+			else if (b == 2) MUL (z, B2)
+			else if (b) MUL (z, B)
+		}
+	}
+
+	delete B3;
+	delete B2;
+
+	return z;
+}
+#else /* FAST_MODEXP */
+/////////////////////////////////////////////////////////////////////////////
+// Fast modular exponentiation. This method is based on a patch for RSA in
+// the linux kernel by Tasos Parisinos. At the time this patch has not been
+// integrated into the kernel.  The patch was Copyright (c) Tasos Parisinos
+// and released under GPL. 
+
+static unsigned int modinv (unsigned int x)
+{
+	unsigned int i, y, tmp, pow1;
+	pow1 = y = 1;
+	for (i = 2; i <= 32; i++) {
+		pow1 <<= 1;
+		tmp = ((ull) x * y) & (0xffffffff >> (32 - i));
+		if (pow1 < tmp)
+			y += pow1;
+	}
+	return (y ^ 0xffffffff) + 1;
+}
+
+static Long *monpro (Long ab, Long n, unsigned int modinv)
+{
+	unsigned int nsize = n.size;
+	unsigned int *tmp, *buf, *nbuf, m, i, j, k;
+	unsigned long long product = 0;
+
+	k = nsize << 1;
+	ab.expandto (max (ab.size, k) + 1);
+	ab.size = max (ab.size, k);
+	tmp = buf = ab.D;
+	nbuf = n.D;
+	for (i = 0; i < nsize; i++, tmp++) {
+		m = buf [i] * modinv;
+		product = 0;
+		for (j = 0; j < nsize; j++)
+			tmp [j] = product = tmp [j] + (m * (ull) nbuf [j]) + (product >> 32);
+		for (j = nsize + i; j < k; j++)
+			buf [j] = product = buf [j] + (product >> 32);
+	}
+	if (product >> 32) {
+		ab.D [ab.size++] = product >> 32;
+	}
+	ab.rshift (nsize * 32);
+	if (!ab.less_than (n))
+		ab.i_sub (n);
+	else ab.adj ();
+	return &ab;
+}
+
+static Long *modexp (Long m, Long e, Long n)
+{
+	int i;
+	unsigned int j, limb, started = 0;
+	unsigned int mdi = modinv (n.D [0]);
+
+	Long a5 (m);
+	a5.lshift (32 * n.size);
+	a5.adj ();
+	Long *aux4 = x_rem (a5, n);
+	Long a7 (1);
+	a7.lshift (32 * n.size);
+	a7.adj ();
+	Long *aux7 = x_rem (a7, n);
+	Long *aux5 = 0;
+
+	for (i = e.size - 1; i >= 0; i--) {
+		limb = e.D [i];
+
+		for (j = 0; j < 32; j++) {
+			if (!(limb & 0x80000000) && !started) {
+				limb <<= 1;
+				continue;
+			}
+			started = 1;
+			if (aux5) delete aux5;
+			aux5 = monpro (_mul (aux7, aux7), n, mdi);
+			if (limb & 0x80000000) {
+				delete aux7;
+				aux7 = monpro (_mul (aux4, aux5), n, mdi);
+			} else {
+				delete aux7;
+				aux7 = aux5;
+				aux5 = 0;
+			}
+			limb <<= 1;
+		}
+	}
+
+	delete aux4;
+	if (aux5) delete aux5;
+	return monpro (aux7, n, mdi);
+}
+/////////////////////////////////////////////////////////////////////////////
+#endif
+
+/*
+ * bitwise
+ */
+
+static void Long.i_and (Long L)
+{
+	int i;
+
+	for (i = 0; i < L.size; i++)
+		D [i] &= L.D [i];
+	while (i < size)
+		D [i++] = 0;
+}
+
+static Long *_and (Long L1, Long L2)
+{
+	if (L1.size < L2.size)
+		return _and (L2, L1);
+
+	Long R (L1);
+	R.i_and (L2);
+	return R.dupn ();
+}
+
+//*****************************************************************************
+// Interface for pyvm
+//*****************************************************************************
+
+Long *Long.add (Long L1, Long L2)
+{
+	return _add (L1, L2);
+}
+
+Long *Long.sub (Long L1, Long L2)
+{
+	return _sub (L1, L2);
+}
+
+Long *Long.mul (Long L1, Long L2)
+{
+	return _mul (L1, L2);
+}
+
+Long *Long.div (Long L1, Long L2)
+{
+	Long *r;
+	x_div (L1, L2, &r, 0);
+	return r;
+}
+
+Long *Long.mod (Long L1, Long L2)
+{
+	return x_rem (L1, L2);
+}
+
+Long *Long.rsh (Long L, int s)
+{
+	Long p (L);
+	p.rshift (s);
+	return p.dupn ();
+}
+
+Long *Long.lsh (Long L, int s)
+{
+	Long p (L);
+	p.lshift (s);
+	return p.dupn ();
+}
+
+Long *Long.and (Long L1, Long L2)
+{
+	return _and (L1, L2);
+}
+
+Long *Long.pow (Long B, Long E, Long N)
+{
+#ifndef FAST_MODEXP
+	return x_pow (B, E, N);
+#else
+	return modexp (B, E, N);
+#endif
+}
+
+Long *Long.neg (Long L)
+{
+	Long *p = L.dupn ();
+	p->sign = -p->sign;
+	return p;
+}

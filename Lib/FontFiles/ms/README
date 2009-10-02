@@ -1,0 +1,21 @@
+Got Windows?
+
+In the directory C:\Windows\system\fonts you can find various interesting fonts.
+Copy these files from the windows partition in this directory:
+
+	arialbd.ttf, arialbi.ttf, ariali.ttf, arial.ttf,
+	courbd.ttf, courbi.ttf couri.ttf, cour.ttf,
+	timesbd.ttf, timesbi.ttf, timesi.ttf, times.ttf
+
+Also, interesting are these ones:
+
+	ariblk.ttf,
+	georgiab.ttf, georgiai.ttf, georgia.ttf, georgiaz.ttf,
+	lucon.ttf,
+	verdanab.ttf, verdanai.ttf, verdana.ttf, verdanaz.ttf,
+
+There are ready symbolic links for {sans|serif|mono}-{regular|bold|italic|bolditalic}
+for using these fonts for the pyvm GUI/web browser.
+
+At the moment, this is the best way to see international text in pyvm's web browser.
+(fonts tested with XP)

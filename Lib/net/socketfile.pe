@@ -1,0 +1,129 @@
+##  Buffered socket operations
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# socket as file.
+# Take an object with send/recv methods and return an object with:
+#
+#  For input:
+#
+#	readline()	: read one line
+#	read(n)		: read exactly n bytes or error
+#	recv()		: read as much data is available
+#	readlines()	: iterator, yields all lines
+#
+#  For output:
+#
+#	send(data)	: send data
+#	write(data)	: buffer data for output, will be flushed if bufsize
+#	flush()		: flush data if any
+
+class Error (Exception);
+
+class fileobj
+{
+	method __init__ ($s, $bufsize=8192)
+	{
+		$outbuf = []
+		$outlen = 0
+		$inbuf = ""
+	}
+
+	# output
+	method send (data, timeout=None)
+	{
+		$flush ()
+		$s.send (data, timeout=timeout)
+	}
+
+	method write (data)
+	{
+		$outbuf.append (data)
+		$outlen += len (data)
+		if ($outlen >= $bufsize)
+			$flush ()
+	}
+
+	method flush ()
+	{
+		if (!$outlen) return
+		$s.send ("".join ($outbuf))
+		$outbuf = []
+		$outlen = 0
+	}
+
+	# input
+	method readline (timeout=None)
+	{
+		while ("\n" not in $inbuf) {
+			d = $s.recv (timeout=timeout)
+			if (!d) {
+				if ($inbuf) raise Error ()
+				return ""
+			}
+			$inbuf += d
+		}
+
+		line, None, $inbuf = $inbuf.partition ("\n")
+		return line + "\n"
+	}
+
+	method readline_rstr (timeout=None)
+		return $readline (timeout).rstrip ()
+
+	method readlines (timeout=None)
+		while (x = $readline (timeout=timeout))
+			yield x
+
+	method readlines_rstr (timeout=None)
+		for (l in $readlines (timeout=timeout))
+			yield l.rstrip ()
+
+	method recv (timeout=None)
+	{
+		if ($inbuf) {
+			x, $inbuf = $inbuf, ""
+			return x
+		}
+
+		return $s.recv (timeout=timeout)
+	}
+
+	method read (numbytes=None, timeout=None, debug=0)
+	{
+		if (numbytes is None)
+			raise Error ("numbytes")
+
+		if (debug)
+			print "want :", numbytes, "havez:", len ($inbuf)
+
+		have = 0
+		b = []
+
+		while (1) {
+			r = $recv (timeout)
+			if (!r) raise Error ("connection closed")
+			if.break (have + len (r) >= numbytes) {
+				have = numbytes - have
+				b.append (r [:have])
+				$inbuf = r [have:]
+			}
+			b.append (r)
+			have += len (r)
+		}
+
+		return "".join (b)
+	}
+
+	method close ()
+	{
+		$flush ()
+		$s.close ()
+		del $outbuf, $inbuf
+	}
+}

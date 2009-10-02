@@ -1,0 +1,13 @@
+This radio player uses mms:// streams.
+
+It hasn't been tested on a low speed connection. On the other hand, on
+a high speed link with a bittorrent application running in parallel and
+downloading at 800kB/s it works fine.
+
+The problem now is, finding mms:// addresses for your favorite station.
+There are some meta-sites that have such addresses for many stations.
+Otoh, station's websites are usually written entirely in flash and in
+this case discovering the mms url can be a big adventure. Open in www
+and save Bundle, to explore.
+
+It might make sense to distribute a DB of known mms stations.

@@ -1,0 +1,131 @@
+##  FFT driver
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from audio.dev import stereo2mono
+
+C = @DLL.Import ("fft", "-O3 -Wall", pelf=1)
+
+# Time to frequency domain transform.  Thanks Mr. Fourier for not patenting
+# this valuable transform!
+
+class FFT
+{
+	method __init__ ($nsamp, $stereo, $nbands=0, $Hz=44100)
+	{
+		from math import pi, cos, sin
+
+		# power of 2
+		if (nsamp not in (128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768))
+			raise Error ("nsamples must be power of 2")
+
+		N = $NFREQ = nsamp
+
+		# bitrevtable
+		brt = $bitrevtable = array ("i", range (N))
+		j = 0
+		for (i in *N) {
+			if (j > i)
+				brt [i], brt [j] = brt [j], brt [i]
+			m = N / 2
+			while (m >= 1 and j >= m) {
+				j -= m
+				m >>= 1
+			}
+			j += m
+		}
+
+		# cossintable
+		costab = []
+		sintab = []
+		dftsize = 1
+		i = 0
+		while (dftsize < N) {
+			theta = -pi / dftsize
+			costab.append (cos (theta))
+			sintab.append (sin (theta))
+			i += 1
+			dftsize <<= 1
+		}
+
+		$costab = array ("d", costab)
+		$sintab = array ("d", sintab)
+		$real = array ("d", N)
+		$imag = array ("d", N)
+
+		if (nbands) $calc_bands ()
+	}
+
+	# The frequencies from fft are distributed linearly.  If we are using
+	# bands the freqs are added exponentially.  For example the bands would
+	# be:  200Hz-400Hz, 400Hz-800Hz, 800Hz-1.6KHz, 1.6KHz-3.2KHz
+	# This method calculates which harmonics must be added to make each
+	# band
+
+	LOWEST = 120 # Hz
+
+	method calc_bands ()
+	{
+		from math import log, e
+
+		N = $NFREQ 
+		harmonics = [ i * float ($Hz) / (2 * N) for (i in xrange (1, N/2))]
+
+		# skip first harmonics below 120Hz
+		nh = 0
+		while (harmonics [nh] < $LOWEST)
+			nh += 1
+
+		loglo = log (harmonics [nh])
+		loghi = log (harmonics [-1])
+		dlog = (loghi - loglo) / ($nbands)
+
+		B = [nh]
+		freqpow = loglo + dlog
+		for (i in *$nbands) {
+			basefreq = pow (e, freqpow) + 0.1
+			hh = 0
+			while (nh < len (harmonics) and harmonics [nh] <= basefreq) {
+				hh += 1
+				nh += 1
+			}
+			# Band `i` will be made up from `hh` harmonics.  `hh` may be zero,
+			# in this case, calculate it as the avg of previous and next harmonic.
+			B << hh
+			freqpow += dlog
+		}
+
+		$BandSum = array ("i", B)
+		$spectrum = array ("i", $nsamp / 2)
+		$bandout = array ("i", $nbands)
+	}
+
+	method fft_s16le (samples)
+	{
+		samples = array ("h", samples)
+		if ($stereo)
+			samples = half_signal (samples)
+
+		if (len (samples) != $nsamp)
+			raise Error ("samples in")
+
+		spectrum = $nbands ? $spectrum : array ("i", $nsamp / 2)
+
+		C.fft ($NFREQ, samples, spectrum, $bitrevtable, $costab, $sintab, $real, $imag)
+
+		if (!$nbands)
+			return spectrum
+
+		C.bandize (spectrum, $bandout, $BandSum, $nbands)
+
+		return $bandout
+	}
+}
+
+def half_signal (s)
+	return array ("h", stereo2mono (s.tostring ()))

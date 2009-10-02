@@ -1,0 +1,738 @@
+##  core OpenPGP implementation
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import sha, md5, base64
+from sha import digest as SHA1
+from datastream import data_parser
+from crypto.longs import PKCToLong, LongToPKC
+from crypto.cryptorand import randstr
+from crypto.DSA import verify as DSA_verify, sign as DSA_sign
+from crypto.RSA import sign_fast as RSA_sign
+from crypto import AES
+
+def ReadPassword ()
+	return raw_input ("Type password to unlock the secret key: ")[:-1]
+
+C = @DLL.Import ("gpg", "-O3", pelf=1)
+VERBOSE = 0
+
+def LongToString (l)
+{
+	# (confused. cleanup this Long<-->String stuff)
+	l = LongToPKC (l)
+	while (l.sw ("\0\0"))
+		l = l [1:]
+	return l
+}
+
+# Several exceptions may be raised to signal not-implemented code
+# or thanks to bugs.  But specifically the `Malorie` exceptions signals
+# a possible forgery error.
+class Malorie (Exception) { }
+
+class dparser (**data_parser)
+	method read_mpi ()
+		return $read (($r16b () + 7) / 8)
+
+# -----BEGIN PGP ARMORED MESSAGES-----
+
+def read_armor (txt, t)
+{
+	ts = "-----BEGIN PGP " + t + "-----\n"
+	te = "\n-----END PGP " + t + "-----"
+	tsi = txt.index (ts) + len (ts)
+	tei = txt.index (te, tsi)
+	txt = txt [tsi:tei]
+	if ("\r" in txt)
+		txt = txt.replace ("\r\n", "\n")
+	if (txt [0] == "\n")
+		headers, radix = "", txt [1:]
+	else headers, None, radix = txt.partition ("\n\n")
+	radix, None, crc = radix.rpartition ("\n")
+	context = base64.a2b (radix)
+	if (base64.enc (("%MI" % C.crc24 (context, len (context)))[1:]) != crc [1:])
+		return False
+	return context
+}
+
+def write_armor (data, t)
+	return "-----BEGIN PGP %s-----\n\n" %t +
+		base64.b2a (data) +
+		"\n=" + base64.enc (("%MI" %C.crc24 (data, len (data)))[1:]) +
+		"\n-----END PGP %s-----\n" %t
+
+# -----END PGP ARMORED MESSAGES-----
+
+# consumes bytes from dataparser and returns a PGP packet
+def parse_packet (dd)
+{
+	m = dd.tell ()
+	t = dd.r8 ()
+	if !(t & 0x80)
+		raise Error ("Bad packet")
+
+	old = not t & 0x40
+	if (old) {
+		tag = (t >> 2) & 31
+		ltype = t & 3
+		sz = ltype ==0 ? dd.r8 () : ltype == 1 ? dd.r16b () : ltype == 2 ? dd.r32b () : None
+	} else {
+		tag = t & 63
+		sz = dd.r8 ()
+		if (sz < 192) ;
+		else if (sz < 224)
+			sz = (sz - 192) * 256 + dd.r8 () + 192
+		else if (sz == 255)
+			sz = dd.r32b ()
+		else raise Error ("New type packet not implemented (tag=%i)!" %tag)
+	}
+
+	try f = {
+		2:  Signature,
+		5:  PrivateKey,
+		6:  PublicKey,
+		13: UserID,
+		17: UserAttr,
+		14: PublicSubKey,
+	} [tag]
+	except {
+		print "Packet of unknown type:", tag
+		raise SystemExit ()
+	}
+	if (VERBOSE)
+		print "packet :", f
+
+	pdata = dd.read (sz)
+	return f (dd.copyfrom (m), dparser (pdata))
+}
+
+# mpi in PKC form. how many bits it needs?
+def mpi_bits (m)
+{
+	l = len (m)
+	for (d in m) {
+		d = ord (d)
+		if (d)
+			break
+		l -= 1
+	}
+	for (b in (8, 7, 6, 5, 4, 3, 2, 1))
+		if (d & (1 << (b-1)))
+			break
+	return l * 8 + b - 8
+}
+
+ALGOS = {
+	1:  ('rsa', 2, 6, 1, 1),
+	16: ('elgamal_e', 3, 4, 2, 2),
+	17: ('dsa', 4, 5, 2, 0),
+	20: ('elgamal', 3, 4, 2, 2),
+}
+
+# All PGP packet hold their binary blob.  So it is possible to
+# reconstruct packets for exporting.
+
+class PGPPacket
+	method __init__ ($bin, dp, *args, **kwargs)
+		$Init (dp, *args, **kwargs)
+
+class PublicKey (**PGPPacket)
+{
+	method Init (d)
+	{
+		$version = version = d.r8 ()
+		if (version not in (2, 3, 4))
+			raise Error ("Unsupported version in PublicKey")
+
+		$timestamp = d.r32b ()
+
+		if (version == 4)
+			$expiredate = 0
+		else {
+			ndays = d.r16b ()
+			$expiredate = $timestamp + ndays * 86400
+		}
+
+		$algoid = algo = d.r8 ()
+		$algorithm, $np, $ns, nsig, nenc = ALGOS [algo]
+		$keys = [d.read_mpi () for (None in *$np)]
+
+		if ($algorithm == "rsa")
+			namespace $rsa {
+				n, e = [PKCToLong (x) for (x in $keys)]
+			}
+		else if ($algorithm == "dsa")
+			namespace $dsa {
+				p, q, g, y = $keys
+			}
+
+		if (self => PrivateKey) {
+			$SecretPart = d.rest ()
+			$skeys = None
+		}
+
+		$keyid = None
+		if (version == 4) {
+			$keyid = SHA1 ($hash_content ()) [-8:]
+			$Fingerprint = SHA1 ($hash_content ()).hexlify ().upper ()
+		} else {
+			if ($algorithm == "rsa") {
+				$Fingerprint = $keys [0].hexlify ().upper ()
+				$keyid = $keys [0][-8:]
+			}
+			else raise Error ("Not implemented: key fingerprint, v3")
+		}
+
+		$KeyID = $keyid.hexlify () [-8:].upper ()
+	}
+
+	method verify (data, expecting)
+		if ($algorithm == "dsa")
+			return DSA_verify (data [0], data [1], $dsa.q, $dsa.p, $dsa.g, $dsa.y, expecting)
+		else if ($algorithm == "rsa")
+			return LongToString (pow (PKCToLong (data [0]), $rsa.e, $rsa.n)) == expecting
+		else raise Error ("Unimplemented [%s]" %$algorithm)
+
+	method hash_content ()
+	{
+		s = "%c%Mi" % ($version, $timestamp)
+		if ($version < 4) {
+			days = 0
+			if ($expiredate)
+				days = ($expiredate - $timestamp) / 86400
+			s += "%Mh" %days
+		}
+		s += "%c" %$algoid
+		for (k in $keys) {
+			s += "%Mh" % mpi_bits (k)
+			s += k
+		}
+		return "%c%Mh" % (0x99, len (s)) + s
+	}
+}
+
+# A subkey. Don't know what these are good for
+class PublicSubKey (**PublicKey) { }
+
+def write_mpi (mpi)
+{
+	mpi = LongToPKC (mpi)
+	bits = mpi_bits (mpi)
+	bytes = (bits+7)/8
+	return "%Mh" % bits + mpi [-bytes:]
+}
+
+def write_packet (packet, ptype)
+{
+	if (len (packet) < 255) {
+		l = 0
+		sz = "%c" %len (packet)
+	} else {
+		l = 1
+		sz = "%Mh" %len (packet)
+	}
+
+	return "%c%s" % ((ptype<<2)|0x80|l, sz) + packet
+}
+
+ASNOID = {
+	1: "\x30\x20\x30\x0c\x06\x08\x2a\x86\x48\x86\xf7\x0d\x02\x05\x05\x00\x04\x10",
+	2: "\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14",
+}
+
+def encode_rsa_mpi (sigalg, digest, keylen)
+{
+	ms = "\0" + ASNOID [sigalg] + digest
+	return "\0\1" + "\xff" * (keylen - len (ms) - 2) + ms
+}
+
+class PrivateKey (**PublicKey)
+{
+	method open_secret ()
+	{
+		d = dparser ($SecretPart)
+		algo2 = d.r8 ()
+		if (algo2 == 0) {
+			$is_protected = False
+			t = d.tell ()
+			$skeys = [ d.read_mpi () for (None in *($ns - $np)) ]
+			if ($algorithm == "rsa")
+				$rsa.d, $rsa.p, $rsa.q, $rsa.u = [PKCToLong (x) for (x in $skeys)]
+			else if ($algorithm == "dsa")
+				$dsa.x = $skeys [0]
+			else raise Error ("Not implemented")
+			t2 = d.tell ()
+			csum = d.r16b ()
+			if (C.csum (d.data, d.offset0 + t, t2 - t) != csum)
+				raise Error ("secret key checksum failed")
+			return
+		}
+
+		# The secret keys are protected with the passphrase
+		$is_protected = True
+
+		# parse-packet.c: parse_key()
+		if (algo2 not in (254, 255))
+			raise Error ("Not implemented, secret algo %i" %algo2)
+		firstbyte = algo2
+
+		sha1chk = algo2 == 254
+		algo2 = d.r8 ()
+		# AES only
+		if (algo2 != 7) {
+			print "The secret key is encrypted with a cipher other than AES."
+			print "pyvm cannot decrypt it. Do:"
+			print "		gpg --s2k-cipher-algo aes --edit-key <the key>"
+			print " from in there type `passwd`, and re-set the password"
+			print " then, type `quit`. and then:"
+			print "		gpg --armor --export-secret-keys > KEY"
+			print "And finally, try to import `KEY` in pyvm gpg"
+			raise Error ("not implemented")
+		}
+		mode = d.r8 ()
+		hash_algo = d.r8 ()
+		if (hash_algo != 2)
+			raise Error ("hash_algo %i not implemented" %hash_algo)
+		if (mode in (1, 3))
+			salt = d.read (8)
+		else raise Error ("Unknown mode %i" %mode)
+		if (mode == 1)
+			raise Error ("s2k salted not implemented")
+		if (mode == 3)
+			count = d.r8 ()
+
+		# passphrase.c: hash_passphrase()
+		count = (16 + (count & 15)) << ((count>>4) + 6)
+		passwd = ReadPassword ()
+		len2 = len (passwd) + 8
+		hashphrase = ((salt + passwd) * (1 + count / len2)) [:count]
+		key = SHA1 (hashphrase)
+
+		ivlen = 16	# for aes
+		iv = d.read (ivlen)
+		# ....
+		cipher = d.rest ()
+		plaintext = AES.decrypt (key [:16], iv, cipher, "cfb")
+		if (firstbyte == 254) {
+			if (SHA1 (plaintext [:-20]) != plaintext [-20:])
+				raise Error ("decryption of secret key failed!")
+		} else {
+			if (C.csum (plaintext [:-2]) != ord16b (plaintext [-2:]))
+				raise Error ("decryption of secret key failed!")
+		}
+		print "Okey"
+		d = dparser (plaintext)
+		$skeys = [ d.read_mpi () for (None in *($ns - $np)) ]
+		if ($algorithm == "rsa")
+			$rsa.d, $rsa.p, $rsa.q, $rsa.u = [PKCToLong (x) for (x in $skeys)]
+		else if ($algorithm == "dsa")
+			$dsa.x = $skeys [0]
+		else raise Error ("Not implemented")
+	}
+
+	method sign (data)
+	{
+		if (!$skeys)
+			$open_secret ()
+		md = sha.new (data)
+		timestamp = int (now ())
+		md.update ("%c%MI" %(0, timestamp))
+		digest = md.digest ()
+
+		if ($algorithm == "rsa") {
+			digmpi = PKCToLong (encode_rsa_mpi (2, digest, len ($keys [0])))
+			result = RSA_sign (digmpi, $rsa.d, $rsa.p, $rsa.q, $rsa.u)
+			sigdata = write_mpi (result)
+		} else if ($algorithm == "dsa") {
+			r, s = DSA_sign ($dsa.p, $dsa.q, $dsa.g, $dsa.x, digest)
+#print DSA_verify (LongToPKC (r), LongToPKC (s), $dsa.q, $dsa.p, $dsa.g, $dsa.y, digest)
+			sigdata = write_mpi (r) + write_mpi (s)
+		} else raise Error ("Not implemented here")
+
+		# Construct the blob of a signature packet
+
+		packet = "%c%c%c%MI%s%c%c%s" %(
+				 3,		# V3 signature
+				 16,		# - unused - md5len
+				 0,		# sig_class = 0x0
+				 timestamp,
+				 $keyid,
+				 $algoid,
+				 2,		# signature algorithm 2==SHA
+				 digest [:2]) + sigdata
+		return write_packet (packet, 2)
+	}
+}
+
+class UserID (**PGPPacket)
+{
+	ptype = 0xb4
+
+	method Init (d)
+	{
+		$userid = d.rest ()
+		if (VERBOSE)
+			print "UserID:", self => UserID ? $userid : "UserAttributes"
+	}
+
+	method hash_content (sig)
+		if (sig.version >= 4)
+			return "%c%MI" %($ptype, len ($userid)) + $userid
+		else return $userid
+}
+
+class UserAttr (**UserID)
+	ptype = 0xd1
+
+class Signature (**PGPPacket)
+{
+	keyid = None
+
+	method Init (d)
+	{
+		v = $version = d.r8 ()
+		if (v not in (2, 3, 4))
+			raise Error ("Unsupported version in PublicKey")
+
+		if ($is4 = (v == 4))
+			$initv4 (d)
+		else $initv3 (d)
+
+		if (!$keyid)
+			raise Error ("Couldn't find keyid in signature")
+		$KeyID = $keyid.hexlify () [-8:].upper ()
+		$Fingerprint = $keyid.hexlify ().upper ()
+	}
+
+	method initv3 (d)
+	{
+		d.r8 ()
+		$sig_class = d.r8 ()
+		$timestamp = d.r32b ()
+		$keyid     = d.read (8)
+		$pubalg    = d.r8 ()
+		$sigalg    = d.r8 ()
+		$sstart0   = d.r8 ()
+		$sstart1   = d.r8 ()
+		ndata = ALGOS [$pubalg][3]
+		$data = [ d.read_mpi () for (None in *ndata)]
+	}
+
+	method subpackets ()
+		for (pdata in ($hashdata, $unhashdata)) {
+			d = dparser (pdata)
+			while (d.left ()) {
+				n = d.r8 ()
+				p = d.read (n)
+				yield ord (p [0]), p [1:]
+			}
+		}
+
+	method initv4 (d)
+	{
+		$sig_class  = d.r8 ()
+		$pubalg     = d.r8 ()
+		$sigalg     = d.r8 ()
+		$hashdata   = d.read (d.r16b ())
+		$unhashdata = d.read (d.r16b ())
+		$sstart0    = d.r8 ()
+		$sstart1    = d.r8 ()
+
+		if ($pubalg) {
+			# get needed subpackets only.  atm that is the ISSUER sub-packet.
+			# according to the RFC we MUST parse all "critical" subpackets.
+			for (pid, pdat in $subpackets ())
+				if (pid == 16)
+					$keyid = pdat
+		}
+		$data = [ d.read_mpi () for (None in *ALGOS [$pubalg][3]) ]
+	}
+
+	method hash_content ()
+	{
+		s = ""
+		if ($is4)
+			s += "%c" %$version
+		s += "%c" %$sig_class
+		if (!$is4) {
+			s += "%MI" %$timestamp
+		} else {
+			s += "%c%c" %($pubalg, $sigalg)
+			s += "%Mh" %len ($hashdata) + $hashdata
+			n = len (s)
+			s += "%c%c%MI" %($version, 0xff, n)
+		}
+		return s
+	}
+
+	method __str__ ()
+		return "<Signature packet %02x>" %$sig_class
+
+	DIGS = { 1: md5, 2: sha }
+
+	method do_verify (data, pk)
+	{
+		if ($sigalg == 8) {
+			print "pyvm does not have a SHA256 implementation"
+			raise Error ("No SHA256")
+		}
+		try md = $DIGS [$sigalg].new (data)
+		except raise Error ("N/A digest function")
+
+		md.update ($hash_content ())
+		digest = md.digest ()
+
+		if (pk.algorithm == "rsa")
+			digest = encode_rsa_mpi ($sigalg, digest, len (pk.keys [0]))
+		else if (pk.algorithm == "dsa")
+			;# nothing
+		else raise Error ("Unimplemented mdencode")
+
+#print 'data:', $data [0].hexlify ().upper ()
+#print 'pkey:', pk.keys [0].hexlify ().upper ()
+#print 'result:', digest.hexlify ().upper ()
+
+		if (!pk.verify ($data, digest))
+			raise Malorie ("Signature verification failed")
+
+		if (VERBOSE)
+			print "OK: Signature verified", self, $version, $KeyID
+	}
+}
+
+# A keyring is a bunch of packets that has
+#	One PublicKey packet
+#	a number of UserID and Signature packets
+
+class Keyring
+{
+	method __init__ ($packets, $public=True)
+	{
+		$subkeys = []
+		$userids = []
+		$useratt = []
+		$signatures = []
+		for (p in packets)
+			if (p => PublicKey)
+				$pk = p
+			else if (p => PublicSubKey)
+				$subkeys << p
+			else if (p => UserID)
+				$userids << p.userid
+			else if (p => UserAttr)
+				$useratt << p.userid
+			else if (p => Signature)
+				$signatures << p
+			else if (p => PrivateKey and !public)
+				$pk = p
+			else print "UNEXPECTED PACKET", p
+
+		$KeyID = $pk.KeyID
+		$Fingerprint = $pk.Fingerprint
+	}
+
+	method verify ()
+	{
+		uidnode = None
+		pk = None
+		# verify all the signatures
+		for (s in $packets) {
+			if.continue (s => UserID or s => UserAttr)
+				uidnode = s
+
+			if.continue (s => PublicKey or s => PublicSubKey or s => PrivateKey)
+				pk = s
+
+			if (s.keyid and s.keyid != pk.keyid) {
+				print "Skip signature:", s
+				continue
+			}
+
+			if (s.sig_class not in (0x10, 0x13))
+				continue
+
+			s.do_verify (pk.hash_content () + uidnode.hash_content (s), pk)
+		}
+	}
+
+	method reconstruct ()
+		return "".join ([x.bin for (x in $packets)])
+}
+
+# Stream-of-packets parser
+
+gen parse_packets (data)
+{
+	dp = dparser (data)
+	while (dp.left ())
+		yield parse_packet (dp)
+}
+
+# read sequential keyrings from a PUBLIC KEY BLOCK or similar
+# context
+
+def read_keyrings (data, public=True)
+{
+	pp = []
+	k = []
+	for (p in parse_packets (data)) {
+		if (p => (public ? PublicKey : PrivateKey))
+			if (pp) {
+				k << Keyring (pp, public)
+				pp = []
+			}
+		pp << p
+	}
+	if (pp) k << Keyring (pp, public)
+
+	return k
+}
+
+def read_keyring (data, public=True)
+	return Keyring ([p for (p in parse_packets (data))], public)
+
+# key generation. From given the RSA parameters E, D, N, Q, P, U and
+# a userid in the form "user <address>" generate two armored messages,
+# one for the public key and one for the private.
+#
+# If we want to be able to regenerate the key (with the same KEY-ID),
+# we also have to supply a known timestamp as a key creation time.
+
+def key_size (L)
+{
+	L = LongToPKC (L)
+	while (L [0] == "\0")
+		L = L [1:]
+	return len (L)
+}
+
+def gen_pub_key (E, D, N, uid, timestamp)
+{
+	timestamp = timestamp or int (now ())
+
+	# --- publicKey packet
+	packet1 = "%c%Mi%c" %(
+		4,		# version
+		timestamp,	# timestamp
+		1		# algoid
+	) + write_mpi (N) + write_mpi (E)
+	packet1 = write_packet (packet1, 6)
+
+	# --- userID packet
+	packet2 = write_packet (uid, 13)
+
+	# --- signature packet
+	sig_class = 19
+
+	 # pubkey hash content
+	pkhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (N) + write_mpi (E)
+	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
+	keyid = SHA1 (pkhc) [-8:]
+
+	 # signature hash content (V3)
+	sihc = "%c%MI" % (sig_class, timestamp)
+
+	digest = SHA1 (pkhc + uid + sihc)
+	edigest = encode_rsa_mpi (2, digest, key_size (N))
+
+	sigdata = write_mpi (pow (PKCToLong (edigest), D, N))
+
+	packet3 = "%c%c%c%MI%s%c%c%s" %(
+			 3,		# V3 signature
+			 16,		# - unused - md5len
+			 sig_class,	# sig_class
+			 timestamp,
+			 keyid,
+			 1,		# algorithm id: RSA
+			 2,		# signature algorithm 2==SHA
+			 digest [:2]) + sigdata
+	packet3 = write_packet (packet3, 2)
+
+	# ---
+	return write_armor (packet1 + packet2 + packet3, "PUBLIC KEY BLOCK")
+}
+
+def gen_priv_key (E, D, N, Q, P, U, uid, timestamp, passphrase)
+{
+	if (Q < P)
+		Q, P = P, Q
+
+	timestamp = timestamp or int (now ())
+
+	M = [write_mpi (i) for (i in (N, E, D, P, Q, U))]
+	secret_part = "".join (M [2:])
+
+	if (passphrase) {
+		secret_part += SHA1 (secret_part)
+		salt  = randstr (8)
+		iv    = randstr (16)
+		len2  = len (passphrase) + 8
+		count = 65536
+		key   = SHA1 (((salt + passphrase) * (1 + count / len2)) [:count])
+		secret_part2 = "%c%c%c%c%s%c%s" %(
+					254,	# is_protected
+					7,	# AES
+					3,	# salt-iterated
+					2,	# SHA1
+					salt,
+					96,	# for count 65536
+					iv
+				) + AES.encrypt (key [:16], _buffer (iv), secret_part, "cfb")
+	} else secret_part2 = "\0" + secret_part + "%MH" %C.csum (secret_part, 0, len (secret_part))
+
+	# --- privateKey packet
+	packet1 = "%c%Mi%c" %(
+		4,		# version
+		timestamp,	# timestamp
+		1		# algoid
+	) + M [0] + M [1] + secret_part2
+
+	packet1 = write_packet (packet1, 5)
+
+	# --- userID packet
+	packet2 = write_packet (uid, 13)
+
+	# the signature is completely useless because if one has all the private
+	# parts they can make a signature. GnuPG does not accept the private key
+	# without signature so we create it anyway...
+
+	# --- signature packet
+	sig_class = 19
+
+	 # pubkey hash content
+	pkhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (N) + write_mpi (E)
+	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
+	keyid = SHA1 (pkhc) [-8:]
+
+	 # signature hash content (V3)
+	sihc = "%c%MI" % (sig_class, timestamp)
+
+	digest = SHA1 (pkhc + uid + sihc)
+	edigest = encode_rsa_mpi (2, digest, key_size (N))
+
+	sigdata = write_mpi (pow (PKCToLong (edigest), D, N))
+
+	packet3 = "%c%c%c%MI%s%c%c%s" %(
+			 3,		# V3 signature
+			 16,		# - unused - md5len
+			 sig_class,	# sig_class
+			 timestamp,
+			 keyid,
+			 1,		# algorithm id: RSA
+			 2,		# signature algorithm 2==SHA
+			 digest [:2]) + sigdata
+	packet3 = write_packet (packet3, 2)
+
+	# ---
+	return write_armor (packet1 + packet2 + packet3, "PRIVATE KEY BLOCK")
+}
+
+def gen_pgp_keys (E, D, N, Q, P, U, uid, timestamp, passphrase)
+	return  gen_pub_key (E, D, N, uid, timestamp),
+		gen_priv_key (E, D, N, Q, P, U, uid, timestamp, passphrase)

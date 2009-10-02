@@ -1,0 +1,30 @@
+from loader import load;
+from interp import eval_code;
+
+class PDF
+{
+	method __init__ (filename)
+	{
+		$Document = load (filename);
+		$Fonts = $Document.Fonts;
+		$Pages = $Document.n_pages ();
+		$DefaultWidth, $DefaultHeight = $Document.dims ();
+		$magnify (1.0);
+	}
+
+	method magnify ($Scale)
+	{
+		$Width = $DefaultWidth * Scale;
+		$Height = $DefaultHeight * Scale;
+	}
+
+	method fit_to (ww)
+		$magnify (float (ww) / $DefaultWidth);
+
+	method render_page (i)
+	{
+		# returns a (painted) framebuffer object or None
+		p = $Document.page (i);
+		return eval_code ($Width, $Height, $Scale, p, p.PageFonts);
+	}
+}

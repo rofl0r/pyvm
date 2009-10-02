@@ -1,0 +1,299 @@
+Python tutorial
+===============
+
+In order to program the pyvm toolchain you must know the python programming
+language. If you are already familiar with python, read the document
+WHITESPACELESS.txt instead, which mentions what's different in the whitespaceless
+frontend. Also, it is important to read the file `incompatible.txt` which
+mentions some important things that are different from Python.
+
+For those who don't know python, the best resource is python's own documentation
+which can be found inside the Python tarball.  Note that learning Python is
+actually two things:
+
+	1) The syntax and basic data types ("Tutorial")
+	2) The basic methods of builtin types ("Library Reference" -> "Built-in Objects"
+		and "Built-in Types")
+
+This small tutorial here attempts to contemplate these tutorials with some
+extra useful information in order to boost the learning before one is
+ready to start hacking dynamic python code. Many examples are written in
+whitespaceless.
+
+It is assumed that the reader is already a programmer.
+
+
+1. Dynamic
+----------
+
+Python is a fully dynamic programming language.  For one the program is not
+separated in "declarations" and "code".  Everything is executed in a way that
+resembles "an interactive" programming language.  So for example this is
+possible:
+
+	class A
+	{
+		print "Hello world!"
+	}
+
+because the declaration of the class `A` is performed by executing the "code"
+of the class and eventually creating the class with all the variables that
+are found in its code.  The class above has no members.
+
+Similarily this works:
+
+	if (SOME_PARAMETER)
+		def foo ()
+			return 1
+	else
+		def foo ()
+			return 2
+
+Because the "function definition" happens during execution.
+
+
+2. Object Model
+---------------
+
+Python has "dynamic typing".  What happens is that we have "objects" in memory
+and the "variables" simply point to objects.  The variables themselves do not
+use any memory.  When no variable points to an object (and consequently there
+is no way to reach and use that object), the object is automatically freed
+from memory.  You can imagine that python's object model acts like "reference
+counting", and in many implementations it actually does.
+
+An example:
+
+	X = "Hello"
+	Y = X
+	X = 1
+	Y = 2
+
+In the above program we have three objects: "`Hello"`, `1` and `2`
+Initially, "Hello" is pointed to by the `X` variable and then by the `Y`
+variable.  When we say `X=1`, the `X` variable points to object `1` and
+the `Y` variable keeps pointing to `"Hello"`.  When `Y=2` is executed
+no name longer points to the `"Hello"` object and this one is thus
+destroyed.
+
+(cyclic references are permitted and happen occasionaly especially in
+"bound method caching". They are released by the cycle-breaking garbage
+collector that runs periodically)
+
+
+3. Immutable objects
+--------------------
+
+Immutable objects are the primitives:
+
+	integer numbers, floating point numbers, strings, "None", "True" and "False"
+
+Also an immutable object is a "tuple" of immutable objects.  For instance
+
+	x = 1, 3.14, "pi", True, None
+
+is a tuple of 5 items.  You can read more about these basic data types in the
+official Python Tutorial.  One thing to add here is this:
+
+	x = "hello"
+	z = x
+	x += "world"
+	print x, z
+
+What happens is that the addition does not modify the object `"hello"`.  This is
+an immutable object that may never change.  `x += "world"` is the same as
+
+	x = x + "world"
+
+and the result of `x + "world"` creates a new -immutable- object "helloworld".
+The variable `z` keeps pointing to the old `"hello"` object.
+
+Generally all objects can have attributes.  For example:
+
+	x = "hello"
+	x = x.upper ()
+	print x
+
+some of these attributes are very interesting and quite important and you can
+find a list of them in the "Library Reference".
+
+Immutable objects are *very* important in order to be able to have Dictionaries
+which is one of the most important data structures in computer science and it is
+also the basis for the implementation of classes and instances.  So read on!
+
+4. Basic Mutable containers
+---------------------------
+
+The basic containers are the list and the dictionary.  These are both well explained
+in the official Python Tutorial.  It may be worth to note that the python dictionary
+is an O(1) data structure for lookup and insertion. Dictionaries are used frequently
+in both computationaly intensive algorithms and in high level program control
+constructs where the goal is maximum flexibility.
+
+The list an the dictionary "reference" the objects they contain.  The list's objects
+can be accessed by index while the dictionary references both the "key" and the "value".
+The "key" must be an immutable object.
+
+Generally, with lists and dictionaries we can do almost anything.  A third useful
+container is the "set" which is like a dictionary with just keys and no values.
+For example:
+
+	s = { 1, 2, "hello" }
+	print "hello" in s
+
+During programming we often have to "walk through" a container.  In python this
+happens with "iteration".  The `for` statement takes an object and it attempts to
+iterate over its items.  For example:
+
+	L = [1, 2, 3]
+	L.append (4)
+	D = { 1:2, 3:4 }
+	D [5] = "bar"
+	D ["foo"] = 6
+
+	for (container in (L, D)) {
+		print "Iterate container:", container
+
+		for (item in container)
+			print "\t", item
+	}
+
+Above, `(L, D)` is a tuple object.  This tuple object is referenced by the program stack
+until the for-loop makes an iterator for it.  Then this iterator references the tuple
+and it lives until the loop ends.
+
+
+5. Code
+-------
+
+Initially we have "code objects" which are also immutable (and created by the compiler).
+From code objects we can create "functions" with the `def` statement.  For example:
+
+	def foo (x)
+		print "The argument is:", x
+
+The thing now is that `foo` is just a variable which references the "function object";
+it's just that `def` is a slightly different way to make a variable point to an object.
+We could say:
+
+	x = foo
+	foo = 123
+	x ("plonk")
+	x = foo
+
+just as well.
+
+Functions in Python are very powerful and have several interesting ways to pass
+keyword and positional arguments.  They are very nicely explained in the official
+Python Tutorial.
+
+One thing to note is how the functions are fully dynamic.  Suppose this:
+
+	def make_function (arg)
+	{
+		def f (x=arg)
+			print "The default value of x is:", arg
+		return f
+	}
+
+	f1 = make_function (1)
+	f2 = make_function (2)
+	f1 ()
+	f2 ()
+
+here the function `make_function` generates and returns a new function with one
+argument with default value as supplied.
+
+
+6. Statements
+---------------
+
+The basic statement for control flow are the if-else ones.  Containers evaluate
+to True if non-empty.  The `for` and `while` loops can be interrupted with
+`break` and they support `for-else` and `while-else` where the "else" part
+is excecuted if the loop wasn't terminated with a "break".
+
+Python also uses "exceptions" extensively so we don't have to check for
+successful return value from functions.  When something goes wrong we can
+just `raise` an exception and catch it lower in the call chain with `try-except`.
+
+All these, together with "generators" and `yield` are nicely explained in the
+official Python Tutorial.
+
+Just a warning: be careful with `else` in whitespaceless because it matches
+the innermost `if`, `for`, `while` and `try` statement, whichever is first!
+
+
+7. Objects
+----------
+
+This tutorial has now reached its end with the explanation of the objects,
+classes and instances.
+
+Classes are magic.  OK, suppose this:
+
+	class A
+	{
+		x = 1
+
+		def foo (self)
+		{
+			self.z = self.x + self.y
+			return self.z
+		}
+	}
+
+	a = A ()
+
+`A` is a class and `a` is an instance of this class.
+The class has a dictionary which can be seen with:
+
+	print A.__dict___
+
+The instance also has a dictionary and it knows its class:
+
+	print a.__dict__
+	print a.__class__
+
+Now what happens is this:
+
+- When we set an attribute on the instance, it is added to the dictionary of
+  the instance.  So try this:
+
+		print a.__dict__
+		a.y = 123
+		print a.__dict__
+
+- When we try to get an attribute from the instance, python first looks
+  in the dictionary of the instance.  If it is not found there then python
+  looks in the dictionary of the class.
+
+		print a.x, a.y
+
+  If the found attribute in the class is a function, then this is converted
+  to a "bound method" object.  A bound method is this:
+
+		bound_method = a.foo
+		print bound_method
+
+  A bound method is a function who's first argument is always passed automatically
+  (the `self` argument) and it is the instance from which the bound method was
+  created.  Call:
+
+		bound_method ()
+		print "The bound method has set attribute `z`", a.z
+		print a.__dict__
+
+Inside the `foo` function, the same rules for attribute lookup apply on the
+instance on which the method is bound.  The code:
+
+	def foo (self)
+		return self.x
+
+can be written in whitespaceless as:
+
+	method foo ()
+		return $x
+
+
+The end

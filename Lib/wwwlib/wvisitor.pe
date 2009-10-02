@@ -1,0 +1,304 @@
+__autosem__
+
+# Base visitor class
+# This visitor uses "openNAME" and "closeNAME" methods
+
+class Visitor
+{
+	postOpenHook = None
+
+	method make ()
+	{
+		DO = {}
+		DC = {}
+		for (k in $__class__.__dict__) {
+			if (k.sw ("open"))
+				DO [intern (k [4:].lower ())] = $(k)
+			else if (k.sw ("close"))
+				DC [intern (k [5:].lower ())] = $(k)
+		}
+		doText = $doText
+
+		postOpenHook = $postOpenHook
+		if (!postOpenHook)
+			def walk (node)
+			{
+				tag = node.tag
+				if (not tag)
+					doText (node)
+				else {
+					try f = DO [tag]
+					except f = DO [tag] = DO [""]
+					f (node)
+
+					for (c in node.kids)
+						walk (c)
+
+					try f = DC [tag]
+					except f = DC [tag] = DC [""]
+					f (node)
+				}
+			}
+		else
+			def walk (node)
+			{
+				tag = node.tag
+				if (not tag)
+					doText (node)
+				else {
+					try f = DO [tag]
+					except f = DO [tag] = DO [""]
+					f (node)
+					postOpenHook (node)
+
+					for (c in node.kids)
+						walk (c)
+
+					try f = DC [tag]
+					except f = DC [tag] = DC [""]
+					f (node)
+				}
+			}
+		$walk = walk
+	}
+
+	method walk (p)
+	{
+		$make ()
+		$walk (p)
+	}
+
+	method open (node);
+	method close (node);
+}
+
+# This visitor uses just "visitNAME" methods. Such methods are responsible
+# for calling $visit for their kids.
+
+class Visitor0
+{
+	postOpenHook = None
+
+	method make ()
+	{
+		D = {}
+		for (k in $__class__.__dict__)
+			if (k.sw ("visit") and len (k) > 5)
+				D [intern (k [5:].lower ())] = $(k)
+		doText = $doText
+
+		postOpenHook = $postOpenHook
+		if (!postOpenHook) {
+			def walk (node)
+			{
+				tag = node.tag
+				if (not tag)
+					doText (node)
+				else {
+					try f = D [tag]
+					except f = D [tag] = $visit
+					f (node)
+				}
+			}
+		} else {
+			def walk (node)
+			{
+				tag = node.tag
+				if (not tag)
+					doText (node)
+				else {
+					postOpenHook (node)
+					try f = D [tag]
+					except f = D [tag] = $visit
+					f (node)
+				}
+			}
+		}
+		$walk = walk
+		$visit = $visit
+	}
+
+	method visit (node)
+		for (k in node.kids)
+			$walk (k)
+
+	method walk (p)
+	{
+		$make ()
+		$walk (p)
+	}
+}
+
+class AllVisitor
+{
+	content_action = None
+
+	method make ()
+	{
+		action = $action
+		content_action = $content_action
+
+		if (!content_action) {
+			def walk (node)
+				if (node.tag) {
+					action (node)
+					for (w in node.kids)
+						walk (w)
+				}
+		} else {
+			def walk (node)
+				if (node.tag) {
+					action (node)
+					for (w in node.kids)
+						walk (w)
+				} else content_action (node)
+		}
+
+		$walk = walk
+	}
+
+	method walk (p)
+	{
+		$make ()
+		$walk (p)
+	}
+}
+
+# Sample visitor -- html text dumper.
+# Take an html tree and print it out as plain text.
+# Not perfect but it works.
+#
+# In text mode, we don't render tables. Tables are
+# print as lists where the <tr> element forces a newline.
+# This makes sure that each emitted line is below all the
+#  previously emitted lines -- <table> is the only structure
+#  that violates that.
+#
+# This is generally good because one of the uses of the
+# plaintext mode is copy-pasting text from HTML pages as
+# well as searching.
+
+import re
+eatNL = re.compile (r"\n *\n(?: *\n)+").sub
+
+class Dumper (**Visitor)
+{
+	method __init__ (root, $width, $hilight=True)
+	{
+		import cStringIO
+		s = cStringIO.StringIO ()
+		$write = s.write
+		$make ()
+		$in_pre = False
+		$ignore_text = False
+		$chars_left = $width
+		$indent = 0
+		$oA, $cA = $hilight ? ("\033[01;34m", "\033[0m") : ("", "")
+
+		# do the walk
+		$walk (root)
+
+		$nl ()
+		$plaintext = eatNL ("\n\n", s.getvalue ())
+	}
+
+	method openA (box)
+		$write ($oA)
+	method closeA (box)
+		$write ($cA)
+
+	method openPre (box)
+	{
+		$in_pre += 1
+		$indent += 3
+		$nl ()
+	}
+	method closePre (box)
+	{
+		$in_pre -= 1
+		$indent -= 3
+		$nl ()
+	}
+
+	method openBr (box)
+		$nl ()
+
+	method openP (box)
+		$nl ()
+	openTable = openDiv = openDt = openTr = openP
+
+	method openHr (box)
+	{
+		$nl ()
+		$write ($chars_left * "-")
+		$nl ()
+	}
+
+	method openStyle (box) $ignore_text = True
+	method closeStyle (box) $ignore_text = False
+	openScript = openStyle
+	closeScript = closeStyle
+
+	method openUl (box)
+	{
+		$indent += 2
+		$nl ()
+	}
+	method closeUl (box)
+		$indent -= 2
+	openOl = openUl
+	closeOl = closeUl
+	method closeLi (box)
+		$nl ()
+	method openLi (box)
+	{
+		$write ("* ")
+		$chars_left -= 2
+	}
+
+	method doText (node)
+		if (!$ignore_text) {
+			try txt = node.text
+			except txt = "[REPLACED]"
+			if ($in_pre) {
+				while ("\n" in txt) {
+					t1, None, txt = txt.partition ("\n")
+					$write (t1)
+					$nl ()
+				}
+				$write (txt)
+			} else {
+				while (len (txt) >= $chars_left) {
+					p = txt.rfind (" ", 1, $chars_left)
+					if (p != -1) pe = p + 1
+					else p = pe = $chars_left
+					$write (txt [:p])
+					txt = txt [pe:]
+					$nl ()
+				}
+				$write (txt)
+				$chars_left -= len (txt)
+			}
+		}
+
+	method nl (*args)
+	{
+		$write ("\n")
+		$chars_left = $width
+		if ($indent) {
+			$write (" " * $indent)
+			$chars_left -= $indent
+		}
+	}
+
+	closeH1 = closeH2 = closeH3 = closeH4 = closeH5 = closeH6 = nl
+	closeP = nl
+}
+
+if (__name__ == __main__)
+{
+	import dom
+	root = dom.produce (readfile (sys.argv [1]))
+	D = Dumper (root, 80, 1)
+	print D.plaintext
+}

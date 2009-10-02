@@ -1,0 +1,195 @@
+##
+## RSA Key generation.
+##
+## *******************************************************************
+## GIVEN THE SAME PASSPHRASE, THIS CODE MUST ALWAYS GENERATE THE
+## SAME PAIR OF KEYS.
+## *******************************************************************
+##
+
+__autosem__
+
+from crypto.prime import getPrime
+
+def gcd (a, b)
+{
+	while (b)
+		a, b = b, a % b
+	return a
+}
+
+def inverse (u, v)
+{
+	u3, v3 = u, v
+	u1, v1 = Long (1), Long (0)
+	while (v3 > 0) {
+		q = u3 / v3
+		u1, v1 = v1, u1 - v1 * q
+		u3, v3 = v3, u3 - v3 * q
+	}
+	while (u1 < 0)
+		u1 = u1 + v
+	return u1
+}
+
+def mkkey (p, q)
+{
+	if (p > q)
+		p, q = q, p
+
+	print "Generating RSA keys"
+
+	# PGP uses 0x29, OpenSSH uses 0x23 and SSL uses 0x10001
+	# let's just go with PGP
+	e = Long (0x29)
+
+	# check that e is relatively prime to m
+	m = (p - 1) * (q - 1)
+	while (gcd (m, e) != 1) {
+		print "GCD retry"
+		p = getPrime (p+1)
+		q = getPrime (q+1)
+		if (p > q)
+			p, q = q, p
+		m = (p - 1) * (q - 1)
+	}
+
+	n = p * q
+	u = inverse (p, q)
+	d = inverse (e, m)
+
+	print "Verifying keys"
+	if (!verify (e, d, n))
+		raise "KEY verification FAILED. Retry or send bug report"
+	print "OK. Keys verified"
+
+	return e, d, n, q, p, u
+}
+
+def verify (e, d, n)
+	# that's the whole encrypt-decrypt deal!
+	return pow (pow (123, d, n), e, n) == 123
+
+import sha, md5, llong, os
+from crypto.longs import PKCToLong
+
+print """
+RSA keypair generation
+======================
+
+This script can be used to generate a pair of keys for
+use by PGP and/or SSH.
+
+Two keys are generated. The public key which can be
+given to anybody and the private key which must never be
+given to anybody.  If something is encrypted with the
+public key it can be decrypted only with the private
+key and vice versa.
+
+The program does "passphrase" key generation. That is
+given the same passphrase the same key is generated, and
+that can be used in case the private key is accidentially
+deleted.  The passphrase should be longer than a password,
+something like a complete sentence.
+
+The generated keys will be stored in a new directory
+in form suitable for PGP or SSH.
+
+"""
+
+def input (prompt, accept=None, e=False)
+	while (1) {
+		T = raw_input (prompt) [:-1]
+		if (!T and !e)
+			exit ()
+		if (!accept)
+			return T
+		if (T in accept)
+			return T
+	}
+
+T = input ("Enter key size, (1) for 1024 bits and (2) for 2048 bits: ", "12")
+keysize = T == "1" ? 1024 : 2048
+
+print
+T = input ("Enter passphrase (type enter to generate a random key): ", e=1)
+if (T) {
+	print
+	print "Your passphrase is [%s]" %T
+	# time the timestamp thing was first used
+	timestamp = 1250085716
+} else {
+	T = @crypto.cryptorand.randstr (30)
+	print
+	print "Key from randomness.  Will not be able to re-generate it"
+	timestamp = None
+}
+
+print
+print "Making keys..."
+
+nbits = keysize / 16
+Q = PKCToLong ((sha.digest (T)*40)[:nbits])
+P = PKCToLong ((md5.digest (T)*40)[:nbits])
+
+E, D, N, Q, P, U = mkkey (getPrime (P), getPrime (Q))
+
+print
+
+print "Public exponent:",  llong.tostringnum (E)
+print
+print "Private exponent:", llong.tostringnum (D)
+print
+print "Modulo: ", llong.tostringnum (N)
+print
+
+T = input ("Make keys for use by, (1) PGP (2) SSH: ", "12")
+format = T == "1" ? "pgp" : "ssh"
+
+while (1) {
+	d = input ("Enter directory name to store the keys (must not exist): ")
+	try os.mkdir (d)
+	except {
+		print "Couldn't create [%s]" %d
+		continue
+	}
+	os.chdir (d)
+	break
+}
+
+if (format == "pgp") {
+	uid = input ("Enter your identity string (required by PGP, must be 'name <address>' form): ", e=1)
+	print
+	print "It is possible to encrypt(protect) the private key with a password."
+	print " Advantage: if your laptop is stolen your private key is OK, and you can just re-create it"
+	print " Disadvantage: you'll have to type the password every time you want to use the key"
+	passphrase = input ("Enter passphrase (type enter avoid encypting the key): ", e=1)
+
+	from pgp.base import gen_pgp_keys
+	pub, priv = gen_pgp_keys (E, D, N, Q, P, U, uid, timestamp, passphrase)
+	writefile ("pgp.pub", pub)
+	writefile ("pgp.pri", priv)
+} else {
+	from ssh.base import gen_ssh_keys
+	pub, priv = gen_ssh_keys (E, D, N, Q, P, U)
+	writefile ("ssh.pub", pub)
+	writefile ("ssh.pri", priv)
+}
+
+print "
+The following files have been created"
+if (format == "pgp")
+print """
+	pgp.pub		: pubkey in PGP format. Send to the world or upload to a keyserver
+	pgp.pri		: privkey in PGP format.  `gpg --import` or `pyvm gpg --import-private`
+			  to use it to sign things."""
+else
+print """
+	ssh.pub		: pubkey in the format that should be added to `~/.ssh/authorized_keys`
+			  on remote hosts.
+	ssh.pri		: privkey in ssh format. Tell your SSH client to use it"""
+print """
+Since pyvm is still under development and some things are missing (protecting the private key,
+certifiing the PGP keys and possibly revoke), do not do anything very serious with these keys
+just yet.
+"""

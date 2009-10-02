@@ -1,0 +1,6 @@
+These are some fonts named, for example "SUSESans-Roman.ttf" from an older
+suse distro which are used by mozilla over here.  For testing/comparing
+against moz. if you have suse you can try copying them here.
+
+They don't have international characters (moz uses zapfdingbats!) so they
+are good only for css testing.

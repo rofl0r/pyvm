@@ -1,0 +1,16 @@
+from container import hcontainer;
+from textin import textin;
+from label import label;
+from util import kwget;
+
+class textinput (hcontainer)
+{
+	method Init (txt, lw=None, **kw)
+	{
+		p = kwget (kw, 'p');
+		hcontainer.Init (self, p=p);
+		$L = lw ? label (txt, w=lw) : label (txt);
+		$T = textin (**kw);
+		$pack ();
+	}
+}

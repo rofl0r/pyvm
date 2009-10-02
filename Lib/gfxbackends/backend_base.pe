@@ -1,0 +1,164 @@
+##  Default backend methods
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from colornames import lookup as LookupColor
+from graphics.framebuffer import image, FrameBuffer
+
+class Exit;
+
+class Window
+{
+	# assuming full-screen mode. override
+	method screen_size ()
+		return $width, $height
+
+	method std_fonts ()
+	{
+		from fonts.render import Open, FONTDIR
+
+		# try to use fonts that fit the screen size nicely
+		# neither too big for small resolutions, nor to small
+		# for high resolutions, while at the same time taking
+		# advantage of the hardware and big monitors.
+
+		swidth = $screen_size ()[0]
+		if (swidth < 700) pt = 12
+		else if (swidth < 800) pt = 13
+		else if (swidth < 1000) pt = 14
+		else if (swidth <= 1280) pt = 16
+		else pt = 17
+
+		if (swidth < 700) PX = 7
+		else if (swidth < 800) PX = 8
+		else if (swidth < 1000) PX = 9
+		else if (swidth <= 1280) PX = 10
+		else PX = 11
+
+		FF = sys.GuiFontFamily
+		if (FF)
+			if (FF in ["ms", "urw", "vera", "lm", "lucida"])
+				FF = "$" + FF + "/"
+			else print "Unknown family for --font:", FF
+
+		if (!FF) {
+			if (havefile (FONTDIR + "ms/serif"))
+				FF = "$ms/"
+			else if (havefile (FONTDIR + "corefonts/serif"))
+				FF = "$corefonts/"
+			else if (havefile (FONTDIR + "lucida/serif"))
+				FF = "$lucida/"
+			else FF = "$urw/"
+		}
+
+		HaveUTF = FF != "$urw/"
+
+		def serif_font (style, size)
+		{
+			f = Open (FF + "serif" + style, size)
+			if (HaveUTF)
+				f = f.as_utf8 ()
+			return f
+		}
+		def sans_font (style, size)
+		{
+			f = Open (FF + "sans" + style, size, lz=1)
+			if (HaveUTF)
+				f = f.as_utf8 ()
+			return f
+		}
+		def fix_font (style, size)
+			return Open (FF + "mono" + style, size, ffixed=PX)
+		var_font = sans_font
+#		var_font = serif_font
+
+		namespace $stdfont
+		{
+			dfont   = var_font ("", pt)
+			dfontb  = var_font ("-b", pt)
+			dfonti  = var_font ("-i", pt)
+			dfontbi = var_font ("-bi", pt)
+			buttonfont = dfont
+			tfont = Open (FF + "mono", pt, ffixed=PX)
+			bfont = Open (FF + "mono-b", pt, ffixed=PX)
+
+			HaveInternational = HaveUTF
+
+			def OpenFont (f, px)
+				return Open (FF + f, px + pt)
+			def OpenFixedFont (f, px)
+				return Open (FF + f, px + pt, ffixed=px + PX) 
+		}
+	}
+
+	method resize (w, h) { }
+
+	method Image (*args)
+		return image (*args).convert_bpp ($bpp)
+
+	method draw_string (s, x, y, fg, font, bg)
+		if (s) $show_image (font.ImageText (s, fg, bg, $bpp), x, y)
+
+	method draw_char (s, x, y, fg, font, bg)
+		$show_image (font.ImageChar (s, fg, bg, $bpp), x, y)
+
+	# The standard way to draw text is to use the 'fonts' modules
+	# that render truetype fonts on RGB images, and then use the
+	# backend's imaging functions to put the image on the drawable.
+	# OTOH, some backends like X-Windows may have custom text drawing
+	# functions.  Note: this is about the text of widgets. Advanced
+	# rasterizers like HTML/PDF/etc use their own rendering and
+	# provide images.
+
+	method image_string (s, fg, font, bg)
+	{
+		try return font.ImageText (s, fg, bg, $bpp)
+		return None
+	}
+
+	method set_wm_name (name);
+
+	# The DirectFrameBuffer was supposed to be a way to make a nested
+	# framebuffer in the master display framebuffer (where stride>width)
+	# for direct rendering. otoh, a problem is that if this fb is
+	# covered by something else (like a pulldown menu, or part of a
+	# union) it should be clipped/invisible. Since this is only used
+	# by avplay and there one extra blit is a fraction of the time
+	# spent in decoding, this is not implemented yet.
+	method DirectFrameBuffer (w, h)
+		return FbSurface (w, h, $fb)
+
+	# Clipboard. By default the clipboard is local to the application, unless
+	# derrived
+	CBtext = ""
+	method Copy ($CBtext);
+	method Have ()
+		return bool ($CBtext)
+	method Paste ()
+		return $CBtext
+}
+
+class FbSurface (*FrameBuffer)
+{
+	method __init__ (w, h, $screen)
+		FrameBuffer.__init__ (self, w, h, $screen.bpp)
+	method Update (x, y)
+		$screen.blit_data (x, y, $buffer, $w, $h)
+}
+
+#########################################################################
+#		Shift conversion.  Standard keyboard
+# (we need layouts or something?)
+#########################################################################
+
+SHIFT1 = r"`1234567890-=qwertyuiop[]\asdfghjkl;'zxcvbnm,./"
+SHIFT2 = r'~!@#$%^&*()_+QWERTYUIOP{}|ASDFGHJKL:"ZXCVBNM<>?'
+
+def Shift (char)
+	try return SHIFT2 [SHIFT1.index (char)]
+	except try return SHIFT1 [SHIFT2.index (char)]
+	except return char

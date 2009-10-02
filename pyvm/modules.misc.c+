@@ -1,0 +1,116 @@
+/*
+ *  Unimportant functions
+ * 
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+//
+// some modules that we have trouble parsing their pyc (maybe because they use
+// other modules that are not implemented, like 're', or because they use special
+// py features we don't want to implemente or because they need special semantics
+// which pyvm doesn't give).  We wrap them here and do a similar job or raise the
+// NotImplemented Interrupt.
+//
+
+#include "config.h"
+#include "dynlib.h"
+
+/* ----* obsolete: traceback.format_exc, needed by threading.pyc *---- */
+
+_module __object__ *format_exc_traceback (REFPTR argv [])
+{
+static	StringObj *S;
+	if (!S) {
+		S = new StringObj ("\"%s\" ['%s'] at %s.\n");
+		S->inf ();
+	}
+	Tuplen *T = Tuplen.cast (pyvm_exc_info ());
+	__object__ *T1 = T->__xgetitem__ (0);
+	if (DynClassObj.isinstance (T1) || DynInstanceObj.isinstance (T1)) {
+		try {
+			__object__ *C = DynClassObj.isinstance (T1) ?
+				 DynClassObj.cast (T1)->__name__.o
+				: DynInstanceObj.checkedcast (T1)->__class__.as_class->__name__.o;
+			{
+				REFPTR t = new Tuplen (C, T->__xgetitem__ (1), T->__xgetitem__ (2));
+				T1 = S->binary_modulo (t.o);
+			}
+		} else {
+			pprint ("can't format exception");
+			ReRaise ();
+		}
+	}
+	return T1;
+}
+
+extern __object__ *pyvm_exc_info ();
+
+_module __object__ *print_exc_traceback ()
+{
+	REFPTR E = pyvm_exc_info ();
+	pprint (E.o);
+	return &None;
+}
+
+static const bltinfunc traceback_funcs [] = {
+	{ "format_exc", SETARGC (0, 0), format_exc_traceback },
+	{ "print_exc", SETARGC (0, 0), print_exc_traceback },
+	BENDITEM
+};
+
+slowcold __object__ *import_traceback ()
+{
+	return new ModuleObj BltinModule ("traceback", traceback_funcs);
+}
+
+/* ---* warnings. too much *--- */
+
+_module __object__ *warn_warnings (REFPTR argv[], int argc)
+{
+	if (StringObj.isinstance (argv [0].o))
+		fprintf (stderr, "I got a waring for you:\"%s\"\n", argv [0].as_string->str);
+	else
+		pprint ("I got a waring for you", argv [0].o);
+	return &None;
+}
+
+static const bltinfunc warn_funcs [] = {
+	{ "warn", SETARGC (1, 3), warn_warnings },
+	BENDITEM
+};
+
+slowcold __object__ *import_warnings ()
+{
+	return new ModuleObj BltinModule ("warnings", warn_funcs);
+}
+
+//////////////////////////////////
+
+slowcold __object__ *import_errno ()
+{
+	ModuleObj *ns = new ModuleObj BltinModule ("errno");
+	ns->AddAttributes (
+		("EEXIST", newIntObj (EEXIST)),
+		("ENOENT", newIntObj (ENOENT))
+	);
+	return ns;
+}
+
+//////////////////////////////////
+
+#include "zlib/zlib.h"
+
+slowcold __object__ *import__zlibfuncs ()
+{
+	ModuleObj *ns = new ModuleObj BltinModule ("_zlibfuncs");
+	ns->AddAttributes (
+		("compress2",	newIntObj ((long) compress2)),
+		("adler32",	newIntObj ((long) adler32)),
+		("crc32",	newIntObj ((long) crc32))
+	);
+	return ns;
+}
+//////////////////////////////////

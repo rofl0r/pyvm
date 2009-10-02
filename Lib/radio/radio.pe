@@ -1,0 +1,97 @@
+##  internet mms radio player
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+USAGE = "radio <mmsurl or nick>
+
+Play internet radio from given url, for example
+	mms://enleuko.live24.gr/enleuko877
+"
+
+def inkeys ()
+{
+	global Q, VOL, MUTED
+	while (1) {
+		c = sys.pty_getchar ()
+		if (c == 'q') Q = True
+		if (c == '\x1b\x5b\x41') VOL = devmod.dvol (1)
+		if (c == '\x1b\x5b\x42') VOL = devmod.dvol (-1)
+		if (c == "m") {
+			fprint ("\rmuted. Press any key to un-mute."+
+				" (fyi network transfer is *not* stopped)")
+			dev.release ()
+			MUTED = True
+			sys.pty_getchar ()
+			while (!dev.grab (PLAYER.sample_rate, PLAYER.channels)) {
+				print "audio device in use by other application"
+				print "press any key"
+				sys.pty_getchar ()
+			}
+			fprint ("\r" + " " * 78)
+			MUTED = False
+			
+		}
+		fprint ("\rPlaying %s (%i%%)"%(url, VOL))
+	}
+}
+
+if (__name__ == __main__)
+{
+	from radio.mms import mms_radio
+	from misc import tmpfifo, fprint
+	from audio.mp3 import player
+	from audio import dev as devmod
+	import thread
+	dev = devmod.AudioDev ()
+
+	url = sys.argp.one ()
+
+	try url = {
+		# sometimes play good music:
+		"best":"mms://best.live24.gr/best1222",
+		"877":"mms://enleuko.live24.gr/enleuko877"
+	} [url]
+
+	F = tmpfifo ()
+
+	def do_play ()
+	{
+		# allow some time for buffering
+#		sleep (0.7)
+		P = player ()
+		global PLAYER
+		PLAYER = P
+		P.open (F.fnm)
+		dev.grab (P.sample_rate, P.channels)
+		while (data = P.get_data ())
+			dev.play (data)
+	}
+
+	M = mms_radio (url)
+
+	print "tunning. to %s.." %url
+	M.tune ()
+	print "OK. Press 'q' to exit, 'm' to mute, 'up/down' arrows for volume"
+	thread.start_new (do_play)
+
+	Q = False
+	VOL = devmod.get_volume ()
+	MUTED = False
+	sys.pty_stdin (True)
+	thread.start_new (inkeys)
+
+	F.openw ()
+	while (!Q) {
+		t, d = M.next_packet ()
+		if (!MUTED) {
+			fprint ("\rPlaying %s (%i%%)"%(url, VOL))
+			F.write (d)
+		}
+	}
+	print
+}

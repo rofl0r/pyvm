@@ -1,0 +1,65 @@
+import stat;
+from posix import __stat_result;
+
+def mkstat (mode=0, ino=0, dev=0, nlink=0, uid=0, gid=0, size=0,
+	   atime=0, mtime=0, ctime=0, blocksize=0, blocks=0, rdev=0)
+	return __stat_result ([mode, ino, nlink, uid, gid,
+				 size, atime, mtime, ctime, blocksize, blocks, rdev]);
+
+class fs
+{
+	method isdir (f)  return stat.S_ISDIR ($stat (f).st_mode);
+	method islink (f) return stat.S_ISLNK ($lstat (f).st_mode);
+
+	method listdir2 (d="")
+	{
+		if (d and !d.ew ("/")) d += "/";
+		return [d + x for (x in $listdir (d))];
+	}
+
+	method ls_R (d="")
+		for (f in $listdir2 (d)) {
+			yield f;
+			if (!$islink (f) and $isdir (f))
+				for (f in $ls_R (f))
+					yield f;
+		}
+
+	method fail ()
+		raise OSError ("Operation not supported");
+
+	symlink = remove = writefile = mkdir = fail;
+}
+
+class fs_local
+{
+	from fs update *;
+	os = @os;
+	ReadOnly = False;
+
+	method B (f)
+		return f;
+
+	# readonly
+	method stat (f) return $os.stat ($B (f));
+	method lstat (f) return $os.lstat ($B (f));
+	method readfile (f) return readfile ($B (f));
+	method listdir (d="") return $os.listdir ($B (d));
+	method access (f) return $os.access ($B (f));
+	method readlink (f) return $os.readlink ($B (f));
+
+	# rw
+	method symlink (l, f) $os.symlink ($B (l), $B (f));
+	method remove (f) $os.remove ($B (f));
+	method writefile (f, data) open ($B (f), "w").write (data);
+	method mkdir (d) $os.mkdir ($B (d));
+}
+
+LOCAL = fs_local ();
+
+if (__name__ == __main__)
+{
+	F = fs_local ();
+	for (x in F.ls_R ("/home/stan/toolchain/Lib"))
+		print x;
+}

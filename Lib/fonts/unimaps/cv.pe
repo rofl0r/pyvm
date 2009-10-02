@@ -1,0 +1,13 @@
+# convert unicode maps from www.unicode.org to .uni
+
+__autosem__
+
+for (l in open (sys.argp.filename_ex ()))
+	if (!l.strip () or l [0] == "#")
+		continue
+	else {
+		v1, v2, v3 = l.split ("\t")
+		if (!v2.strip () or int (v1, 16) == int (v2, 16))
+			continue
+		print "%s\tU+%s" %(v1, v2 [2:])
+	}

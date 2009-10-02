@@ -1,0 +1,561 @@
+##  JPEG Decoder Driver
+## 
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Originally based on TonyJpeg.py from Tony Lin.
+
+# This is basically a parser of the jpeg container format.
+# Once it reads the basic data, it initializes the C jpeg
+# decoder which converts to RGB.  If something goes wrong,
+# it tries to use libjpeg to handle the image.
+
+# Progressive jpeg not supported by the native decoder.
+
+# This is a one-pass decoder. IOW we don't care about decoding *some*
+# data, showing this and decoding more as data arrives from the network.
+# This feature exists because the old days with the 2Kbps modems it made sense
+# to see the start of an image and stop if it was goatse. The analogous
+# today is being able to stop youtube videos.
+
+__autosem__
+from time import Timit
+
+PRFAIL = False
+
+# Use transposed method (faster but still experimental)
+
+Transpose = True
+
+if (Transpose)
+	def transpose_order (a)
+	{
+		o = [a [i + 8 * j] for (i in *8) for (j in *8)]
+		for (i in *len (a))
+			a [i] = o [i]
+		return a
+	}
+
+namespace C
+{
+	CFLAGS = "-O3 -Wall"
+	if (Transpose)
+		CFLAGS += " -DTRANSPOSED"
+	locals ().update (@DLL.Clib ("jpg", CFLAGS, pelf=1))
+#	locals ().update (@DLL.Clib ("jpg", CFLAGS, pelf=0))
+}
+
+# JPEG marker codes
+namespace M __constant__
+{
+	SOF0  = 0xc0; SOF1  = 0xc1; SOF2  = 0xc2; SOF3  = 0xc3; SOF5  = 0xc5;
+	SOF6  = 0xc6; SOF7  = 0xc7; JPG   = 0xc8; SOF9  = 0xc9; SOF10 = 0xca;
+	SOF11 = 0xcb; SOF13 = 0xcd; SOF14 = 0xce; SOF15 = 0xcf; DHT   = 0xc4;
+	DAC   = 0xcc; RST0  = 0xd0; RST1  = 0xd1; RST2  = 0xd2; RST3  = 0xd3;
+	RST4  = 0xd4; RST5  = 0xd5; RST6  = 0xd6; RST7  = 0xd7; SOI   = 0xd8;
+	EOI   = 0xd9; SOS   = 0xda; DQT   = 0xdb; DNL   = 0xdc; DRI   = 0xdd;
+	DHP   = 0xde; EXP   = 0xdf; APP0  = 0xe0; APP1  = 0xe1; APP2  = 0xe2;
+	APP3  = 0xe3; APP4  = 0xe4; APP5  = 0xe5; APP6  = 0xe6; APP7  = 0xe7;
+	APP8  = 0xe8; APP9  = 0xe9; APP10 = 0xea; APP11 = 0xeb; APP12 = 0xec;
+	APP13 = 0xed; APP14 = 0xee; APP15 = 0xef; JPG0  = 0xf0; JPG13 = 0xfd;
+	COM   = 0xfe; TEM   = 0x01; ERROR = 0x100;
+
+}
+M.__names__ = {v:k for (k, v in M)}
+
+jpeg_natural_order = (
+	0,  1,  8, 16,  9,  2,  3, 10,
+	17, 24, 32, 25, 18, 11,  4,  5,
+	12, 19, 26, 33, 40, 48, 41, 34,
+	27, 20, 13,  6,  7, 14, 21, 28,
+	35, 42, 49, 56, 57, 50, 43, 36,
+	29, 22, 15, 23, 30, 37, 44, 51,
+	58, 59, 52, 45, 38, 31, 39, 46,
+	53, 60, 61, 54, 47, 55, 62, 63
+)
+
+if (Transpose)
+	jpeg_natural_order = (
+		0, 8, 1, 2, 9, 16, 24, 17, 10, 3,
+		4, 11, 18, 25, 32, 40, 33, 26, 19,
+		12, 5, 6, 13, 20, 27, 34, 41, 48,
+		56, 49, 42, 35, 28, 21, 14, 7, 15,
+		22, 29, 36, 43, 50, 57, 58, 51, 44,
+		37, 30, 23, 31, 38, 45, 52, 59, 60,
+		53, 46, 39, 47, 54, 61, 62, 55, 63
+	)
+
+def jpeg_component_info ()
+	return { "component_id": 0, "component_index": 0,
+		 "hsamp": 0, "vsamp": 0, "quant_tbl_no": 0 }
+
+class HUFFTABLE
+{
+	method __init__ ()
+	{
+		$mincode = array ("i", 17, 0)
+		$maxcode = array ("i", 18, 0)
+		$valptr = array ("i", 17, 0)
+		$bits = array ("i", 17)
+		$huffval = array ("i", 256)
+		$look_sym = array ("i", 256, 0)
+	}
+
+	method Compute ()
+	{
+		# Figure C.1: make table of Huffman code length for each symbol
+		# Note that this is in code-length order.
+		p = 0
+		huffsize = [0] * 257
+		huffcode = [0] * 257
+		for (l in xrange (1, 17))
+			for (i in xrange (1, $bits [l] + 1)) {
+				huffsize [p] = l
+				p += 1
+			}
+		huffsize [p] = 0
+    
+		# Figure C.2: generate the codes themselves
+		# Note that this is in code-length order.
+		p = code = 0
+		si = huffsize [0]
+		while (huffsize [p]) {
+			while (huffsize [p] == si) {
+				huffcode [p] = code
+				code += 1
+				p += 1
+			}
+			code <<= 1
+			si += 1
+		}
+    
+		# Figure F.15: generate decoding tables for bit-sequential decoding
+		p = 0
+		for (l in range(1, 17))
+			if ($bits[l]) {
+				$valptr [l] = p
+				$mincode [l] = huffcode [p]
+			        p += $bits[l]
+				$maxcode [l] = huffcode [p-1]
+			} else $maxcode[l] = -1
+		$maxcode[17] = 0xFFFFF
+    
+		$look_nbits = array ("i", 256, 0)
+		HUFF_LOOKAHEAD = 8
+		p = 0
+		for (l in xrange (1, HUFF_LOOKAHEAD + 1))
+			for (i in xrange (1, $bits [l] + 1)) {
+				lookbits = huffcode [p] << (HUFF_LOOKAHEAD - l)
+				ctr = 1 << (HUFF_LOOKAHEAD - l)
+				while (ctr > 0) {
+					$look_nbits [lookbits] = l
+					$look_sym [lookbits] = $huffval [p]
+					lookbits += 1
+					ctr -= 1
+				}
+				p += 1
+			}
+
+		# Initialize the C huffman tables
+		$ctbl = C.init_hufftable ($mincode.cptr (), $maxcode.cptr (), $valptr.cptr (),
+				  	  $bits.cptr (), $huffval.cptr (), $look_nbits.cptr (),
+					  $look_sym.cptr ())
+	}
+}
+
+def fdiv (a, b)
+{
+	r = a / b
+	if (a % b) r += 1
+	return r
+}
+
+class jpeg
+{
+	width = None
+
+	# standard luminance/chrominance tables. overriden by DQT section
+
+	qtblY = array ("H", (
+		16,  11,  10,  16,  24,  40,  51,  61,
+		12,  12,  14,  19,  26,  58,  60,  55,
+		14,  13,  16,  24,  40,  57,  69,  56,
+		14,  17,  22,  29,  51,  87,  80,  62,
+		18,  22,  37,  56,  68, 109, 103,  77,
+		24,  35,  55,  64,  81, 104, 113,  92,
+		49,  64,  78,  87, 103, 121, 120, 101,
+		72,  92,  95,  98, 112, 100, 103,  99
+	))
+
+	qtblCbCr = array ("H", (
+		17,  18,  24,  47,  99,  99,  99,  99,
+		18,  21,  26,  66,  99,  99,  99,  99,
+		24,  26,  56,  99,  99,  99,  99,  99,
+		47,  66,  99,  99,  99,  99,  99,  99,
+		99,  99,  99,  99,  99,  99,  99,  99,
+		99,  99,  99,  99,  99,  99,  99,  99,
+		99,  99,  99,  99,  99,  99,  99,  99,
+		99,  99,  99,  99,  99,  99,  99,  99
+	))
+
+	if (Transpose) {
+		transpose_order (qtblY)
+		transpose_order (qtblCbCr)
+	}
+
+	method __init__ (filename=None, data=None, $background=False)
+	{
+		dts = @datastream.data_parser (data or readfile (filename))
+		dts.export (self, [["r8", "rbyte"], ["r16b", "rword"], ["skip", ""]])
+		# When the instance is freed, free the data
+		$dts = dts
+
+		if (!dts.match ("\xff\xd8"))
+			raise Error ("Not a jpeg")
+
+		$qtblY = $qtblY.__copy__ ()
+		$qtblCbCr = $qtblCbCr.__copy__ ()
+
+		$htblYDC = HUFFTABLE ()
+		$htblYAC = HUFFTABLE ()
+		$htblCbCrDC = HUFFTABLE ()
+		$htblCbCrAC = HUFFTABLE ()
+		$comp_info = [ jpeg_component_info (), jpeg_component_info (), jpeg_component_info () ]
+
+		$restart_interval = 0
+		$restarts_to_go = 0
+	}
+
+	method read_marker ()
+	{
+		while ($rbyte () != 255) ;
+		return $rbyte ()
+	}
+
+	method skip_marker ()
+		$skip ($rword () - 2)
+
+	method get_sos ()
+	{
+		l = $rword ()
+		if ($rbyte () != 3)
+			raise Error ("Number of components != 3")
+		for (None in *3) {
+			# currently unused
+			cid = $rbyte ()
+			xx = $rbyte ()
+			dc_idx = xx >> 4
+			ac_idx = xx & 15
+		}
+		$Ss = $rbyte ()
+		$Se = $rbyte ()
+		b = $rbyte ()
+		$Ah = (b >> 4)
+		$Al = b & 15
+		$restart_num = 0
+	}
+
+	method get_dqt ()
+	{
+		l = $rword () - 2
+		order = jpeg_natural_order
+		while (l > 0) {
+			n = $rbyte ()
+			prec = n >> 4
+			n = n & 15
+			qtb = !n ? $qtblY : $qtblCbCr
+			for (i in *64)
+				qtb [order [i]] = $rbyte ()
+			l -= 65
+		}
+	}
+
+	method get_sof (is_prog, is_arith, size_only=False)
+	{
+		if (is_arith or is_prog) {
+		#	print "jpeg: progressive jpeg not implemented"
+			raise Error
+		}
+		l = $rword ()
+		precission = $rbyte ()
+		if (precission != 8 and !size_only)
+			raise Error ("Precission != 8")
+		$height = $rword ()
+		$width = $rword ()
+		$component = $rbyte ()
+		l -= 8
+		for (ci in *$component) {
+			comp = {
+				"component_index" : ci,
+				"component_id" : $rbyte ()
+			}
+			c = $rbyte ()
+			comp ["hsamp"] = (c >> 4) & 15
+			comp ["vsamp"] = c & 15
+			comp ["quant_tbl_no"] = $rbyte ()
+			$comp_info [ci] = comp
+		}
+		c0 = $comp_info [0]
+		if (c0 ["hsamp"] == 1 == c0 ["vsamp"]) {
+			$McuW = $McuH = 8
+			$BlocksInMcu = 3
+		} else if (c0 ["hsamp"] == 2 == c0 ["vsamp"]) {
+			$McuW = $McuH = 16
+			$BlocksInMcu = 6
+		} else if (c0 ["hsamp"] == 2 and c0 ["vsamp"] == 1) {
+			$McuW = 16
+			$McuH = 8
+			$BlocksInMcu = 4
+		} else {
+			if (size_only)
+				return
+			print c0 ["hsamp"], c0 ["vsamp"]
+			raise Error ("Unsupported hv")
+		}
+		$xTiles = ($width + $McuW - 1) / $McuW
+		$yTiles = ($height + $McuH - 1) / $McuH
+	}
+
+	method get_dht ()
+	{
+		l = $rword ()
+		while (l > 16) {
+			index = $rbyte ()
+			htbl = HUFFTABLE ()
+			htbl.bits [0] = 0
+			for (i in *16)
+				htbl.bits [i + 1] = $rbyte ()
+			count = sum (htbl.bits)
+			for (i in *count)
+				htbl.huffval [i] = $rbyte ()
+			l -= count + 17
+			if (index == 0) $htblYDC = htbl
+			else if (index == 16) $htblYAC = htbl
+			else if (index == 1) $htblCbCrDC = htbl
+			else if (index == 17) $htblCbCrAC = htbl
+		}
+	}
+
+	method get_dri ()
+	{
+		$rword ()	# == 4
+		$restarts_to_go = $restart_interval = $rword ()
+	}
+
+	method read_markers ()
+		while (1) {
+			m = $read_marker ()
+			if (m == M.SOI) ;
+			else if (M.APP0 <= m <= M.APP15)
+				$skip_marker ()
+			else if.break (m == M.SOS)
+				$get_sos ()
+			else if (m == M.DQT)
+				$get_dqt ()
+			else if (m in (M.SOF0, M.SOF1))
+				$get_sof (0, 0)
+			else if (m == M.SOF2)
+				$get_sof (1, 0)
+			else if (m == M.DHT)
+				$get_dht ()
+			else if (m == M.DRI)
+				$get_dri ()
+			else if (m != M.COM) {
+				print "marker: %x"% m, M.__names__ [m]
+				$skip_marker ()
+			} else $skip_marker ()
+		}
+
+	method size ()
+	{
+		if ($width is None)
+			while (1)  {
+				m = $read_marker ()
+				if (m == M.SOI) continue
+				if.break (m in (M.SOF0, M.SOF1, M.SOF2))
+					$get_sof (0, 0, True)
+				if (m == M.SOS) break
+				$skip_marker ()
+			}
+		return $width, $height
+	}
+
+	###
+
+	method InitDecoder ()
+	{
+		aanscales = (
+			16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+			22725, 31521, 29692, 26722, 22725, 17855, 12299,  6270,
+			21407, 29692, 27969, 25172, 21407, 16819, 11585,  5906,
+			19266, 26722, 25172, 22654, 19266, 15137, 10426,  5315,
+			16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+			12873, 17855, 16819, 15137, 12873, 10114,  6967,  3552,
+			8867,  12299, 11585, 10426, 8867,  6967,   4799,  2446,
+			4520,  6270,  5906,  5315,  4520,  3552,   2446,  1247
+		)
+		if (Transpose)
+			aanscales = tuple (transpose_order (list (aanscales)))
+		def ScaleQuantTable (tblStd)
+			return array ("H", [(tblStd [i] * aanscales [i] + (1 << 11)) >> 12
+					 for (i in *64)])
+		$qtblY = ScaleQuantTable ($qtblY)
+		$qtblCbCr = ScaleQuantTable ($qtblCbCr)
+		$htblYDC.Compute ()
+		$htblYAC.Compute ()
+		$htblCbCrDC.Compute ()
+		$htblCbCrAC.Compute ()
+	}
+
+	method DecompressImage (scale=1, outbuf=None, bpp=3)
+	{
+		if (scale == 1) {
+			if (!outbuf)
+				outbuf = array ("B", $width * $height * bpp)
+			oW = $width
+			oH = $height
+		} else {
+			ww = fdiv ($width, 8)#($width + $McuW - 1) / $McuW
+			hh = fdiv ($height, 8)#($height + $McuH - 1) / $McuH
+			if (!outbuf)
+				outbuf = array ("B", ww * hh * bpp)
+			else if (len (outbuf) != ww*hh*bpp) {
+				print "THIS WILL SEGV %i should be %i" %(len (outbuf), bpp*ww*hh)
+				raise Error ()
+			}
+			oW = ww
+			oH = hh
+		}
+
+		cz = C.init_zstate ($dts.data, $dts.offset, $dts.left (),
+			       $htblYDC.ctbl, $htblYAC.ctbl, $htblCbCrDC.ctbl, $htblCbCrAC.ctbl,
+			       $restart_interval, $restarts_to_go, $BlocksInMcu)
+		ictx = C.init_idct ($BlocksInMcu, $qtblY, $qtblCbCr)
+		bc = C.init_blit (outbuf, $McuW, $McuH, $width, $height)
+		yc = C.init_yctx ($McuW, $McuH, $BlocksInMcu)
+
+		if (bpp == 3)
+			f = scale == 8 ? C.decompress_image_1x1 : $background ?
+				C.decompress_image_bg : C.decompress_image
+		else if (bpp == 2) {
+			if (scale != 1)
+				raise Error ("16bpp thumbnail")
+			f = $background ? C.decompress_image16_bg : C.decompress_image16
+		} else raise Error ("Only 2 and 3 bpp supported")
+
+#t = Timit ()
+		f (cz, ictx, yc, bc)
+#t.pr ("timetodecode: ")
+
+		return outbuf, oW, oH
+	}
+
+	method jpeg2rgb (scale=1, output=None)
+	{
+		$read_markers ()
+		$InitDecoder ()
+		return $DecompressImage (scale, output)
+	}
+
+	method jpeg2rgb16 (scale=1, output=None)
+	{
+		$read_markers ()
+		$InitDecoder ()
+		return $DecompressImage (scale, output, bpp=2)
+	}
+}
+
+#######################################################
+#
+#		Exported functions
+#
+#######################################################
+
+# TODO: except from libjpeg, we migh also be able to use ffmpeg to
+# convert a jpeg to RGB!
+
+namespace libjpeg
+{
+	def imp ()
+	{
+		if (0) {
+			# big pelf test
+			lj = @pelf.dllopen ("/usr/lib/libjpeg.a")
+			libjpeg.__dict__.update (@DLL.Clib ('ijg', '-O2 -g', syms=lj.D, pelf=1))
+			libjpeg.lj = lj
+		} else libjpeg.__dict__.update (@DLL.Clib ('ijg', '-O2', libs=['jpeg'], pelf=0))
+		libjpeg.imp = void
+	}
+}
+
+def jpegsize (data)
+	return jpeg (data=data).size ()
+
+# `background` means that pyvm will release the GIL during the conversion to RGB.
+def jpeg2rgb (data, scale, quality, output, ljpeg=@sysconfig.GETCONF ("AlwaysUseLibjpeg"),
+	      background=False)
+{
+	if (1) if (not ljpeg and scale in (1,8)) {
+		try return jpeg (data=data, background=background).jpeg2rgb (scale, output)
+		if (PRFAIL)
+			print "jpeg: rjpeg failed. Trying libjpeg..."
+	}
+	# (xxx: backgrounding libjpeg is not implemented yet. iirc libjpeg is not
+	#  reentrant so we should put a lock on it)
+	libjpeg.imp ()
+	if (!libjpeg.jpeg2rgb (data, len (data), scale, quality, output))
+		raise Error ("Error decoding jpeg")
+}
+
+def jpeg2rgb16 (data, scale, quality, output, ljpeg=@sysconfig.GETCONF ("AlwaysUseLibjpeg"),
+	        background=False)
+{
+	if (not ljpeg and scale in (1,8))
+		return jpeg (data=data, background=background).jpeg2rgb16 (scale, output)
+	else raise Error
+}
+
+###########################################################
+
+USAGE = """pyvm jpeg [-8] [-j] [-i] file.jpg
+-i:  info only
+Will decode the jpeg and store in into WOOT.ppm
+-8:  scale down 8 times
+-j:  also decode with libjpeg, save as TOOW.ppm, and report time/signal differences
+"""
+
+if (__name__ == __main__)
+{
+	info_only, jswitch, scale = sys.argp.check_switches ("-i", "-j", "-8")
+	scale = scale ? 8 : 1
+	f = sys.argp.filename_ex ()
+	data = readfile (f)
+	j = jpeg (data=data)
+	j.size ()
+	print "File:", f
+	print "Type: %ix%i" %(j.McuW, j.McuH)
+	print "Size: %ix%i" %(j.width, j.height)
+	if (info_only) exit ()
+	try {
+		T = @time.Timit ()
+		rgb, w, h = jpeg (data=data).jpeg2rgb (scale=scale)
+		t1 = T.pr ("Native jpeg decoder:\t")
+	} except {
+		print "Native jpeg decoder could not process this file."
+		raise
+		exit ()
+	}
+	@graphics.ppm.store ("WOOT.ppm", rgb.tostring (), w, h)
+	if (jswitch) {
+		T.r ()
+		out = _buffer (3 * w * h)
+		jpeg2rgb (data, scale, 0, out, True)
+		t2 = T.pr ("libjpeg:\t\t")
+		@graphics.ppm.store ("TOOW.ppm", out, w, h)
+		print "\t\t\t%.2f%%" %(100*t1/t2)
+		print "Difference:"
+		@os.system ("pyvm imagediff TOOW.ppm WOOT.ppm")
+	} else print "Stored."
+}

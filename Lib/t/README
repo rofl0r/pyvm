@@ -1,0 +1,6 @@
+tests.
+
+the goal is not to build a huge database of tiny unit tests.
+usually, just running the web browser and visiting a complex css
+site tests more than 100MB of unit tests could.
+

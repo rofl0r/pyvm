@@ -1,0 +1,266 @@
+__autosem__
+
+# Box Generation
+
+from html00 import html_whitespace
+from wwwlib.basic import font_cache
+from wwwlib.forms import ControlFactory
+from wwwlib.box import inline_box, block_boxi, block_box, table_row_box, table_box
+from wwwlib.box_obj import Image, iframe
+
+__bind__ = ["html_whitespace", "inline_box", "block_boxi", "block_box", "table_row_box"]
+
+def anon_box (css, boxes)
+	return block_boxi (None, css, boxes)
+
+# Given the DOM tree, produces the Box tree.
+# However, this is another very hairy thing and some times
+# the box tree doesn't look like a tree at all.
+
+class GenLayout
+{
+	method __init__ ($utf, $dom, $wfb, $page_url)
+	{
+		$browser = wfb.browser
+		$font_cache = font_cache
+		$CF = ControlFactory (self)
+		$image_list = []
+		$images = {}
+		$ionce = {}
+
+		$BlockBox         = $BlockBox
+		$InlineBox        = $InlineBox
+		$gen_block_boxes  = $gen_block_boxes
+		$gen_inline_boxes = $gen_inline_boxes
+
+		$wsctx = _buffer (8, 0)
+		$wsclean = $wsclean
+
+		$do_layout (dom, dom.css2)
+
+		del $BlockBox, $InlineBox, $gen_block_boxes, $gen_inline_boxes, $wsclean
+	}
+
+	method do_layout (dom, css)
+	{
+		bx = $BlockBox (dom, css)
+		$CF.complete ()
+		$root = bx
+	}
+
+	method Image (node)
+	{
+		if !(src = node.getattr ("src"))
+			return
+		I = Image (node, src, $page_url, $ionce)
+		if (!I.file) {
+			if (src and src not in $images)
+				$image_list<< src
+			$images.gather (src, I)
+		}
+		return I
+	}
+
+	method wsclean (ws, txt)
+		return html_whitespace ($wsctx, txt, ws)
+
+	method other_box (n)
+	{
+		if (n.parent.tag == "iframe") {
+			return iframe (n.parent)
+		}
+
+		gw = n.parent.css.get ("width")
+		if (gw -> float)
+			if (gw < 0)
+				gw = -int (n.parent.css2 ["font-size"] * gw)
+			else gw = None
+
+		if (g = $CF.makeNode (n.parent, gw)) {
+			g.content = True
+			html_whitespace ($wsctx, 0)
+			return g
+		}
+	}
+
+	method gen_inline_boxes (node)
+	{
+		b = []
+		bb = []
+		cs = node.css2
+		ws = cs ["white-space"]
+
+		for (n in node.kids) {
+			if.continue (!n.tag) {
+				if (!n.replaced) {
+					t = $wsclean (ws, n.text)
+					n.text = t
+					if(t) b.append (t)
+				} else if (n.parent.tag is "img") {
+					if (n = $Image (n.parent))
+						b.append (n)
+						html_whitespace ($wsctx, 0)
+				} else {
+					if (n = $other_box (n))
+						b.append (n)
+				}
+			}
+
+			csc = n.css2
+			d = csc ["display"]
+			if (d is "inline") {
+				for (x in $gen_inline_boxes (n))
+					if(!x.block) b.append (x)
+					else {
+						if (b) {
+							bb.append ($InlineBox (node, b, cs))
+							b = []
+						}
+						bb.append (x)
+					}
+			} else if (d is not "none") {
+				if (b) {
+					bb.append ($InlineBox (node, b, cs))
+					b = []
+				}
+				if (d is "block")
+					bb.append ($BlockBox (n, csc))
+				else if (d = $other_display (d, n, csc))
+					bb.append (d)
+				html_whitespace ($wsctx, 1)
+			}
+		}
+
+		if (bb) {
+			if(b) bb.append ($InlineBox (node, b, cs))
+			return bb
+		}
+		if(b) return [$InlineBox (node, b, cs)]
+		return []
+	}
+
+	method gen_block_boxes (node)
+	{
+		html_whitespace ($wsctx, 1)
+		rmv = []
+		i = []
+		b = []
+		ws = node.css2 ["white-space"]
+		for (n in node.kids) {
+			if.continue (!n.tag) {
+				if (!n.replaced) {
+					t = $wsclean (ws, n.text)
+					if(!t) rmv.append (n)
+					else if (t == " " and !i and !(ws&1))
+						rmv.append (n)
+					else i.append (t)
+				} else if (n.parent.tag is "img") {
+					if (n = $Image (n.parent))
+						i.append (n)
+					html_whitespace ($wsctx, 0)
+				} else {
+					if (n = $other_box (n))
+						i.append (n)
+				}
+			}
+
+			# child css
+			csc = n.css2
+			dpy = csc ["display"]
+			if (dpy is "inline") {
+				for (x in $gen_inline_boxes (n))
+					if(!x.block) i.append (x)
+					else {
+						if (i) {
+							b.append (anon_box (node.css2, i))
+							i = []
+						}
+						b.append (x)
+					}
+			} else if (dpy is not "none") {
+				html_whitespace ($wsctx, 1)
+				if (i) {
+					b.append (anon_box (node.css2, i))
+					i = []
+				}
+				if (dpy is "block")
+					b.append ($BlockBox (n, csc))
+				else if (dpy = $other_display (dpy, n, csc))
+					b.append (dpy)
+			}
+		}
+
+		if(rmv) node.removekids (rmv)
+
+		if (i) {
+			if (b) {
+				b.append (anon_box (node.css2, i))
+				return b
+			}
+			return i
+		}
+		return b
+	}
+
+	method other_display (d, n, csc)
+		if (d == "table")
+			return $TableBox (n, csc)
+		else {
+			print "other display:", d
+			return $BlockBox (n, csc)
+		}
+
+	method BlockBox (node, css)
+	{
+		boxes = $gen_block_boxes (node)
+		if (boxes and (boxes [0] -> str or boxes [0] => inline_box or boxes [0].content)) {
+			if (boxes [-1] == " " and !css ["white-space"])
+				boxes.pop ()
+			return block_boxi (node, css, boxes)
+		}
+		return block_box (node, css, boxes)
+	}
+
+	method TableBox (node, css)
+	{
+		rows = []
+		rmv = []
+		for (k in node.kids)
+			if (k.tag is "tr") 
+				rows<< k
+			else if (k.tag in ("thead", "tbody", "tfoot")) {
+				for (k in k.kids)
+					if (k.tag is "tr") 
+						rows<< k
+					else if (k.tag or k.replaced or !k.text.isspace ())
+						print "STRAY2", k
+			} else if (k.tag or k.replaced or !k.text.isspace ())
+				print "STRAY", k
+			else rmv<< k
+
+		if (rmv) {
+			node.removekids (rmv)
+			rmv = []
+		}
+
+		for (r in rows) {
+			cells = []
+			for (c in r.kids)
+				if (c.tag in ("td", "th"))
+					cells<< $BlockBox (c, c.css2)
+				else if (c.tag or c.replaced or !c.text.isspace ())
+					print "STRAY2", k
+				else rmv<< c
+			if (rmv) {
+				r.removekids (rmv)
+				rmv = []
+			}
+			__SET_ITER__ (table_row_box (cells, r, r.css2))
+		}
+
+		return table_box (node, css, rows)
+	}
+
+	method InlineBox (node, boxes, css)
+		return inline_box (node, boxes, css)
+}

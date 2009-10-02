@@ -1,0 +1,59 @@
+##  Helpers for wrapping xlib
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This module is used for wrapping libX11 directly through its abi.
+# Should be probably moved somewhere inside DLL, etc.
+__autosem__
+
+def int_array (n)
+	return array ('i', n)
+
+from DLL import MemcpyInts
+
+def straight_struct (*M)
+{
+	# can wrap a C structure where all the fields are int
+	# and maps 1:1 with an array object.
+	offs = M.index
+	lenM = len (M)
+
+	class S
+	{
+		sizeof = lenM
+
+		method __init__ (fromptr=None, fromarray=None, **kw)
+		{
+			if (fromarray is not None)
+				sd = $struct_data = fromarray
+			else {
+				sd = $struct_data = array ('i', lenM)
+
+				if (fromptr is not None)
+					MemcpyInts (sd, fromptr, lenM)
+			}
+
+			for (n, v in kw.iteritems ())
+				sd [offs (n)] = v
+		}
+
+		method __getattr__ (attr)
+			try return $__dict__ ['struct_data'][offs (attr)]
+			except return $__dict__ [attr]
+
+		method __setattr__ (attr, val)
+			try $__dict__ ['struct_data'][offs (attr)] = val
+			except $__dict__ [attr] = val
+
+		method getbuffer ()
+			return $__dict__ ['struct_data']
+	}
+
+	return S
+}
+
+def cast (cls, inst)
+	return cls (fromarray=inst.getbuffer ())

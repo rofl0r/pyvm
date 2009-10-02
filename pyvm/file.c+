@@ -1,0 +1,399 @@
+/*
+ *  Implementation of file object
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+static DictObj FileMethods __noinit ();
+static const char FileType [] = "file";
+static TypeObj FileTypeObj;
+
+#define USE_MMAP
+
+static final class FileObj : iteratorBase
+{
+	const char *const stype = FileType;
+	const TypeObj &type = &FileTypeObj;
+	DictObj *type_methods = &FileMethods;
+
+	REFPTR fnm;
+
+#ifdef	USE_MMAP
+	char *mm_start;
+	int mm_ptr, mm_len, mm_fd;
+#endif
+
+	filedes FD;
+	FDin *Fi;
+	FDout *Fo;
+   public:
+	FileObj (const char*, filedes);
+	FileObj (FDin*);
+	FileObj (FDout*);
+
+	bool Bool ()		{ return true; }
+	__object__ *xnext ();
+	void print ();
+	void flush ();
+
+	void write (StringObj*);
+	char *read (int*);
+	__object__ *r_marshal ();
+
+	~FileObj ();
+};
+
+static TypeObj FileTypeObj ctor (FileObj._v_p_t_r_);
+
+__object__ *open_file (const char *fn, int mode)
+{
+	// this *may* take time.  we should only release the gil if WOULDBLOCK
+	REFPTR F;
+	filedes FD;
+
+//		RELEASE_GIL
+		FD.ctor (fn, mode, true, true);
+//		ACQUIRE_GIL
+
+	F = new FileObj (fn, FD);
+	if_unlikely (FileObj.cast (F.o)->FD.type == FD_BAD)
+		RaiseIoError ();
+	return F.Dpreserve ();
+}
+
+__object__ *open_file_fd (int fd, int mode)
+{
+/*
+	FDout *fo = mode & (O_WRONLY|O_RDWR) ? new FDout (fd) : 0;
+	FDin *fi = (mode & O_RDWR) || !(mode & O_WRONLY) ? new FDin (fd) : 0;
+	return new FileObj (fi, fo);
+*/
+RaiseNotImplemented ("open_file_fd");
+return &None;
+}
+
+FDout *getFDout (__object__ *o)
+{
+	FileObj *F = FileObj.checkedcast (o);
+	if (!F->Fo)
+		RaiseIoError ();
+	return F->Fo;
+}
+
+FileObj.FileObj (FDin *F)
+{
+	iteratorBase.ctor (&None);
+	mm_start = 0;
+	Fi = F;
+	Fo = 0;
+	fnm.ctor ();
+	GC_ROOT ();
+}
+
+FileObj.FileObj (FDout *F)
+{
+	iteratorBase.ctor (&None);
+	mm_start = 0;
+	Fo = F;
+	Fi = 0;
+	fnm.ctor ();
+	GC_ROOT ();
+}
+
+FileObj.FileObj (FDin *fi, FDout *fo)
+{
+	iteratorBase.ctor (&None);
+	Fo = fo;
+	Fi = fi;
+	fnm.ctor ();
+}
+
+FileObj.FileObj (const char *fn, filedes F)
+{
+	iteratorBase.ctor (&None);
+	fnm.ctor (new StringObj (fn));
+#ifdef	USE_MMAP
+	mm_start = 0;
+#endif
+	Fi = 0;
+	Fo = 0;
+	FD.ctor (F);
+
+	switch (FD.type) {
+		case FD_BAD: return;
+		ncase FD_READ: Fi = new FDin (&FD);
+		ncase FD_WRITE: Fo = new FDout (&FD);
+		ncase FD_RW: Fi = new FDin (&FD); Fo = new FDout (&FD);
+		ncase FD_READ_MMAP:
+			mm_start = FD.mm_start;
+			mm_len = FD.len;
+			mm_ptr = 0;
+	}
+}
+
+static REFPTR cslot;
+
+__object__ *FileObj.xnext ()
+{
+#ifdef	USE_MMAP
+	if (mm_start) {
+		if_unlikely (mm_ptr >= mm_len)
+			RaiseStopIteration ();
+		char *p = (char*) memchr (mm_start + mm_ptr, '\n', mm_len - mm_ptr);
+		int nn = p ? p + 1 - mm_start : mm_len;
+		cslot.ctordtorstr (new StringObj binctor (mm_start + mm_ptr, nn - mm_ptr));
+		mm_ptr = nn;
+		return cslot.o;
+	}
+#endif
+	if_unlikely (!Fi)
+		RaiseNotImplemented ("File is not open for reading");
+
+	IOline L;
+
+	if_unlikely (!Fi->readline (L))
+		RaiseStopIteration ();
+	cslot.ctordtorstr (new StringObj allocated (L.s, L.len));
+	return cslot.o;
+}
+
+void FileObj.print ()
+{
+	print_out (STRL ("File object on "), fnm.o);
+}
+
+void FileObj.write (StringObj *S)
+{
+	if_unlikely (!Fo)
+		RaiseNotImplemented ("File is not open for writing");
+	Fo->writedt (S->str, S->len);
+}
+
+void FileObj.seek (int offset)
+{
+#ifdef	USE_MMAP
+	if (mm_start) {
+		mm_ptr = min (offset, mm_len);
+		return;
+	}
+#endif
+	if_unlikely (!Fi)
+		RaiseNotImplemented ("File is not open for reading");
+	if (!Fi->seek (offset))
+		RaiseNotImplemented ("Can't seek this file");
+}
+
+char *FileObj.read (int *N)
+{
+#ifdef	USE_MMAP
+	/* memory mapped files and blocking.
+	 * How can we check whether reading from mmaped memory will block?
+	 * maybe read zero bytes from the file descriptor??
+	 * For now release the GIL anyway
+	 */
+	if (mm_start) {
+		// XXX: Check EOF
+		int nn = *N;
+		if (nn == -1)
+			*N = nn = mm_len - mm_ptr;
+		else nn = *N = min (mm_len - mm_ptr, *N);
+		char *ret = seg_alloc (nn + 1);
+		/* if we have a file().read() to read all the data, it is
+		 * faster to use the read() system call instead of memcpying
+		 * the mmaped address.  Tested in linux 2.6.8
+		 */
+//		RELEASE_GIL
+		if (!(!mm_ptr && nn == mm_len && FD.read_all (ret, nn)))
+			memcpy (ret, mm_start + mm_ptr, nn);
+		ret [nn] = 0;
+//		ACQUIRE_GIL
+		mm_ptr += nn;
+		return ret;
+	}
+#endif
+	// plain old read() happens if: 1) the file is larger than 2MB or it
+	// was not possible to mmap it (stdin, for example)
+	if_unlikely (!Fi)
+		RaiseNotImplemented ("File is not open for reading");
+	if (*N != -1) {
+		if_unlikely (*N & 0xf0000000)	// probably bug
+			RaiseNotImplemented ("File.read: bad size");
+		char *s = Fi->readn (N);
+		if (s) return s;
+	} else {
+		// read until EOF. inefficient as it uses constant reallocs.
+		// on the other hand, it is not used much in the Lib source,
+		// we either `readfile()` which is different, or not use
+		// read() without an argument.
+		*N = 8192;
+		char *s = Fi->readn (N);
+		if (!s) RaiseNotImplemented ("OS error in read ()");
+		if (*N != 8192)
+			return s;
+		int nn = 8192;
+		for (;;) {
+			char *s2 = Fi->readn (N);
+			if (!s2) {
+				RaiseNotImplemented ("OS error in read ()");
+				seg_free (s);
+			}
+			if (*N) {
+				s = seg_realloc2 (s, nn + 1, nn + *N + 1);
+				memcpy (s + nn, s2, *N + 1);
+				seg_free (s2);
+				nn += *N;
+			}
+			if (*N != 8192) {
+				*N = nn;
+				return s;
+			}
+		}
+	}
+	RaiseNotImplemented ("OS error in read ()");
+}
+
+__object__ *FileObj.r_marshal ()
+{
+#ifdef	USE_MMAP
+	if (mm_start) {
+		if_unlikely (mm_ptr >= mm_len)
+			RaiseEOFError ();
+		return r_marshal ((byte*) mm_start + mm_ptr, mm_len - mm_ptr, &mm_ptr);
+	}
+	RaiseNotImplemented ("IOError in marshal:load");
+#else
+	RaiseNotImplemented ("Can't marshal:load without mmaped files");
+#endif
+}
+
+void FileObj.flush ()
+{
+	if (Fo) Fo->flush ();
+}
+
+void FileObj.close ()
+{
+	if (Fi) delete Fi;
+	if (Fo) {
+		Fo->flush ();
+		delete Fo;
+	}
+	Fo = 0;
+	Fi = 0;
+}
+
+FileObj.~FileObj ()
+{
+	close ();
+}
+
+/* ---------* *---------*/
+
+/* read a marshal python object from a file */
+__object__ *load_marshal (REFPTR argv[])
+{
+	 return FileObj.checkedcast (argv [0].o)->r_marshal ();
+}
+
+modsection static __object__ *write_file (REFPTR argv [])
+{
+	StringObj *S = StringObj.checkedcast (argv [1].o);
+	FileObj.checkedcast (argv [0].o)->write (S);
+	return &None;
+}
+
+modsection static __object__ *writef_file (REFPTR argv [])
+{
+	StringObj *S = StringObj.checkedcast (argv [1].o);
+	FileObj.checkedcast (argv [0].o)->write (S);
+	FileObj.cast (argv [0].o)->flush ();
+	return &None;
+}
+
+modsection static __object__ *read_file (REFPTR argv [], int argc)
+{
+	int N = argc == 2 ? IntObj.checkedcast (argv [1].o)->i : -1;
+	char *data = FileObj.checkedcast (argv [0].o)->read (&N);
+	return new StringObj allocated (data, N);
+}
+
+_module __object__ *flush_file (REFPTR argv[])
+{
+	FileObj.checkedcast (argv [0].o)->flush ();
+	return &None;
+}
+
+_module __object__ *close_file (REFPTR argv[])
+{
+	FileObj.checkedcast (argv [0].o)->close ();
+	return &None;
+}
+
+_module __object__ *seek_file (REFPTR argv[], int argc)
+{
+//	int N = argc == 3 ? argv [2].CheckInt ()->i : 0;
+	FileObj.checkedcast (argv [0].o)->seek (argv [1].CheckInt ()->i);
+	return &None;
+}
+
+static const method_attribute file_methods [] = {
+	{ "close",	"file.close",  SETARGC (1, 1), close_file },
+	{ "read",	"file.read",   SETARGC (1, 2), read_file },
+	{ "flush",	"file.flush",  SETARGC (1, 1), flush_file },
+	{ "write",	"file.write",  SETARGC (2, 2), write_file },
+	{ "writef",	"file.writef", SETARGC (2, 2), writef_file },
+	{ "seek",	"file.seek",   SETARGC (2, 2), seek_file },
+	MENDITEM
+};
+
+void check_file (__object__ *o)
+{
+	FileObj.typecheck (o);
+}
+
+extern __object__ *RaiseEOFError ();
+
+__object__ *raw_input (REFPTR argv[], int argc)
+{
+	IOline L;
+
+	if (!STANDARD_INPUT)
+		RaiseNotImplemented ("raw_input: stdin is not a terminal");
+
+	if (argc) {
+		OUT->print (argv [0].CheckString ()->str);
+		OUT->flush ();
+	}
+
+	STANDARD_INPUT->readline (L);
+	if (!L.len)
+		RaiseEOFError ();
+
+	return new StringObj allocated (L.s, L.len);
+}
+
+//////////////////////////////// initialize //////////////////////////////////////
+
+__object__ *stdoutObj, *stdinObj, *stderrObj;
+
+static	slowcold class InitFile : InitObj
+{
+	int priority = INIT_ATTR;
+	void todo ()
+	{
+		// xxx: if stdin isatty() it doesn't make much sense to
+		// open it as a stream
+		cslot.ctor (new StringObj (""));
+		FileMethods.ctor (file_methods);
+		stdoutObj = new FileObj (OUT);
+		stderrObj = new FileObj (ERR);
+		stdinObj = new FileObj (STANDARD_INPUT);
+	}
+};

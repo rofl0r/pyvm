@@ -1,0 +1,171 @@
+# There are two ways to play an audio CD
+# 1) Tell to the CD Drive and the Soundcard to cooperate and play (the lame way)
+# 2) Read tracks from the CD (S16LE) and send them to the sound card (the leet way)
+# Nevertheless, why bother putting CDs in/out of the drive when you can
+# have _all_ of your music in your hard disk as mp3s?
+#
+# So the main thing we're interested in is CD ripping.
+# This program can read the CD Table Of Contents, read raw tracks, and
+# eventually we want to use all this for conversion to mp3.
+#
+# This code uses the /dev/cdrom device of the linux operating system.
+# It may not work if:
+#	- you're not using linux
+#	- the drive is already automatically mounted as a filesystem by your
+#	distribution with the use of the cdfss module
+#	- the link of /dev/cdrom (usually /dev/hdc) is not readable by users
+#	  (`chown a+r /dev/hdc` as root).  This is usually the default setting!
+#
+# It requires some external programs to encode to mp3. ffmpeg can't do it yet.
+# (todo: we can encode to ogg or something alternatively)
+
+__autosem__
+
+import os
+from misc import fprint, tmpfifo
+
+C = @DLL.Import ("cd", "-O2 -Wall", pelf=False)
+
+FRAME_SIZE = C.frame_size
+nostdin ()
+
+USAGE = """usage: CD "ls" | <n> <outfile> | "all" <prefix> | "mount" <mount-point> | "eject"
+
+ "ls" shows a list of tracks.
+ "eject" eject the cd (mustn't be a mounted data cd)
+
+Convert tracks from the audio CD to mp3.
+ "all" will convert all tracks with <prefix>%i.mp3.  <prefix> can be a directory.
+ <n> will convert the specified track to mp3.
+
+Mount into the filesystem:
+ "mount" will mount the cd as a filesystem into the mount-point. Tracks can be
+   played with `pyvm wav -r <track-name>`
+"""
+
+cmd = sys.argp.pop_one_arg ()
+
+if (cmd == "eject") {
+	print "eject() returned:", C.eject ("/dev/cdrom")
+	exit ()
+} if (cmd == "mount") {
+	mount_point = sys.argp.one ()
+} else if (cmd == "all") {
+	d = sys.argp.one ()
+	prefix = d + "%i.mp3"
+} else if (cmd != "ls") {
+	try cmd = int (cmd)
+	except sys.argp.help ()
+	outfile = sys.argp.one ()
+}
+
+fd = C.opencd ("/dev/cdrom")
+if (fd < 0)
+	raise Error (fd == -1 ? "Permission denied on /dev/cdrom?" : "Error opening CD")
+out = array ("i", 100);
+if (C.cdls (fd, out) < 0)
+	raise Error ("Failed reading CD TOC")
+out = list (out)
+out = out [:out.index (-1)]
+toc = [ (out [i], out [i+1] - out [i]) for (i in *(len (out) - 1))]
+
+if (cmd == "mount") {
+	# ----------- CDFS -------------
+	files = { "/track%i"%n: i for (n, i in enumerate (toc)) }
+
+	class cdfs
+	{
+		ReadOnly = True
+
+		method do_getattr (path)
+			if (path == "/")
+				return "dr--r--r--"
+			else if (path in files)
+				return "-r--r--r--", files [path][1] * FRAME_SIZE
+
+		method do_readdir (path)
+			if (path == "/")
+				return [x [1:] for (x in files)]
+
+		method do_open (path, flags)
+			return path in files
+
+		method do_read (offset, size, path)
+			if (path in files) {
+				coffs, clen = files [path]
+				sk = offset / FRAME_SIZE
+				coffs += sk
+				clen -= sk
+				offset = offset % FRAME_SIZE
+				data = []
+				while (size > 0 and clen > 0) {
+					out = _buffer (FRAME_SIZE, 0)
+					if (C.read_frames (fd, coffs, 1, out))
+						print "ERROR!"
+					data.append (out)
+					coffs += 1
+					clen -= 1
+					size -= FRAME_SIZE
+				}
+				data = "".join (data)
+				if (size < 0)
+					data = data [:size]
+				return data
+			}
+	}
+	@fuse.fuse.mounter (mount_point, cdfs()).run()
+	C.closecd (fd)
+	exit ()
+}
+
+if (cmd == "ls") {
+	i = 0
+	for (None, length in toc) {
+		t = length / 75
+		print "#%i %i:%02i (%i)" %(i, t/60, t%60, length)
+		i += 1
+	}
+	exit ()
+}
+
+if (encoder = os.findexe ("lame"))
+	E = [encoder, "--quiet", "-r", 1, 2]
+# i like bladeenc but ffmpeg complains
+else if (encoder = os.findexe ("bladeenc"))
+	E = [encoder, "-quiet", 1, 2]
+else {
+	print "No external encoder :("
+	exit ()
+}
+
+def encode_file (ith, outfile)
+{
+	print "Ripping track #%i to %s" %(ith, outfile)
+	fifo = tmpfifo ()
+	E [-2] = fifo.fnm
+	E [-1] = outfile
+	os.execbin_bg (*E)
+	fifo.openw ()
+	offset, length = toc [ith]
+	errors =0
+
+	# (perhaps buffering would make sense?)
+	out = _buffer (FRAME_SIZE)
+	for (i in *length) {
+		if (C.read_frames (fd, offset+i, 1, out)) {
+			errors += 1
+			print "ERROR!"
+		} else fprint ("\r%i/%i" %(i, length))
+		fifo.write (out)
+	}
+	print
+	if (errors) print "%i errors out of %i" %(errors, length)
+	fifo.close ()
+}
+
+if (cmd == "all") {
+	for (i in *len (toc))
+		encode_file (i, prefix %i)
+} else decode_file (cmd, outfile)
+
+C.closecd (fd)

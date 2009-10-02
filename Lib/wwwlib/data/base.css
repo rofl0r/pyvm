@@ -1,0 +1,109 @@
+/*
+Base User-agent supplied css. 
+This is a TEMPLATE. $TABLEDISPLAY must be replaced to "table" or "block" before
+this file can be used.
+
+With no other stylesheets, this achieves "classic HTML" style but also
+provides sane initial values for various propties, plus some special
+pyvm stuff. This css is parsed with $authoritative==True and it can
+do stuff that is not allowed in external stylesheets.
+*/
+
+/* default values for non-inherited properties */
+* {
+	display: inline;
+	margin: 0;
+	padding: 0;
+	border: medium none;
+}
+
+html      { color: black; text-decoration: none }
+a:link    { color: #1010ee; /*text-decoration: underline*/ }
+a:visited { color: #d44; /*text-decoration: underline*/ }
+
+/* initial values of inherited properties */
+html {
+	font: normal normal normal medium/normal serif;
+	white-space: normal;
+
+	/* page background */
+	background: white;
+}
+
+/* moz has "margin: 8px" for body. What's strange though is that the "background" for
+   body somehow applies to the "html" tag, ?!?
+   Give padding: 8px to have the same effect */
+body {
+	padding : 8px
+}
+
+/* font info */
+h1              { font-size: 2em }
+h2              { font-size: 1.5em }
+h3              { font-size: 1.17em }
+h5              { font-size: .83em }
+h6              { font-size: .67em }
+h1, h2, h3, h4,
+h5, h6, b, th,
+strong          { font-weight: bolder }
+i, cite, em,
+var, address    { font-style: italic }
+pre, tt, code,
+kbd, samp       { font-family: monospace }
+big             { font-size: 1.17em }
+small, sub, sup { font-size: .83em }
+
+/* margins */
+blockquote, ul,
+fieldset, /*form,*/
+ol, dl, dir,
+menu            { margin: 1.33em 0 }
+p               { margin: 1.33em 0 }
+blockquote      { margin-left: 40px; margin-right: 40px }
+ol, ul, dir,
+menu, dd        { margin-left: 40px }
+h1              { margin: .67em 0 }
+h2              { margin: .83em 0 }
+h3              { margin: 1em 0 }
+h4              { margin: 1.33em 0 }
+h5              { margin: 1.67em 0 }
+h6              { margin: 2.33em 0 }
+ul ul, ul ol,
+ol ol, ol ul    { margin-top: 0; margin-bottom: 0 }
+pre		{ margin: 1em 0 }	/* in moz */
+/*td		{ padding: 1px }*/
+
+/*td, th		{ border: thin solid #888888 }*/
+
+/* white-space */
+pre             { white-space: pre }
+
+/* hr effect */
+hr		{ border-top: 1px solid; margin-top: .5em; margin-bottom: .5em }
+
+/* display */
+table {
+	display: $TABLEDISPLAY;
+	white-space: normal;
+	/* go figure. depending on the existance of a DOCTYPE attribute, the rule
+	   below, may or may not apply */
+	font: normal normal normal medium/normal serif;
+}
+
+address, blockquote, body, dd, div, dl, dt, fieldset, form,
+frame, frameset, h1, h2, h3, h4, h5, h6, iframe, noframes,
+object, ol, p, ul, applet, center, dir, menu, pre, li,
+tr, td, th, html, hr
+		{ display: block }
+script, style, option
+		{ display: none }
+
+/* centering. 'text-align' does not center "blocks". mozilla uses the -moz-center prop */
+table			{ text-align: left }
+div[align=center]	{ text-align: center }
+center			{ text-align: center }
+table			{ border-spacing: 2px }
+br[clear=left]		{ clear: left; display: block }
+br[clear=right]		{ clear: right; display: block }
+br[clear=all]		{ clear: both; display: block }
+br:before		{ content: "\A"; white-space: pre }

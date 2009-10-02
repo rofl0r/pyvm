@@ -1,0 +1,45 @@
+##  TLS Pseudo-Random Function (PRF)
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+import md5, sha;
+from hmac import hmac;
+
+def P_hash (digest, secret, seed, length)
+{
+	A = seed;
+	h = "";
+	do {
+		A = hmac (secret, A, digest);
+		h += hmac (secret, A + seed, digest);
+	} while (len (h) < length)
+	return [ord (i) for (i in h [:length])];
+}
+
+# Given a secret, a label and a seed, generate content of `length` bytes
+# PRF ("secretPassword", "For the banner", "RandomString", 48)
+
+def PRF (secret, label, seed, length)
+{
+	l = len (secret)/2;
+	return "".join ([
+		chr (i1 ^ i2)
+		for (i1, i2 in zip (
+			P_hash (md5.digest, secret [:l], label+seed, length),
+			P_hash (sha.digest, secret [l:], label+seed, length)))
+	]);
+}
+
+def PRFSSL (secret, seed, length)
+{
+	out = "";
+	for (i in *26) {
+		A = chr (ord ("A") + i) * (i + 1);
+		out += md5.digest (secret + sha.digest (A + secret + seed));
+		if (len (out) >= length)
+			return out [:length];
+	}
+}

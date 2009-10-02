@@ -1,0 +1,217 @@
+/*
+ *  time module
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+/* clock */
+
+_module __object__ *clock_time ()
+{
+	return new FloatObj ((double) clock () / CLOCKS_PER_SEC);
+}
+
+/* time */
+
+_module __object__ *time_time ()
+{
+	struct timeval t;
+	gettimeofday (&t, 0);
+	return new FloatObj ((double) t.tv_sec + (double) t.tv_usec * 0.000001);
+}
+
+/* strftime */
+
+_module __object__ *strftime_time (REFPTR argv[])
+{
+	char *fmt = argv [0].CheckString ()->str;
+	Tuplen *T = Tuplen.checkedcast (argv [1].o);
+
+	if (T->len != 9)
+		RaiseNotImplemented ("strftime error");
+
+	struct tm TM;
+
+	TM.tm_year = IntObj.cast (T->__xgetitem__ (0))->i - 1900;
+	TM.tm_mon = IntObj.cast (T->__xgetitem__ (1))->i - 1;
+	TM.tm_mday = IntObj.cast (T->__xgetitem__ (2))->i;
+	TM.tm_hour = IntObj.cast (T->__xgetitem__ (3))->i;
+	TM.tm_min = IntObj.cast (T->__xgetitem__ (4))->i;
+	TM.tm_sec = IntObj.cast (T->__xgetitem__ (5))->i;
+	TM.tm_wday = (IntObj.cast (T->__xgetitem__ (6))->i + 1) % 7;
+	TM.tm_yday = IntObj.cast (T->__xgetitem__ (7))->i - 1;
+	TM.tm_isdst = IntObj.cast (T->__xgetitem__ (8))->i;
+
+	char buffer [100];
+	return new StringObj binctor (buffer, strftime (buffer, sizeof buffer - 1, fmt, &TM));
+}
+
+_module __object__ *mktime_time (REFPTR argv[])
+{
+	Tuplen *T = Tuplen.checkedcast (argv [0].o);
+
+	if (T->len != 9)
+		RaiseNotImplemented ("mktime error");
+
+	struct tm TM;
+
+	TM.tm_year = IntObj.cast (T->__xgetitem__ (0))->i;
+	TM.tm_mon = IntObj.cast (T->__xgetitem__ (1))->i;
+	TM.tm_mday = IntObj.cast (T->__xgetitem__ (2))->i;
+	TM.tm_hour = IntObj.cast (T->__xgetitem__ (3))->i;
+	TM.tm_min = IntObj.cast (T->__xgetitem__ (4))->i;
+	TM.tm_sec = IntObj.cast (T->__xgetitem__ (5))->i;
+	// tm_wday, tm_yday are ignored by mktime
+	TM.tm_isdst = IntObj.cast (T->__xgetitem__ (8))->i;
+
+	// (should do in python, time.py)
+	return newIntObj (mktime (&TM));
+}
+
+/* sleep
+ *
+ * Generally, time.sleep() does not guarantee any accuracy;
+ * it's more like "delay at least for ..."
+ *
+ */ 
+
+extern __object__ *vmsleep (long long int);
+
+_module __object__ *TimeTravel (REFPTR argv[])
+{
+	// sleep() actually moves the program `x` seconds in the future.
+	double future = FloatObj.isinstance (argv [0].o) ? argv [0].as_double->f
+		: argv [0].CheckInt ()->i;
+	struct timeval t;
+	t.tv_sec = floor (future);
+	t.tv_usec = fmod (future, 1.0) * 1000000.0;
+	unsigned long long tt = t.tv_sec;
+	tt = tt * 1000000 + t.tv_usec;
+
+	/* stackless sleep */
+	if (1 && CAN_VMPOLL)
+		return vmsleep (tt);
+
+	RELEASE_GIL
+	select (0, 0, 0, 0, &t);
+	ACQUIRE_GIL
+
+	return &None;
+}
+
+/* localtime, gmtime */
+
+_module __object__ *localtime_time (REFPTR argv[], int argc)
+{
+	return local_or_gm (argv, argc, localtime);
+}
+
+_module __object__ *gmtime_time (REFPTR argv[], int argc)
+{
+	return local_or_gm (argv, argc, gmtime);
+}
+
+_module __object__ *local_or_gm (REFPTR argv[], int argc, struct tm *(*f)(const time_t*))
+{
+	time_t t;
+	if (!argc) t = time (0);
+	else if (IntObj.isinstance (argv [0].o)) t = argv [0].as_int->i;
+	else t = (time_t) FloatObj.checkedcast (argv [0].o)->f;
+
+	struct tm *T = f (&t);
+	return new Tuplen (
+		newIntObj (T->tm_year + 1900),
+		newIntObj (T->tm_mon + 1),
+		newIntObj (T->tm_mday),
+		newIntObj (T->tm_hour),
+		newIntObj (T->tm_min),
+		newIntObj (T->tm_sec),
+		newIntObj ((T->tm_wday + 6) % 7),
+		newIntObj (T->tm_yday + 1),
+		newIntObj (T->tm_isdst)
+	);
+}
+
+/* CPU ticks time */
+
+#if defined(__i386__)
+static long long get_ticks ()
+{
+	long long val;
+	asm volatile ("rdtsc" : "=A" (val));
+	return val;
+}
+#elif defined(__x86_64__)
+static long long get_ticks ()
+{
+	unsigned int low, high;
+	long long val;
+	asm volatile ("rdtsc" : "=a" (low), "=d" (high));
+	val = high;
+	val <<= 32;
+	val |= low;
+	return val;
+}
+#else
+#warning This architecture does not have CPU Ticks!
+static long long get_ticks ()
+{
+	return 0;
+}
+#endif
+
+_module __object__ *cpu_ticks ()
+{
+	long long ll;
+	StringObj *s = new StringObj binctor ((char*) &ll, sizeof ll);
+	*(long long*)(s->str) = get_ticks ();
+	return s;
+}
+
+_module __object__ *cpu_dt (REFPTR argv[])
+{
+	long long t1 = get_ticks ();
+	long long t0;
+	if (argv [0].o == &None) t0 = 0;
+	else t0 = *(long long*) argv [0].check_string ()->str;
+	char tmp [50];
+	sprintf (tmp, "%lli", t1 - t0);
+	return new StringObj (tmp);
+}
+
+/* module */
+
+static bltinfunc funcs [] = {
+	{ "clock",	0, clock_time },
+	{ "localtime",	SETARGC (0, 1), localtime_time },
+	{ "gmtime",	SETARGC (0, 1), gmtime_time },
+	{ "time",	0, time_time },
+	{ "sleep",	SETARGC (1, 1), TimeTravel },
+	{ "strftime",	SETARGC (2, 2), strftime_time },
+	{ "mktime",	SETARGC (1, 1), mktime_time },
+	{ "cpu_ticks",	SETARGC (0, 0), cpu_ticks },
+	{ "cpu_dt",	SETARGC (1, 1), cpu_dt },
+	BENDITEM
+};
+
+slowcold __object__ *import__time ()
+{
+	tzset ();
+	Tuplen *tznamet = new Tuplen (new StringObj (tzname [0]), new StringObj (tzname [1]));
+	varval values [] = {
+		{"daylight", newIntObj (daylight)},
+		{"timezone", newIntObj (timezone)},
+		{"tzname",   tznamet},
+		VENDITEM
+	};
+
+	ModuleObj *ns = new ModuleObj BltinModule ("_time", funcs, 0, values);
+	return ns;
+}

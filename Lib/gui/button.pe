@@ -1,0 +1,83 @@
+__autosem__
+from label import label
+
+# currently, backslashes in the button text are used to underline
+# hotkeys. But *not* actually do hotkey-on-keypress. that should
+# be done by the main key control function.
+
+class button (label)
+{
+	method Init (t, **kw)
+	{
+		try f = kw ['font']
+		except f = kw ['font'] = $A.buttonfont
+
+		if ($tabgroup = kw.pop ("tabgroup", False))
+			$enter_tabgroup ()
+
+		if ('w' not in kw)
+			if ("alignto" in kw)
+				kw ["w"] = kw.pop ("alignto").w
+			else kw ['w'] = f.isizeof (" " + t + " ") + 10
+
+		if ('h' not in kw)
+			kw ['h'] = f.size ()[1] + 2
+
+		if ('Action' in kw) $Action = kw.pop ('Action')
+		$maxw, $maxh = kw ['w'], kw ['h']
+		label.Init (self, t, **kw)
+	}
+
+	button_init = Init
+
+	method active_color ()
+		return $enabled ? $A.color_txt : $A.color_shaded;
+
+	method onKey (k)
+		if (k in ' \n') {
+			$onClick (0, 0);
+			return 1;
+		} else if (k in ("\t", "DOWN"))
+			return $nextKeyWidget ()
+		else if (k == "UP")
+			return $prevKeyWidget ()
+
+	method DrawText ()
+	{
+		t = $t;
+		while ($font.sizeof (t) > $w and t)
+			t = t [:-1];
+		fg = $enabled ? $A.color_txt : $A.color_shaded;
+		$draw_ulstring (t, $tx, $ty, fg, $font, $wm.color_button_bg, maxw=$w);
+	}
+
+	method Draw ()
+	{
+		$draw_blank ($wm.color_button_bg);
+		$outline ('raised', funky=0);
+		$DrawText ();
+	}
+
+	method ClickEffect ()
+	{
+		$outline ('sunken');
+		$A.flush ();
+		$wm.sleep (0.1);
+		$Draw ();
+		$A.flush ();
+	}
+
+	method onClick (x, y)
+	{
+		if (not $enabled)
+			return;
+
+		$ClickEffect ();
+		$Action ();
+	}
+
+	method Click ()
+		$onClick (0, 0);
+
+	Action = void;
+}

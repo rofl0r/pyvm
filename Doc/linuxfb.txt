@@ -1,0 +1,117 @@
+Linux Framebuffer backend
+-------------------------
+
+The linuxfb backend is a very lightweight and fast backend for pyvm.
+Once activated, you can run stuff like the web browser from the linux
+console.
+
+The linuxfb is by default disabled because there is a small chance it
+may crash until properly set up and that shouldn't happen to people who
+accidentially run an application that uses the GUI from the console.
+
+In order to enable linuxfb run
+
+	pyvm sysconfig set startfbgui yes
+
+
+* * * WARNING * * *
+
+ The linuxfb module grabs the linux terminal console in raw mode and this
+ means that if pyvm crashes and fails to restore the console properly this
+ can require a cold reboot (power-off).  This is happening to developers
+ evey once in a while, and it is supposed to become more rare in the future.
+
+
+Setup
+-----
+
+1. First of all, the kernel must support linux framebuffer with the
+correct driver and the optimum resolution/depth.  I don't know what
+linux distributions do.  Maybe some of them just use VESA for the
+logo and let X Windows initialize the graphics.  Checkout dmesg
+and possibly add command-line options to the boot line.  It is
+also possible that the correct linux fb is already properly set
+up by your distribution.
+
+pyvm works best with bit depths of 16 and 32 bpp on a standard
+little endian system (PC). Anything else may be wrong.
+
+"vesafb" works but a custom driver is *much* better (smooth
+scrolling consoles, instant vt switch, etc)
+
+2. In order for linuxfb to work the devices:
+
+	/dev/tty0
+	/dev/input/mice
+	/dev/fb0
+
+MUST be 'rw' by the user. So something like
+
+	su
+	chmod a+rw /dev/tty0
+
+would do it. It seems that by default only the superuser can
+rw those files and that is why the X Windows program is setuid
+root.
+
+
+Running
+-------
+
+For a first test you can run
+
+	pyvm backend_linux &> e; cat e
+
+and press about 20 keys for it to terminate.  It is not a bad idea to
+type
+
+	sleep 100 && reboot
+
+in another VT as a superuser in case linuxfb freezes (which is unlikely).
+If this all works, you are ready to enter the amazing linuxfb experience.
+
+It is possible to switch to another VT with CTRL-ALT-LEFT and CTRL-ALT-RIGHT
+keys.
+
+
+Emergency shutdown
+------------------
+
+For one, linuxfb is killed with CTRL-ALT-BACKSPACE.
+However this assumes that the vm is running properly and processing keypress
+events. In case the VM has entered an infinite loop or some other badness:
+
+	  Click the mouse many times. At the moment the linuxfb.c code
+	  has a watchdog which will shutdown the graphics mode if it
+	  detects too many unprocessed click events.
+
+
+Acceleration
+------------
+
+Currently there is no acceleration for the framebuffer. However, people
+should know that there is no acceleration in SDL-on-X11 and X11 apps
+that use the XShm method (and those that do not, lose elsewhere) either!
+And that is not a problem!
+
+For typical desktop programs like a web browser, word processor, mail
+reader, text editor, terminal emulator, etc, hardware acceleration is
+not required; these are applications that respond to user input and
+usually can perform all the drawing they want within the maximum
+frame rate in *software*. There are indeed a very few possibilities
+to use the 2D acceleration primitives and it doesn't really matter.
+
+A special kind of acceleration is the xvideo routines which can be
+used for example to convert YUV to RGB by the GPU. This is interesting
+but ffmpeg is starting to use more and more GPU stuff. It is a todo
+to add this to the framebuffer backend as soon as the kernel DRM is
+ready.
+
+On OpenGL there are objections from some hackers about whether it is
+a really useful standard that uses the features of the GPU, or it's
+useful only for glgears. The fact is that the GPU is a good thing to
+use but:
+	1) it's useful for games and demos.
+	2) GPU features may be exposed to userspace without having
+	   to grab the video device, so we are waiting to see what's
+	   going to happen on that front.

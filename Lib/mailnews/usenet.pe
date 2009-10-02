@@ -1,0 +1,535 @@
+##  NNTP protocol and message index
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+#
+# USENET backend
+#
+# This module has both the NNTP-client code and the NNTP-mailbox
+# code.  Unlike email, in the case of USENET we want to leave the
+# messages on the server and download on-demand.  Therefore we
+# are just maintaining an "index file" which is info about the
+# articles of a newsgroup.  From that, the user should be able
+# to select which articles to view.
+#
+
+from re import re, IGNORECASE
+
+from misc import fprint
+
+HEADe = re (r'\d+\s+(<.*?>)')
+
+UDIR = @sysconfig.GETCONF ("usenetdir")
+
+# nntp client - RFC 977, 2980
+
+# Given a line of References: find the In-Reply-To message ID.
+# Normally that would be the last reference (r.split()[-1]).
+# However, mailman breaks threading in the case of mail<->news gateways
+# because it replaces the original Message-ID with a new ID when a
+# message from usenet is posted to the mailing list. That is completely
+# unacceptable. To solve it we ignore any message ids from mailman,
+# (this is how broken threading appears in thunderbird too)
+#
+# Btw, note that for usenet, "references" is acquired from the
+# XOVER command which returns selected headers. iow, not all
+# message headers are available.
+
+class EOF;
+
+def getref (r)
+{
+	for (r in r.split ().reverse ())
+		if (!r.sw ("<mailman."))
+			return r
+	return ""
+}
+
+class nntp
+{
+	group = None
+
+	method __init__ ($serv, $port=119)
+		$connect ()
+
+	method connect ()
+	{
+		$s = @socket.Connect ($serv, $port, 23)
+		g = $greeting = $s.recv ()
+		#print "Connected:", $greeting
+		if (g.sw ("200")) $posting = True
+		else if (g.sw ("201")) $posting = False
+		else raise Error ("Connection failed")
+		$r = $s.socketfile ()
+		if ($group)
+			$GROUP ($group)
+	}
+
+	method cmd (s, recon=True)
+	{
+		$s.send (s + '\r\n')
+		if !(r = $r.readline ())
+			raise EOF
+		return int (r [:3]), r [4:]
+	}
+
+	method getdata ()
+	{
+		buf = $r.recv ()
+		while (!buf.ew ('\r\n.\r\n'))
+			buf += $r.recv ()
+		return buf [:-3].replace ('\r\n', '\n').replace ('\n.', '\n')
+	}
+
+	method lines_cmd (cmd, okstatus)
+	{
+		r, l = $cmd (cmd)
+		if (r != okstatus)
+			raise Error ("%s failed [%s]" %l)
+		for (r in $r.readlines_rstr ())
+			if (r == ".") break
+			else yield r
+	}
+
+	#
+	method LIST ()
+		for (l in $lines_cmd ("LIST", 215))
+			yield l
+
+	method GROUP ($group)
+	{
+		r, l = $cmd ("GROUP %s" %$group)
+		if (r != 211)
+			raise Error ("No such group [%s] (%i)" %($group, r))
+		$tot, $first, $last = [int (x) for (x in l.split ()[:3])]
+	}
+
+	method STAT (n)
+	{
+		if (n -> int) n = str (n)
+		r, l = $cmd ("STAT %s" %n)
+		if (r == 223)
+			return HEADe (l)[1]
+		raise Error
+	}
+
+	method HEAD (n)
+	{
+		if (n -> int) n = str (n)
+		r, l = $cmd ("HEAD %s" %n)
+		if (r != 221)
+			raise Error ("HEAD = %i" %r)
+		return HEADe (l)[1], dict (parse_headers ($getdata () [:-1]))
+	}
+
+	method ARTICLE (id)
+	{
+		r, l = $cmd ("ARTICLE %s" %id)
+		if (r == 430)
+			raise Error
+		return $getdata ()
+	}
+
+	# yield basic info for a range of articles
+
+	method xoverviews (first, last, knownIDs=None)
+	{
+		# Download neccessary stuff for our index database.
+		# Standard message fields are:
+		#	Subject:, From:, Date:, Message-ID:
+		#
+		# In order to do threading we need:
+		#	References: or In-Reply-To:
+		# The XOVER command can only return the "References:" header.
+		# Also note that mailman breaks the message ID for mail<->news
+		# gateways so although theoretically the in-reply-to ID is
+		# the last reference, we have to keep a track of known IDs
+		# and use the last known ID reference.
+		# This assumes that the order of messages is corrent, i.e.
+		# it is not possible to see first a reply and then the OP.
+		#
+		# The Cc: header is very useful for "pinging" an author
+		# and we do want it in USENET too!  For mailling lists
+		# through gmane, Cc: is present.  For traditional newsgroups
+		# it isn't but we do can supply it to ping somebody,
+		# pyvm's newsreader will understand :)
+		# The Cc: headers can be acquired with the XHDR command
+		#
+		# The Xref: header can be calculated by the message number.
+		#
+		# NNTP is a very old standard and we can consider it stable,
+		# so we expect *all* news servers to implement the XOVER and
+		# XHDR commands.
+		# If not, there is a fallback method of getting HEADers for
+		# each article, but that's dead slow.
+
+		if (!knownIDs)
+			knownIDs = set()
+
+		if (first < 0)
+			first = 0
+
+		use_xover = False
+
+		try {
+			fields = [l for (l in $lines_cmd ("LIST OVERVIEW.FMT", 215))]
+			Sn, An, Dn, IDn, Rn = [fields.index (x) + 1 for (x in (
+				"Subject:", "From:", "Date:", "Message-ID:", "References:"
+			))]
+			use_xover = True
+		}
+
+#print $cmd ("XHDR Cc %i-%i" %(first, last))
+#for (l in $r.readlines_rstr ())
+#if (l == ".") exit ()
+#else print l;
+
+		if (!use_xover) {
+			print "NO XOVER!"
+			for (n in xrange (first, last)) {
+				try id, d = $HEAD (n)
+				except continue
+				subject, author = d ['subject'], d ['from']
+				try date = d ['date']
+				except date = 'no-date'
+				try inreply = d ['references'].split ()[-1]
+				except try inreply = d ['in-reply-to']
+					except inreply = ""
+				yield n, id, subject, author, date, inreply
+			}
+			return
+		} else {
+			for (l in  $lines_cmd ("XOVER %i-%i" %(first, last), 224)) {
+#print "N:", l
+				if (l == ".") break
+				l = l.split ("\t")
+				references = l [Rn].split ().reverse ()
+				ref = ""
+				for (r in references)
+					if.break (r in knownIDs)
+						ref = r
+				ID = l [IDn]
+				knownIDs.add (ID)
+				yield int (l [0]), ID, l [Sn], l [An], l [Dn], ref
+			}
+		} 
+	}
+
+	# Posting. `msg` is a properly formatted message!
+	method POST (msg)
+	{
+		lines = []
+		for (i in msg.split ("\n")) {
+			if (i.sw (".")) i = "." + i
+			lines<< i
+		}
+		m = "\r\n".join (lines) + "\r\n.\r\n"
+		r, l = $cmd ("POST")
+		if (r != 340)
+			raise Error ("e")
+		$s.send (m)
+		if !(r = $r.readline ())
+			raise EOF
+		return int (r [:3]), r [4:]
+	}
+}
+
+# one connection per server.
+ByServer = {}
+def NNTPConnection (server)
+{
+	try return ByServer [server]
+	return ByServer [server] = nntp (server)
+}
+
+##
+## newsgroup mailbox
+##
+## A newsgroup mailbox is a directory that contains the files:
+##   "params":      a configuration file. "server" and "group" parameters are required.
+##   "INDEX":       the index file which contains message IDs, subject, authors, etc.
+##                  From the index file we can browse the posts off-line. But not
+##                  see the bodies of messages.
+##   "XXXXXXX.msg": Stored message. XXXX is the hexadecimal number of the message.
+##   "XXXXXXX.ofl": Cached message.
+##                  Stored/Cached messages can be browsed off-line.
+##   "SEEN":        A marshalled python tuple which has the numeric IDs of all the
+##                  messages marked "seen".
+##   "N":           Contains the number of articles/threads in INDEX. For speed stat.
+## 
+
+import misc, os
+from time import datestr_to_secs as date2secs
+
+class newsgroup (*@mailnews.index.messages)
+{
+	Type = "news"
+
+	method __init__ (DIR, creat=None)
+	{
+		DIR = $DIR = ewslash (UDIR + DIR)
+		$INDEX = $DIR + "INDEX"
+
+		try {
+			d = misc.parse_config ($DIR + "params")
+			$group = d ["group"]
+			$server = d ["server"]
+		} except raise Error ("No valid 'params' file found in [%s]" %$DIR)
+
+		# special Gmane extensions
+		$IsGmane = $server == "news.gmane.org"
+
+		# connection
+		$NNTP = None
+
+		$cache = []
+		$loaded = False
+		if (creat) $create (creat)
+		$base_init ()
+	}
+
+	method load (fast=False)
+	{
+		if ($loaded) return
+		if (!$access ("INDEX"))
+			raise Error ("No INDEX file in [%s]" %$DIR)
+		$load_index (fast)
+		$load_tags ()
+		$load_cached ()
+		$loaded = True
+	}
+
+	method unload ()
+	{
+		if (!$loaded) return
+		$save_tags ()
+		del $Dates, $Posts, $ByNum, $Replies, $Parents, $Threads
+		$cache = []
+		del $SEEN
+		$loaded = False
+	}
+
+	method remove (f)
+		return os.remove ($DIR + f)
+	method listdir (ew)
+		return [x for (x in os.listdir ($DIR)) if (x.ew (ew))]
+
+	method metrics ()
+	{
+		if ($loaded)
+			return $NMSG, $NOPS
+		try return tuple (ints ($open ("N").read ().split ()))
+		$load ()
+		return $NMSG, $NOPS
+	}
+
+	method create (n)
+	{
+		if ($access ("INDEX"))
+			raise Error ("Won't creat. An INDEX file exists!")
+		if (!$connect ())
+			raise Error ("server unreachable, or newsgroup nonexistant")
+		print "Initializing group [%s] with last %i messages" %($group, n)
+		$LastID = $NNTP.last - n
+		for (n in $catch_up (1, 1))
+			fprint ("\r%i/%i  " %n)
+		print
+	}
+
+	method load_cached ()
+		$cached = [int (x [:-4], 16) for (x in $listdir (".off"))]
+
+	#
+	method connect (doraise=1)
+	{
+		try {
+			if (!$NNTP)
+				$NNTP = NNTPConnection ($server)
+			if ($NNTP.group != $group)
+				$NNTP.GROUP ($group)
+			return True
+		} except if (doraise) raise
+		return False
+	}
+
+	method catch_up (doraise=0, creat=0)	# generator yielding progress!
+	{
+		# Fetch headers and update index file
+
+		if (!$loaded and not creat) $load ()
+
+		if (!$connect (doraise))
+			return
+		if ($LastID == $NNTP.last)
+			return
+
+		TMP = $open ("TMP", "w")
+		W = TMP.write
+		N = $NNTP.last
+		cl = $LastID
+		knownIDs = $loaded ? set ($Posts.keys ()) : None
+		for (n, id, subject, author, date, inreply in
+		 $NNTP.xoverviews ($LastID + 1, $NNTP.last + 1, knownIDs)) {
+			try date = date2secs (date)
+			except {
+				print "Bad date [%s]" %date
+				date = now ()
+			}
+			date = "%x" %date
+			hn = "%x" % int (n)
+			W ("\t".join ([hn, id, subject, author, date, inreply]) + "\n")
+			yield n, N
+		}
+
+		TMP.close ()
+		$open ("INDEX", "a").write ($open ("TMP").read ())
+		$remove ("TMP")
+		# (xxx: incremental update -- parse TMP and update)
+		$load_index ()
+		# write metrics
+		$open ("N", "w").write ("%i %i" %($NMSG, $NOPS))
+	}
+
+	method Catchup ()
+		return len ([0 for (None in $catchup ())])
+
+	# accessors
+
+	method F (i, ext="msg") return "%06x." %i + ext
+	method OF (i) return $F (i, "off")
+	method have_data (n)
+		return $access ($F (n)) or $access ($OF (n))
+
+
+	# Maximum articles stored locally
+	MAX_CACHED = 50000
+
+	# Get the text of an article
+
+	method get_article (i)
+	{
+		if (i in $cached) {
+			try return $open ($OF (i)).read ()
+			try $remove ($OF (i))
+			$cached.remove (i)
+		}
+		try return $open ($F (i)).read ()
+		if (!$connect ())
+			return "Can't connect to NNTP server"
+		try data = $NNTP.ARTICLE (i)
+		except (EOF) {
+			$NNTP = None
+			if (!$connect ())
+				return "Can't re-connect to NNTP server"
+			data = $NNTP.ARTICLE (i)
+		}
+		if (data) {
+			$open ($OF (i), "w").write (data)
+			$cached.append (i)
+			if (len ($cached) > $MAX_CACHED) {
+				i = $cached.pop (0)
+				try $remove ($OF (i))
+			}
+		}
+		return data or "empty message. connection error?"
+	}
+}
+
+
+##
+## Higher Level.
+##
+
+GROUPS = []
+for (i in os.listdir_fullpath (UDIR))
+	if (os.path.isdir (i)) {
+		try d = misc.parse_config (i + "/params")
+		except continue
+		GROUPS.append (i.rpartition ("/")[2])
+	}
+
+
+### Tyler Turden
+USAGE = """Newsgroup manager.  Usage:
+
+ pyvm usenet subscribe <directory> <server> <group> [<num-articles>]
+	Subscribe to newsgroup. Num-articles is 1000 unless specified.
+	Example:
+		pyvm usenet clpy news.gmane.org gmane.comp.python.general 10000
+
+ pyvm usenet stat
+	List subscribed groups and some info about them
+
+ pyvm usenet catchup
+	Fetch up-to-date messages for all subscribed groups
+
+"""
+
+if (__name__ == __main__)
+{
+	sa = sys.argp
+	pa = sa.pop_one_arg
+	action = sa.pop_command ("subscribe,stat,catchup")
+
+	if (action == "subscribe") {
+		DIR = ewslash (pa ())
+		UD = UDIR + DIR
+		server = pa ()
+		group = pa ()
+		n = int (sa.one ("1000"))
+
+		try os.mkdir (UD)
+
+		if (os.access (UD + "INDEX")) {
+			print "An INDEX file already exists in %s!" %DIR
+			exit ()
+		}
+		misc.write_config (UD + "params", {"server":server, "group":group})
+		print "params file created."
+		print "Connecting to <%s> to fetch %i last articles from <%s>" %(server, n, group)
+		N = newsgroup (DIR, creat=n)
+		print "Okie!"
+		exit ()
+	}
+
+	sa.nomore ()
+
+	if (action == "stat") {
+		for (DIR in GROUPS)  {
+			print DIR
+			N = newsgroup (DIR)
+			print "Newsgroup:", N.group
+			print "I have %i articles (%i threads)" %N.metrics ()
+			print
+		}
+		exit ()
+	}
+
+	if (action == "catchup") {
+		for (DIR in GROUPS) try {
+			N = newsgroup (DIR)
+			print DIR, "Newsgroup:", N.group
+			#print "I have %i articles (%i threads)" %N.metrics ()
+			#print "Connecting to <%s>" %N.server
+			ft = False
+			try {
+				for (pp, (i, n) in misc.izip (misc.progress (), N.catch_up (1))) {
+					if (!ft) {
+						print "%i new articles. Fetching.." % (1+n-i)
+						ft = True
+					}
+					fprint ("\r%s %i/%i"%(pp, i,n))
+				}
+				if (!ft) print "No new messages on server"
+				else print
+				print "=================================="
+			} except print "Server connect error", sys.exc_info ()
+		} except print "Skipping:", DIR, "!\n", sys.exc_info ()
+		exit ()
+	}
+}

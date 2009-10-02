@@ -1,0 +1,296 @@
+__autosem__
+
+from widget import widget
+from scrollbarz import hcontainer, hscrollbar, vcontainer
+from checkbox import togglebutton
+import thread
+from time import sleep
+
+# Stdout console widget.
+# This is a special widget used by the main window; it captures stdout,
+# writes any messages in the real stdout while in the meantime can
+# display everything that has been printed to a special "console" widget.
+# This functionality is available to any application that needs it.
+
+# The stdout capturing widget is enabled by the keyword argument
+# `CaptureStdout` of the gui.Wm() function.  By default the gui mainloop
+# will switch to the stdout widget when the user presses CTRL-Z.
+# (this should be controlled...)
+
+# This is not a real VT100 terminal emulator!
+# The widget understands the simplest use of tabs, carriage returns
+# and ANSI color sequences.
+
+colre = @re.compile ("\033" + r"\[01;\d\dm" + "|\033" + r"\[0m")
+
+# some functions to break lines to the console screen size and
+# work properly with the ANSI color sequences (which add no length
+# to the line and cannot be split it half)
+# (todo: utf)
+
+def elen (l)
+	return "\033" in l ? len ("".join (colre.split (l))) : len (l)
+
+gen colorsplit (cc)
+{
+	sp = colre.split (cc)
+	ma = colre.findall (cc)
+	if (sp [0])
+		yield "", sp [0]
+	sp.pop (0)
+	current_color = ""
+	for (col, text in zip (ma, sp))
+		yield col, text
+}
+
+def break_line (ll, ww)
+{
+	if ("\033" not in ll)
+		return ll [:ww], ll [ww:]
+
+	l1 = []
+	l2 = []
+	ll1 = 0
+	for (color, chunk in colorsplit (ll)) {
+		if (l2) {
+			l2.append (color + chunk)
+		} else if (len (chunk) + ll1 < ww) {
+			l1.append (color + chunk)
+			ll1 += len (chunk)
+		} else {
+			l1.append (color + chunk [:ww - ll1])
+			l2.append (color + chunk [ww - ll1:])
+		}
+	}
+
+	return "".join (l1), "".join (l2)
+}
+
+def final_color (l)
+{
+	if ("\033" not in l)
+		return ""
+	for (color, None in colorsplit (l))
+		;
+	return color == "\033[0m" ? "" : color
+}
+
+class stdoutw (widget)
+{
+	# (optimize the rendering)
+
+	elastic = True
+
+	method Init (**kw)
+		with (hcontainer ()) {
+			$widget_init (**kw)
+			with (vcontainer ()) {
+				$ybar = hscrollbar (self)
+				$ground = togglebutton ("g", True, onToggle=$doGround, w=$ybar.w)
+				$ground.Draw = $ground_draw
+				$ybar.espace = $ground.h
+			}
+		}
+
+	method __setup__ ()
+	{
+		$font = @fonts.Open ("$unicode-8x16.psfu", 0)
+		$fg = 0xbbbbbb
+		$COLOR = {
+			"\033[0m" : $fg,
+			"" : $fg,
+			"\033[01;37m" : 0xffffff,
+			"\033[01;34m" : 0x2222ff,
+			"\033[01;31m" : 0xff2222,
+		}
+		$old = sys.stdout
+		$LOCK = thread.xlock ()
+		$elastic = False
+		$dx = $font.size ()[0]
+		$cw = $w / $dx
+		$dy = $font.size ()[1]
+		$ch = ($h-1) / $dy
+		$lines = [""]
+		$bg = 0x000000
+		$ULOCK = thread.xlock (False)
+		$green = 0x077707
+		$offset = -1
+		$morelines = False
+		thread.start_new ($Updater)
+		sys.set_thread_stdout (self)
+	}
+
+	method Updater ()
+		while (1) {
+			$ULOCK.acquire ()
+			sleep (0.5)
+			if ($visible ()) {
+				$wm.async ($Draw)
+				if ($morelines) {
+					$wm.async ($ybar.modTVO)
+					$morelines = False
+				}
+			}
+		}
+
+	method write (x)
+		try {
+			$old.write (x)
+			if ($LOCK.locked ())
+				return
+			with ($LOCK) {
+				if ("\n" not in x)
+					$addchars (x)
+				else if (x == "\n")
+					$newline ()
+				else {
+					c = x.split ("\n")
+					for (x in c [:-1]) {
+						if (x and x [-1] == "\r") x = x [:-1]
+						$addchars (x)
+						$newline ()
+					}
+					$addchars (c [-1])
+				}
+				$ULOCK.release ()
+			}
+		} except {
+			$close ()
+			print "*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*"
+			print sys.exc_info ()
+		}
+
+	method flush ()
+		try $old.flush ()
+
+	method write_string (s, x, y, fg)
+		$draw_string (s, x * $dx, 1 + y * $dy, fg, $font, $bg)
+
+	method Draw ()
+		if ($visible ()) {
+			f = $offset == -1 ? max (len ($lines) - $ch, 0) : $offset
+			ln = $lines [f:f + $ch]
+			if (len (ln) < $ch) ln.extend ([""] * ($ch - len (ln)))
+			for (n, l in enumerate (ln)) {
+				l += " " * max (0, $cw - elen (l))
+				if ("\033" not in l) {
+					$write_string (l, 0, n, $fg)
+					continue
+				}
+				x0 = 0
+				for (color, text in colorsplit (l)) {
+					$write_string (text, x0, n, $COLOR.get (color, $fg))
+					x0 += len (text)
+				}
+			}
+			$draw_line (0, 0, $w, 0, $green)
+		}
+
+	method addchars (c)
+	{
+		if ("\r" in c) {
+			$lines [-1] = ""
+			c = c.rpartition ("\r")[2]
+		}
+		l = $lines [-1]
+		l = (l + c).expandtabs ()
+		while (elen (l) >= $cw) {
+			$lines [-1], l = break_line (l, $cw)
+			$lines.append ("")
+		}
+		$lines [-1] = l
+	}
+
+	method newline ()
+	{
+		$lines.append (final_color ($lines [-1]))
+		if (len ($lines) > 10000) {
+			$lines = $lines [-5000:]
+			$offset = minmax (0, $offset, len ($lines) - $ch)
+		}
+		$morelines = True
+	}
+
+	method close ()
+		try sys.set_thread_stdout ($old)
+
+	# scrollbar control
+
+	method getTVOh ()
+		return len ($lines), $ch, $offset == -1 ?  len ($lines) - $ch : $offset
+
+	method setTVOh (d=None, o=None)
+	{
+		$ground.iToggle (False)
+		oo = $offset
+		if (o is not None)
+			$offset = o
+		else {
+			if (oo == -1)
+				$offset = oo = len ($lines) - $ch
+			$offset += d == 2 ? $ch : d == -2 ? -$ch : d
+			$offset = minmax (0, $offset, len ($lines) - $ch)
+		}
+		if (oo != $offset)
+			$Draw ()
+	}
+
+	method kscroll (d)
+	{
+		$noGround ()
+		oo = $offset
+		$offset = minmax (0, $offset + d, len ($lines) - $ch)
+		if (oo != $offset) {
+			$ybar.modTVO ()
+			$Draw ()
+		}
+	}
+
+	method onWheel (x)
+	{
+		$kscroll ((x == "up" ? -1 : 1) * ($wm.key_ctrl ? 10 : 3))
+		return True
+	}
+
+	method onKey (k)
+		if (k == "PAGEUP")
+			$kscroll (-$ch)
+		else if (k == "PAGEDOWN")
+			$kscroll ($ch)
+		else if (k == "UP")
+			$kscroll (-1)
+		else if (k == "DOWN")
+			$kscroll (1)
+		else if (k == " ")
+			$ground.toggle ()
+
+	method noGround ()
+		if ($ground.state)
+			$ground.toggle ()
+
+	# Ground button. Make the thing follow most recent messages
+
+	method doGround (state)
+	{
+		$offset = state ? -1 : len ($lines) - $ch
+		$ybar.modTVO ()
+		$Draw ()
+	}
+
+	method ground_draw ()
+	{
+		# (todo: SVG)
+		$ground.draw_blank (!$ground.state ? $wm.color_bg : $wm.bar_fg)
+		$ground.outline ($ground.state ? "raised" : "sunken")
+		def dl (x, y, dx, dy)
+			$ground.draw_line (x, y, x+dx, y+dy, $wm.color_black)
+		w, h = $ground.w, $ground.h
+		dl (w/2, 3, 0, h/2-3)
+		ww = (4 * w) / 6
+		dl (1+ (w - ww)/2, h/2, ww, 0)
+		ww -= 2
+		dl (1+ (w - ww)/2, h/2+2, ww, 0)
+		ww -= 2
+		dl (1+ (w - ww)/2, h/2+4, ww, 0)
+	}
+}

@@ -1,0 +1,64 @@
+/*
+Special stylesheet for the fixed-font display.
+
+This is a TEMPLATE. $TABLEDISPLAY must be replaced to "table" or "block" before
+this file can be used.
+*/
+
+/* default values for non-inherited properties */
+* {
+	display: inline;
+	margin: 0;
+	padding: 0;
+	border: medium none;
+}
+
+html      { color: #bbb; text-decoration: none }
+a:link    { color: #1111ff; /*text-decoration: underline*/ }
+a:visited { color: #ff4493; /*text-decoration: underline*/ }
+
+/* initial values of inherited properties */
+html {
+	font-family: -pyvm-fixed;
+	font-size: 8px;
+	white-space: normal;
+
+	/* page background */
+	background: black;
+}
+
+h1              { color: #fff }
+h2              { color: #eee }
+pre		{ color: #777 }
+
+/* margins */
+blockquote, ol, ul, dd, pre
+		{ margin-left: 3em }
+blockquote	{ margin-right: 2em}
+th, td		{ border: 1px solid; padding-left: 2px; padding-right: 2px }
+blockquote, form, dir, menu,
+p, h1, h2, h3, h4, h5, h6
+		{ margin-top: 1em; margin-bottom: 1em }
+ul ul, ul ol,
+ol ol, ol ul    { margin-top: 0; margin-bottom: 0 }
+pre		{ margin-top: 1em }	/* in moz */
+
+/* white-space */
+pre             { white-space: pre }
+
+/* hr effect */
+hr		{ border-top: 1px solid }
+
+/* display */
+table		{ display: $TABLEDISPLAY;  white-space: normal }
+
+address, blockquote, body, dd, div, dl, dt, fieldset, form,
+frame, frameset, h1, h2, h3, h4, h5, h6, iframe, noframes,
+object, ol, p, ul, applet, center, dir, menu, pre, li,
+tr, td, th, html, hr
+		{ display: block }
+head, script, style, option
+		{ display: none }
+
+table		{ border-spacing: 2px }
+br:before	{ content: "\A"; white-space: pre }

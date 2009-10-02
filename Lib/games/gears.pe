@@ -1,0 +1,167 @@
+# completely useless demo
+
+__autosem__
+
+from math import pi, atan2, sin, hypot, sqrt, sqr, cos
+import time, random, thread
+from random import randint
+from graphics.framebuffer import FrameBuffer as FB
+from graphics.rawimage import image
+
+__bind__ = ["atan2", "sin", "hypot", "sqr"]
+pi2 = 2*pi
+C = 23
+DF = 8
+DR = 10
+
+XX=0
+
+def MAKE (tw, phase, tt)
+{
+	n = tw / 2
+	R = C * tw / pi2
+
+	R2 = R * R
+	MR = int (2 * R + 100)
+	M2 = MR / 2
+	f = FB (MR, MR, 2)
+	fa = FB (MR, MR, 1)
+	fa.clear (0)
+	f.clear (0x111111)
+	phase *= pi2
+
+	for (py in *MR) {
+		y = py - M2
+		# Completely unoptimized inner loop!!! Takes lots of time
+		for (px in *MR) {
+			x = px - M2
+			phi = atan2 (y, x)
+			RRS = DR * sqr (sin (n*phi + phase)) + R
+			dist = hypot (x, y)
+			if (dist < RRS) {
+				d = dist / RRS
+				#d = dist / (R + 44)
+				if (tt==0) c = int (255*d) << 16
+				else if (tt == 1) c = int (255*d) << 9
+				else if (tt == 2) c = int (255*d) << 1
+				else c = int (128*d + 128) << 17
+				f.put_pixel (px, py, c)
+			} else fa.put_pixel (px, py, 255)
+		}
+	}
+	return image (f.buffer, f.w, f.h, f.bpp, alphatab=(fa.buffer,0))
+}
+
+class Gear
+{
+	method __init__ ($tw)
+	{
+		global XX
+		tt = XX
+		XX += 1
+		$R = C * tw / pi2
+		$Fs = [MAKE (tw, 0.5 * float (i)/DF, tt) for (i in *DF)]
+	}
+
+	method draw (fb, dir=1)
+	{
+		fb.put_image ($Fs [$n], $x, $y)
+		dir *= $dir
+		if (dir == 1) {
+			$n += 1
+			if ($n >= DF)
+				$n = 0
+		} else {
+			$n -= 1
+			if ($n < 0)
+				$n = DF - 1
+		}
+	}
+
+	method config ($x0, $y0, $n, $dir=1)
+		$x, $y = int ($x0 - $R), int ($y0 - $R)
+	method configr (gear)
+	{
+		dist = gear.R + $R + DR
+		gx = gear.x0
+		gy = gear.y0
+		tw = $tw
+		gt = gear.tw
+
+		i = randint (-int (gt) / 6, int (gt) / 6)
+
+		p = i * DF + gear.n
+		pf = p / float (gt*DF)
+		p2 = (tw * DF) * (pf+0.5)
+		for (n in *DF)
+			if (int ((p2 - n)%DF) == DF/2)
+				break
+		phi = pi2*pf
+		x = gx + cos (phi) * dist
+		y = gy - sin (phi) * dist
+		x = int (x)
+		y = int (y)
+		$config (x, y, n, -gear.dir)
+	}
+}
+
+print "Please wait..."
+
+G = Gear (24.0)
+G.config(70, 240, randint (0, DF-1), 1)
+G2 = Gear (10)
+G2.configr(G)
+
+G3 = Gear (30.0)
+G3.configr(G2)
+G4 = Gear (18.0)
+G4.configr(G3)
+
+import gui
+wm =gui.Wm (700, 600, "2D gears")
+with (gui.vcontainer ())
+	F = gui.fbview (w=700, h=600)
+
+def F.setupcb ()
+{
+	global FB
+	FB= F.fb
+	dobop ()
+	fn = wm.OpenFont ("mono-b", -2)
+	fn.render_to (FB, 0, 0, "This program demonstrates the graphical processing capabilities of the CPU", 0xffffff)
+	fn.render_to (FB, 0, fn.maxh, "use scroll wheel, click or <enter>", 0xffffff)
+	F.flip_fb ()
+}
+
+FB = None
+def dobop (dir=1)
+{
+	if (!FB)
+		return
+	FB.clear (0)
+	G.draw (FB, dir)
+	G2.draw (FB, dir)
+	G3.draw (FB, dir)
+	G4.draw (FB, dir)
+	F.flip_fb ()
+	return True
+}
+
+def F.onKey (k) if (k == "\n") return dobop ()
+def F.onWheel (x) return dobop (x == "up" ? 1 : -1)
+
+L = thread.xlock (False)
+
+def RR ()
+	while (1) {
+		wm.async (dobop)
+		sleep (0.007)
+		L.ack ()
+	}
+thread.start_new (RR)
+def F.onClick (x, y)
+	if (L.locked ()) L.release ()
+	else L.acquire ()
+
+F.setKeyWidget ()
+wm.Start ()

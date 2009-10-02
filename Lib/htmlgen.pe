@@ -1,0 +1,95 @@
+# HTML Generator. Idea from Richard Jone's blog post "Simple, elegant HTML generation"
+__autosem__
+
+def esc (t, q=0)
+{
+	if (t -> int)
+		t = str (t)
+	t = t.replace ("&", "&amp;").replace ("<", "&lt;").replace (">", "&gt;")
+	if (q) {
+		t = t.replace ('"', "&quot;")
+		if (" " in t)
+			t = '"' + t + '"'
+	}
+	return t
+}
+
+
+class Tag
+{
+	method __init__ ($name, $HTML, attrs=None, $nl=False)
+		$attributes = attrs ? dict (attrs) : {}
+	method __call__ (*args, **kwargs)
+	{
+		$content = [x -> str ? esc (x) : x for (x in args)]
+		try $nl = kwargs.pop ("nl")
+		$attributes.update ({k:esc(v,1) for (k, v in kwargs.items ())})
+		if !($HTML.op -= 1)
+			if ($HTML.stack)
+				$HTML.stack [-1].content.append (self)
+		return self
+	}
+	method __context__ () return self
+	method __enter__ () $HTML.stack.append (self)
+	method __exit__ (*args) $HTML.stack.pop ()
+	method dogen ()
+	{
+		if ($attributes)
+			t = "<%s %s>"% ($name, " ".join (["%s=%s"%(k,v)
+				 for (k, v in $attributes.items ())]))
+		else t = "<%s>"%$name
+		C = []
+		for (c in $content)
+			if (c -> str) C<<c
+			else C<<c.dogen ()
+		sep = $nl ? "\n" : ""
+		t = t + sep + sep.join (C) + sep
+		if ($name not in ("li", "br", "td", "tr"))
+			t += "</%s>"%$name
+		return t
+	}
+}
+
+class HTML
+{
+	method __init__ ($__style__={})
+	{
+		$op = 0
+		$stack = []
+		$stack<< self.html ()
+	}
+
+	method __getattr__ (k)
+	{
+		if (k.sw ("__"))
+			raise AttributeError
+		if (k in $__style__) k, attributes = $__style__ [k]
+		else attributes = None
+		$op += 1
+		return Tag (k, self, attributes, k == k.upper ())
+	}
+
+	method __call__ (text)
+		$stack [-1].content.append (text)
+
+	method dogen ()
+		return $stack [0].dogen ()
+}
+
+if (__name__ == __main__)
+{
+	# Custom tags that have translate to known tags + attributes
+	h = HTML ({"mytag":["a", {"class":"highlighted"}]})
+
+	with (h.head ())
+		h.style ("a:visited { color:#f12 }")
+	with (h.body ())
+		with (h.UL ()) {
+			h.li ("stuff", h.a ("foo", href="foo", x=1), "title & the rest")
+			h.li (h.a ("foo", href="foo and< bar"), "title")
+			h.li (h.mytag ("foo", href="hi"))
+			h ("some text")
+		}
+
+	print h.dogen ()
+}

@@ -1,0 +1,201 @@
+/*
+ *  Encapsulation of file descriptor operations
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+ * When we want to use file descriptors (open/read/write/close/mmap)
+ * from anywhere in the pyvm program, we must use the `filedes` class.
+ * Like:
+ *	F = filedes ('hello.txt', O_RDONLY);
+ *	F.read (buffer, 1024);
+ *
+ * The advantages of filedes class are:
+ * - object oriented (encapsulation)
+ * - can transparently use mmap for reading
+ * - filedes is an __unwind__ class. If we throw its destructor
+ *   will be invoked and the file will be closed (or unmapped) properly.
+ * 
+ * By default, O_RDONLY files are mmaped.
+ * By default all operations are non-blocking; we have to use
+ *  wait_to_read/wait_to_write manually.
+ */
+#include "include.h"
+
+#include "filedes.h"
+#define USE_MMAP
+
+static inline int puremode (int mode)
+{
+	return mode & (O_RDONLY|O_WRONLY|O_RDWR);
+}
+
+typedef unsigned long long tick_t;
+
+static inline tick_t get_cpu_ticks ()
+{
+	tick_t val;
+	asm volatile ("rdtsc" : "=A" (val));
+	return val;
+}
+
+filedes.filedes (const char *fnm, int mode, bool nonblock, bool dommap, int havefd)
+{
+	type = FD_BAD;
+	blocked = false;
+	mm_start = 0;
+
+	/* Reading files is "expensive". The operating system, usually, caches
+	   frequently used file (or they are cached in the hardware) so for these
+	   cases "reading" is not so expensive.
+	   There are other cases (like the webcache), where caching is impossible.
+	   It has been observed that in this situation the expensive part is
+	   the open() call.
+	*/
+
+	if (havefd != -1) fd = havefd;
+	else if ((fd = open (fnm, mode & O_WRONLY ? mode|O_LARGEFILE : mode, 0666)) == -1)
+		return;
+
+	/* directory not allowed */
+	stat statbuf;
+	if (fstat (fd, &statbuf) == 0 && S_ISDIR (statbuf.st_mode)) {
+		type = FD_BAD;
+		return;
+	}
+
+	if (mode == O_RDONLY && dommap) {
+		if (S_ISREG (statbuf.st_mode) && (len = statbuf.st_size) != -1i && len < 2*1024*1024) {
+#ifdef USE_MMAP2
+			mm_start = (char*) mmap (0, len, $PROT_READ, $MAP_PRIVATE, fd, 0);
+			if (mm_start) {
+#ifdef	MADV_SEQUENTIAL
+				madvise (mm_start, len, $MADV_SEQUENTIAL);
+#endif
+				type = FD_READ_MMAP;
+				return;
+			}
+#else
+			mm_start = (char*) malloc (len);
+			if (read_all (mm_start, len))
+				type = FD_READ_MMAP;
+			return;
+#endif
+		}
+	}
+	ctor (fd, mode, nonblock);
+}
+
+filedes.filedes (int _fd, int _mode, bool nonblock)
+{
+	blocked = false;
+	fd = _fd;
+	if (nonblock)
+		fcntl (fd, F_SETFL, fcntl (fd, F_GETFL) | O_NONBLOCK);
+	switch (puremode (_mode)) {
+		case O_RDONLY: type = FD_READ; break;
+		case O_WRONLY: type = FD_WRITE; break;
+		default: type = FD_RW;
+	}
+}
+
+// copy/move
+
+filedes.filedes (filedes F)
+{
+	blocked = false;
+	type = F.type;
+	fd = F.fd;
+	mm_start = F.mm_start;
+	len = F.len;
+	F.type = FD_BAD;
+}
+
+int filedes.size ()
+{
+	stat statbuf;
+	if (fstat (fd, &statbuf) == -1)
+		return -1;
+	return statbuf.st_size;
+}
+
+bool filedes.seek (int offset)
+{
+	if (type != FD_READ)
+		return false;
+	return lseek (fd, offset, SEEK_SET) != -1;
+}
+
+filedes.~filedes ()
+{
+	if (type == FD_BAD) return;
+	if (type == FD_READ_MMAP)
+#ifdef USE_MMAP2
+		munmap (mm_start, len);
+#else
+		if (mm_start) free (mm_start);
+#endif
+	close (fd);
+	type = FD_BAD;
+}
+
+unsigned int filedes.read (void *buf, unsigned int count)
+{
+	unsigned int nr = read (fd, buf, count);
+	if (nr == -1)
+		blocked = errno == EAGAIN;
+	return nr;
+}
+
+unsigned int filedes.write (const void *buf, unsigned int count)
+{
+	unsigned int nr = write (fd, buf, count);
+	if (nr == -1)
+		blocked = errno == EAGAIN;
+	return nr;
+}
+
+bool filedes.read_all (void *buf, unsigned int count)
+{
+	return read (fd, buf, count) == count;
+}
+
+extern int DoSched;
+#define SCHED_KILL 8
+#define SCHED_INT 32
+
+void filedes.wait_to_write ()
+{
+	int fd = fd;
+	fd_set set;
+	FD_ZERO(&set);
+	FD_SET(fd, &set);
+	select (fd + 1, 0, &set, 0, 0);
+}
+
+int filedes.wait_to_read ()
+{
+	int fd = fd;
+	fd_set set;
+	FD_ZERO(&set);
+	FD_SET(fd, &set);
+	int r = select (fd + 1, &set, 0, 0, 0);
+	blocked = false;
+	if (r == -1)
+		if (errno != EINTR || DoSched & (SCHED_KILL|SCHED_INT))
+			return -1;
+	return 0;
+}
+
+//************** file utils wrapping ************
+
+int fs_access (const char *path, int mode)
+{
+	return access (path, mode);
+}

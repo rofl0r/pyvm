@@ -1,0 +1,169 @@
+__autosem__
+
+import os
+from fonts import Open
+
+dynurl = "dyn://" + @random.hrandstr (10) + "/"
+
+# Grab per-page messages (stdout) (UNUSED ATM)
+ENABLE_PRINTER = False
+
+class printer
+{
+	method __init__ ()
+	if (ENABLE_PRINTER) {
+		$msgs = []
+		$oldstdout = sys.stdout
+		sys.set_thread_stdout (self)
+	}
+
+	method write (x)
+	{
+		$oldstdout.write (x)
+		$msgs.append (x)
+	}
+
+	method close ()
+	if (ENABLE_PRINTER)
+		sys.set_thread_stdout ($oldstdout)
+}
+
+#############
+
+fixfont = Open ("$unicode-8x16.psfu", 0)
+fixfont_utf8 = fixfont.as_utf8 ()
+
+def wwdatafile (f)
+	return HOME + "Lib/wwwlib/data/" + f
+
+font_cache = {}
+INTERN_VALUES = {}
+FETCHED_CSS = set ()
+
+class BaseLayout
+{
+	Title = ""
+	Refresh = None
+	width = None
+	method image_list ()
+		return ()
+	method ViewAt (yoffs, xoffs, scroll=None)
+		raise Error ("Not derrived")
+	method Goto (label)
+		return
+	method Find (text, match_case, offset)
+		return
+	method Contains (text, match_case)
+		return
+	favicon = None
+	get_node_offset = void
+	shutdown = void
+}
+
+# webfont metrics: there is no real standard about that although since css allows
+# absolute metrics and metrics relative to the font-size, it *should* also standarize
+# the metrics of the webfonts! otherwise the specification is useless.
+#
+# Anyway. by looking at which fonts mozilla uses and then comparing the metrics
+# of those against the metrics of our standard fonts (the MS fonts, people are supposed
+# to find them since it's the superior solution atm), it seems that "webfonts" are
+# somewhat larger. for that there is an emperical "xscale" factor that's applied
+# to the MS fonts to make them as big as the webfonts. this factor is near:
+#	sans:  1.078285
+#	mono:  1.003252
+#	serif: same as sans
+# Note 1: the xscale is different for each glyph! this is a raw average!
+# Note 2: this is for the *builtin* rasterizer which has a small difference
+# from the freetype rasterizer. So for freetype these values are slightly different
+# and if you fix bugs in the builtin rasterizer to match freetype, the xscale factors
+# should be adapted as well. 
+
+#OpenFont = @fonts.render.Open
+from fonts.render import Open as OpenFont
+
+class FontManager
+{
+	BASESIZE = 16
+
+	# (todo: make the font cache weakreferenced)
+
+	method __init__ ()
+	{
+		# override search
+		$BASE = None
+#$BASE = "$urw/"
+#$BASE = "$ms/"
+		# search for best font
+		if ($BASE is None) {
+			for (b in ["corefonts", "ms", "lucida", "urw"])
+				if.break (os.access (HOME + "Lib/FontFiles/%s/serif" %b))
+					$BASE = "$%s/" %b
+			else.for raise Error ("No webfonts!")
+			if ($BASE == "$urw/")
+				print "===== No unicode truetype fonts!  See Lib/FontFiles/ms/ ======"
+			print "Using family:", $BASE
+		}
+		$xscales = { "mono":1.05, "sans":1.051, "serif":1.051 }
+		$Cache = {}
+		$UTFCache = {}
+	}
+
+	method xscale (name)
+	{
+		name = name.partition ("/")[2]
+		if ("-" in name)
+			name = name.partition ("-")[0]
+		return $xscales [name]
+	}
+
+	method openx (family, size, bold, italic, utf)
+	{
+		if (size > 40) {
+			print "Huge font size:", size, "reduced"
+			size = 40
+		}
+		if (size < 6) {
+			print "Tiny font size:", size, "increased"
+			size = 6
+		}
+
+
+		if (family == "-pyvm-fixed") {
+			return utf ? fixfont_utf8 : fixfont
+		}
+
+		if (!utf)
+			return $openx0 (family, size, bold, italic)
+
+		try return $UTFCache [(family, size, bold, italic)]
+		f = $openx0 (family, size, bold, italic)
+		return $UTFCache [(family, size, bold, italic)] = f.as_utf8 ()
+	}
+
+	method openx0 (family, size, bold, italic)
+	{
+		if (family == "monospace") family = "mono"
+		try return $Cache [(family, size, bold, italic)]
+		name = $BASE + family
+		if (bold)
+			if (italic) name += "-bi"
+			else name += "-b"
+		else if (italic)
+			name += "-i"
+#print name, int (10*size*$xscale(name))/10.0
+		return $Cache [(family, size, bold, italic)] =
+			 OpenFont (name, int (10 * size * $xscale (name)) / 10.0, builtin_raster=1)
+	}
+
+	method getsize ()
+		return $BASESIZE
+	method setsize (s)
+		if (s != $BASESIZE) {
+			$BASESIZE = s
+			$Cache = {}
+			$UTFCache = {}
+			return True
+		} else return False
+}
+
+FontManager = FontManager ()

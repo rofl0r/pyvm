@@ -1,0 +1,491 @@
+/*
+ *  Implementation of the integer dictionary object
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+   integer-integer dictionary, a dictionary where the keys and the values are
+   all integers.
+  
+   - this is a *memory* efficient structure. At minimum we are using
+     2/3rds of the memory used by a standard dictionary. Also, this
+     dict always expands by doubling its size, unlike the standard
+     dict which initially goes four times bigger.
+  
+   - It may not necessarily be faster. For one, the getitem() operation
+     will create a new integer object each time! Otoh we avoid hashing
+     and refcounting.
+
+   - It we allowed the "value" to be any object, our dictionary would not
+     use more memory. However, in this case it would have to be a container,
+     enter the GC list and be traversed in garbage collection. So this is
+     better for having lots of iidicts.
+
+   - The algorithm is an expanding hash table, very much like the standard
+     python dictionary.
+*/
+#include "dynlib.h"
+
+/* >>>>>>>>>>>>> iidict <<<<<<<<<<<<< */
+
+struct kv
+{
+	unsigned int k, v;
+};
+
+static class iidict
+{
+	kv *tbl;
+	// we need a special value for unoccupied slots. That's zero.
+	// a slot of 0-0 means empty
+	// a slot of 0-1 means deleted entry
+	kv zero;
+	unsigned int used, size, fill, inc_at, dec_at;
+
+	void expand ();
+	void shrink ();
+	void *calloc (unsigned int, unsigned int);
+    public:
+	iidict (int);
+	kv *contains (unsigned int);
+	void set (unsigned int, unsigned int);
+	bool del (unsigned int);
+	unsigned int len ()	{ return used + zero.k; }
+	int cmp (iidict);
+	~iidict ()	{ seg_free (tbl); }
+};
+
+void *iidict.calloc (unsigned int a, unsigned int b)
+{
+	a *= b;
+	void *p = seg_alloc (a);
+	memset (p, 0, a);
+	return p;
+}
+
+static unsigned int powceil (unsigned int i)
+{
+	unsigned int p = 1;
+	while (i) {
+		i >>= 1;
+		p <<= 1;
+	}
+	return p;
+}
+
+iidict.iidict (int hint)
+{
+	if (hint <= 4) {
+		size = 4;
+		inc_at = 3;
+		dec_at = 0;
+	} else {
+		size = powceil (hint);
+		inc_at = 2 * size / 3;
+		dec_at = size / 4;
+	}
+	tbl = calloc (size, sizeof *tbl);
+	fill = used = 0;
+	zero.k = 0;
+}
+
+kv *iidict.contains (unsigned int k)
+{
+	if_unlikely (!k) return zero.k ? &zero : 0;
+
+	kv *p;
+	unsigned int mask = size - 1;
+	register unsigned int kk = k & mask;
+	while (1) {
+		p = &tbl [kk];
+		if (p->k == k)
+			return p;
+		if (!p->k && !p->v)
+			return 0;
+		kk = ((5 * kk) + 1) & mask;
+	}
+}
+
+void iidict.set (unsigned int k, unsigned int v)
+{
+	if (!k) {
+		zero.k = 1;
+		zero.v = v;
+		return ;
+	}
+
+	kv *p, *fs=0;
+	unsigned int mask = size - 1;
+	unsigned int kk = k & mask;
+	while (1) {
+		p = &tbl [kk];
+		if (p->k == k) {
+			p->v = v;
+			return;
+		}
+		if (!p->k) {
+			if (!fs) fs = p;
+			if (!p->v) {
+				++used;
+				fs->k = k;
+				fs->v = v;
+				break;
+			}
+		}
+		kk = ((5 * kk) + 1) & mask;
+	}
+	if (fs == p)
+		if_unlikely (++fill > inc_at)
+			expand ();
+}
+
+static void iidict.setok (unsigned int k, unsigned int v)
+{
+	kv *p;
+	unsigned int mask = size - 1;
+	unsigned int kk = k & mask;
+	while (1) {
+		p = &tbl [kk];
+		if (!p->k) {
+			p->k = k;
+			p->v = v;
+			return;
+		}
+		kk = ((5 * kk) + 1) & mask;
+	}
+}
+
+void iidict.expand ()
+{
+	kv *otbl = tbl;
+	int n = size, i;
+
+	size *= 2;
+	dec_at = 3 * inc_at / 4;
+	inc_at = 2 * size / 3;
+	fill = used;
+	tbl = calloc (size, sizeof *tbl);
+
+	for (i = 0; i < n; i++)
+		if (otbl [i].k)
+			setok (otbl [i].k, otbl [i].v);
+
+	seg_free (otbl, size / 2 * sizeof *tbl);
+}
+
+bool iidict.del (unsigned int k)
+{
+	if (!k) {
+		if (!zero.k) return false;
+		zero.k = 0;
+		return true;
+	}
+
+	kv *p;
+	unsigned int mask = size - 1;
+	unsigned int kk = k & mask;
+	while (1) {
+		p = &tbl [kk];
+		if (p->k == k) {
+			p->k = 0;
+			p->v = 1;
+			break;
+		}
+		if (!p->k && !p->v)
+			return false;
+		kk = ((5 * kk) + 1) & mask;
+	}
+	if_unlikely (--used < dec_at)
+		shrink ();
+	return true;
+}
+
+void iidict.shrink ()
+{
+	kv *otbl = tbl;
+	int n = size, i;
+
+	size /= 2;
+	inc_at = 2 * size / 3;
+	dec_at = size / 4;
+	if (dec_at == 1) dec_at = 0;
+	fill = used;
+	tbl = calloc (size, sizeof *tbl);
+
+	for (i = 0; i < n; i++)
+		if (otbl [i].k)
+			setok (otbl [i].k, otbl [i].v);
+	seg_free (otbl, 2 * size * sizeof *tbl);
+}
+
+int iidict.cmp (iidict d)
+{
+#define	CMPOK(XX) { int tmp = XX; if (tmp) return tmp; }
+	CMPOK (len () - d.len ())
+	CMPOK (used - d.used)
+	CMPOK (memcmp (&zero, &d.zero, sizeof (zero)))
+	if (size == d.size && fill == d.fill)
+		if (!memcmp (tbl, d.tbl, size * sizeof *tbl))
+			return 0;
+	int i;
+	kv *k;
+	for (i = 0; i < size; i++)
+		if (tbl [i].k) {
+			if (!(k = d.contains (tbl [i].k)))
+				return 1;
+			CMPOK (tbl [i].v - k->v);
+		}
+	return 0;
+}
+
+//
+
+static DictObj iiDictMethods __noinit ();
+static const char iiDictType [] = "iidict";
+extern TypeObj iiDictTypeObj;
+
+static final class iiDictObj : __destructible__, seg_allocd
+{
+	const char *const stype = iiDictType;
+	const TypeObj &type = &iiDictTypeObj;
+	DictObj *type_methods = &iiDictMethods;
+
+	iidict D;
+	__object__ *type_call (REFPTR*, int);
+	bool cmp_EQ_same (__object__*);
+   public:
+	iiDictObj (int = 0);
+	int len ()	{ return D.len (); }
+	bool Bool ()	{ return D.len (); }
+	bool contains (__object__*);
+	__object__ *xgetitem (__object__*);
+	void xdelitem (__object__*);
+	void xsetitem (__object__*, __object__*);
+	void print ();
+#if 0
+	__object__ *keys ();
+#endif
+	__object__ *iter ();
+};
+
+TypeObj iiDictTypeObj ctor (iiDictObj._v_p_t_r_);
+
+static inline unsigned int INT (__object__ *o)
+{
+	return IntObj.fcheckedcast (o)->i;
+}
+
+iiDictObj.iiDictObj (int n)
+{
+	__destructible__.ctor ();
+	D.ctor (n);
+}
+
+bool iiDictObj.contains (__object__ *o)
+{
+	return D.contains (INT (o)) != 0;
+}
+
+__object__ *iiDictObj.xgetitem (__object__ *o)
+{
+	kv *p = D.contains (INT (o));
+	if (p) return newIntObj (p->v);
+	RaiseKeyError (o);
+}
+
+/* export this function's address to Clib functions */
+int c_iidict_getitem (__object__ *o, int k, int *v)
+{
+	kv *p = iiDictObj.cast (o)->D.contains (k);
+	if (!p) return 0;
+	*v = p->v;
+	return 1;
+}
+
+__object__ *iiDictObj.get (__object__ *o, __object__ *dflt)
+{
+	kv *p = D.contains (INT (o));
+	if (p) return newIntObj (p->v);
+	return dflt;
+}
+
+void iiDictObj.xdelitem (__object__ *o)
+{
+	if (!D.del (INT (o)))
+		RaiseKeyError (o);
+}
+
+void iiDictObj.xsetitem (__object__ *k, __object__ *v)
+{
+	D.set (INT (k), INT (v));
+}
+
+void iiDictObj.print ()
+{
+	print_out ("iidict ({");
+	if (D.zero.k)
+		print_out (0, ":", D.zero.v, ", ");
+	int i = D.size;
+	kv *k = D.tbl;
+	while (i--) {
+		if (k->k)
+			print_out (k->k, ":", k->v, ", ");
+		++k;
+	}
+	print_out ("})");
+}
+
+__object__ *iiDictObj.iter ()
+{
+	return new iiDictIterObj (this);
+}
+
+bool iiDictObj.cmp_EQ_same (__object__ *o)
+{
+	iiDictObj *d = iiDictObj.cast (o);
+	return D.cmp (d->D) == 0;
+}
+
+/*
+ * make .keys() return an "array"
+ */
+#if 0
+extern __object__ *array_c_int (const int*, int);
+
+__object__ *iiDictObj.keys ()
+{
+	int n = D.len ();
+	int *v = __malloc (n * sizeof *v);
+	int *p = v;
+	if (D.zero.k)
+		*p++ = 0;
+	for (int i = 0; i < D.size; i++)
+		if (D.tbl [i].k)
+			*p++ = D.tbl [i].k;
+	__object__ *o = array_c_int (v, n);
+	__free (v);
+	return o;
+}
+#endif
+
+/*
+ * type call, object constructor
+ */
+__object__ *iiDictObj.type_call (REFPTR argv[], int argc)
+{
+	return new iiDictObj ();
+}
+
+/* api used by marshal */
+
+bool iiDictObj_isinstance (__object__ *o)
+{
+	return iiDictObj.isinstance (o);
+}
+
+unsigned int *iidict_to_array (__object__ *o, unsigned int *n)
+{
+	iiDictObj *d = iiDictObj.cast (o);
+	int i = *n = d->len ();
+	unsigned int *a, *p;
+	kv *k;
+
+	a = p = __malloc (2 * i * sizeof (int));
+	if (d->D.zero.k) {
+		*p++ = 0;
+		*p++ = htolle (d->D.zero.v);
+	}
+	for (k = d->D.tbl, i = 0; i < d->D.size; i++, k++)
+		if (k->k) {
+			*p++ = htolle (k->k);
+			*p++ = htolle (k->v);
+		}
+	return a;
+}
+
+__object__ *iidict_from_array (const unsigned int *a, unsigned int n)
+{
+	iiDictObj *d = new iiDictObj (3 * n / 2);
+	while (n--) {
+		unsigned int k = lletoh (*a++);
+		d->D.set (k, lletoh (*a++));
+	}
+	return d;
+}
+
+/* >>>>>>>>>>>>> iterator <<<<<<<<<<<<< */
+
+static final class iiDictIterObj : iteratorBase
+{
+	/* This is not safe against key modification during iteration. will SEGV. fixme */
+	int i;
+	kv *p;
+	iiDictObj *d;
+   public:
+	iiDictIterObj (iiDictObj*);
+	__object__ *xnext ();
+	int len ();
+};
+
+iiDictIterObj.iiDictIterObj (iiDictObj *x)
+{
+	iteratorBase.ctor (x);
+	d = x;
+	i = 0;
+	p = d->D.tbl;
+}
+
+int iiDictIterObj.len ()
+{
+	return d->len () - i;
+}
+
+__object__ *iiDictIterObj.xnext ()
+{
+	if (i < d->D.used) {
+		while (!p->k) p++;
+		i++;
+		return newIntObj (p++->k);
+	}
+	if (i == d->D.used && d->D.zero.k) {
+		i++;
+		return newIntObj (0);
+	}
+	RaiseStopIteration ();
+}
+
+// object methods
+
+#if 0
+static __object__ *keys_iiDictObj (REFPTR argv[])
+{
+	return iiDictObj.checkedcast (argv [0].o)->keys ();
+}
+#endif
+
+static __object__ *get_iiDictObj (REFPTR argv[])
+{
+	return iiDictObj.checkedcast (argv [0].o)->get (argv [1].o, argv [2].o);
+}
+
+static const method_attribute ii_methods [] = {
+#if 0
+	{ "keys",	"iidict.keys", SETARGC (1, 1), keys_iiDictObj },
+#endif
+	{ "get",	"iidict.get", SETARGC (3, 3), get_iiDictObj },
+	MENDITEM
+};
+
+static class InitiiDict : InitObj {
+	int priority = INIT_ATTR;
+	void todo ()
+	{
+		iiDictMethods.ctor (ii_methods);
+	}
+};

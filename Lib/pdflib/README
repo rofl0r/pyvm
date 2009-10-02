@@ -1,0 +1,23 @@
+This is a very simple PDF viewer application.  The core library
+can load a PDF document and convert pages from it to PPM images.
+
+However, PDF is a huge standard with thousands of features.
+This small library tries to at least render text nicely but
+there is still a lot to be done to achieve a perfectly drawn
+document.  Some features can be implemented by looking at
+xpdf; others are cans of worms.
+
+Some missing stuff:
+- Type3 fonts
+- Other types of images (atm only JPEG is ok)
+- correct path drawing operations, filling, clipping
+  (a lot of common code with SVG)
+
+For printing the correct approach is to convert the document
+to Postscript and send it to the system's printer.
+
+---
+This program would've been rather impossible without the
+sources of xpdf, which not only is a great program but
+also is well written and easy to figure out.  Many thanks
+and props to its author.

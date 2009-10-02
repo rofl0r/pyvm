@@ -1,0 +1,135 @@
+# script used to check if the builtin rasterizer matches freetype.
+# What is currently compared is: font metrics and left bearing
+# in a more advanced mode we'd also compare the bitmaps (not possible
+# in auto-hinting though).
+# Note, however, that freetype has some strange fixed-point maths
+# that are hard to emulate precisely. So there will always be differences.
+# This script is used to show if *most* glyphs match.
+
+__autosem__
+
+from fonts.freetype import FTRasterizer
+from fonts.raster import BuiltinRasterizer
+from datastream import data_parser as dp
+from ttycolor import color
+
+#
+# sample usage:
+#	pyvm ftcmp px=15.2 urw ms serif mono-b bear px=+12.1 s=^ABC
+#
+# test all the "serif" styles and the "mono-bold" style for the URW and MS
+# font families at pxsizes 15.2 and 12.1 looking for mismatches in lbearing
+# for all the characters except "ABC".
+# the order of the arguments does not matter.
+#
+
+fullre = @re.compilef ("(sans|serif|mono)-(b|i|bi|)$")
+
+TEST = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890-={}[]();<>,./?!@#$%^&*"
+SIZES = [15.0, 17.544, 20.08468, 14.28]
+FILES = []
+FAMILIES = []
+BSTYLES = []
+ESTYLES = []
+DOCOLOR = True
+QUIET = False
+FIELD = []
+if ("--help" in sys.argp.argv) {
+	print "sample usage:
+	pyvm ftcmp px=15.2 urw ms serif mono-b bear px=+12.1 s=^ABC
+see the source code for more help.
+"
+	exit ()
+}
+
+for (a in sys.argp.argv)
+	if (a.sw ("s=^"))
+		TEST = "".join (list (set (TEST) - set (a [3:])))
+	else if (a.sw ("s="))
+		TEST = "".join (list (set (list (a [2:]))))
+	else if (a in ("ms", "urw", "corefonts"))
+		FAMILIES << a
+	else if (a in ("sans", "serif", "mono"))
+		BSTYLES << a
+	else if (fullre (a))
+		ESTYLES << (a [-1] == "-" ? a [:-1] : a)
+	else if (a.sw ("px=+"))
+		SIZES << float (a [3:])
+	else if (a.sw ("px="))
+		SIZES = [float (a [3:])]
+	else if (a == "nocol")
+		DOCOLOR = False
+	else if (a in ("size", "bear", "bw"))
+		FIELD << a
+	else if (a == "quiet")
+		QUIET = True
+	else FILES.append (a)
+
+if (!FAMILIES and !FILES)
+	FAMILIES = ["ms", "urw"]
+if (!BSTYLES)
+	if (!ESTYLES)
+		BSTYLES = ["sans", "serif", "mono"]
+
+for (f in FAMILIES) {
+	for (b in ("sans", "serif", "mono"))
+		if (b in BSTYLES)
+			for (e in ("", "-i", "-bi", "-b"))
+				FILES << HOME + "Lib/FontFiles/%s/%s%s" %(f, b, e)
+	for (s in ESTYLES)
+		FILES << HOME + "Lib/FontFiles/%s/%s" %(f, s)
+}
+
+ERRORS = 0
+
+def analglyph (reng, g)
+{
+	g = reng.compute_glyph (g)
+	d = dp (g)
+	advance = d.r32m ()
+	px = d.r32m ()
+	py = d.r32m ()
+	rows = d.r32m ()
+	width = d.r32m ()
+	d.r32m ()	# pitch == width usually
+	return advance, px, py, rows, width
+}
+
+def colmax (pv, ov)
+{
+	if (pv < ov or not DOCOLOR)
+		return "%s" %pv
+	return color ("%s"%pv, "r")
+}
+
+print "%i glyphs x %i files x %i sizes" %(len (TEST), len (FILES), len (SIZES))
+
+if (!FIELD) FIELD = ["size"]
+fn = [{"bw":4, "size":0, "bear":1}[x] for (x in FIELD)]
+
+for (f in FILES) {
+	print "============================="
+	print "File:", f
+	for (px in SIZES) {
+#		print "  %.3fpx"%px
+		FT = FTRasterizer (px, f, None, None, 1.0, False)
+		PR = BuiltinRasterizer (px, f, None, None, 1.0, False)
+		for (c in TEST) {
+			r1 = analglyph (FT, c)
+			r2 = analglyph (PR, c)
+			if (r1 == r2)
+				continue
+			for (n in fn) 
+				if (r1 [n] != r2 [n]) {
+					ERRORS += 1
+					if (!QUIET) {
+						print "   glyph:", c
+						print "   FT:", colmax (r1 [n], r2 [n]), r1
+						print "   PV:", colmax (r2 [n], r1 [n]), r2
+					}
+				}
+		}
+	}
+}
+print '--------------'
+print ERRORS, "errors for testing \"%s\""%FIELD

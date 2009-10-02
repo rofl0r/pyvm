@@ -1,0 +1,389 @@
+##  X11 Backend
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+USE_SHM = True
+
+from backend_base import Window as BaseWin
+from colornames import lookup as LookupColor
+from graphics.framebuffer import FrameBuffer as FBbase, image
+from xlib import *
+from common import cast as xcast
+X = XConst
+
+class Display (FBbase)
+{
+	SHM = None
+
+	method screen_size ()
+		return $screen_width, $screen_height
+
+	method __init__ ($width, $height, DISPLAY)
+	{
+		# For some odd reason, XShm with width that's not a multiple of 2
+		# produces and X11 Failed Request
+		if (USE_SHM and width%2) $width = width += 1
+
+		$dpy = XOpenDisplay (DISPLAY)
+
+		attr = XSetWindowAttributes ()
+		attr.backing_store = X.Always
+
+		$screen_width = XWidthOfScreen (XDefaultScreenOfDisplay ($dpy)) - 4
+		if (width == 0)
+			width = $screen_width
+		width = $width = min (width, $screen_width)
+
+		$screen_height = XHeightOfScreen (XDefaultScreenOfDisplay ($dpy)) - 4
+		if (height == 0)
+			height = $screen_height
+		height = $height = min (height, $screen_height)
+
+		$W = XCreateWindow ($dpy, XDefaultRootWindow ($dpy),
+					 0, 0, width, height, 1, 0, 0, 0,
+					 X.CWBackingStore, attr)
+
+		# somebody told people that backing store is bad for the
+		# X server! and they now turn it off.
+		$does_bs =XDoesBackingStore (XDefaultScreenOfDisplay ($dpy))
+		$depth = $default_depth = XDefaultDepthOfScreen (XDefaultScreenOfDisplay ($dpy))
+		$bpp = $depth / 8
+
+		print "X Window:", $bpp
+
+		# set size
+		#sh = XSizeHints ();
+		#sh.min_width = sh.max_width = width;
+		#sh.min_height = sh.max_height = height;
+		#sh.flags = X.PMinSize | X.PMaxSize;
+		#XSetNormalHints ($dpy, $W, sh);
+
+		XMapWindow ($dpy, $W)
+		XFlush ($dpy)
+
+		# ZPixmaps (and consequently, the shared memory!) can have bpp 8, 16 and 32
+		# If the server screen is at 24-bpp we can only send 32-bpp images which the
+		# X server has to convert to RGB (?)
+		sbpp = $bpp == 3 ? 4 : $bpp
+		FBbase.__init__ (self, width, height, sbpp, $alloc_fbaddr (width, height, sbpp))
+
+		v = XGCValues ()
+		v.fill_style = X.FillSolid
+		vmask = X.GCFillStyle
+		$stdGC = XCreateGC ($dpy, $W, vmask, v)
+
+		$InputMask = X.KeyPressMask | X.KeyReleaseMask
+			   | X.ExposureMask | X.StructureNotifyMask | X.KeymapStateMask
+			   | X.ButtonPressMask | X.ButtonReleaseMask
+		XSelectInput ($dpy, $W, $InputMask)
+		$equeue = []
+		XFlush ($dpy)
+	}
+
+	method alloc_fbaddr (width, height, sbpp)
+	{
+		# Use XShared Memory if possible
+		if (USE_SHM) {
+			sh = XShmSegmentInfo ()
+			sh.shmid = XShm.shmget (X.IPC_PRIVATE, width * height * sbpp, X.IPC_CREAT|0777)
+			sh.shmaddr = XShm.shmat (sh.shmid, 0, 0)
+			sh.readOnly = 0
+			XShm.shmctl (sh.shmid, X.IPC_RMID, 0)
+			$img = XShmCreateImage ($dpy, XDefaultVisualOfScreen
+					    (XDefaultScreenOfDisplay ($dpy)),
+					    $depth, XConst.ZPixmap, sh.shmaddr,
+					    sh.getbuffer (), width, height)
+			if (!XShmAttach ($dpy, sh.getbuffer ()))
+				raise "no"
+			$SHM = sh
+			fbaddr = sh.shmaddr
+		}
+
+		if ($SHM is None) {
+			fbaddr = _buffer (width * height * sbpp)
+			$img = XCreateImage ($dpy, XDefaultVisualOfScreen
+					    (XDefaultScreenOfDisplay ($dpy)),
+					    $depth, XConst.ZPixmap, 0, fbaddr, width, height,
+					    $depth == 24 ? 32 : $depth, 0)
+		}
+
+		return fbaddr
+	}
+
+	method dealloc_fbaddr ()
+	{
+		XDestroyImage ($img, None)
+
+		if ($SHM is not None) {
+			XShmDetach ($dpy, $SHM.getbuffer ())
+			XFlush ($dpy)
+			XShm.shmdt ($SHM.shmaddr)
+			$SHM = None
+		}
+	}
+
+	method resize (w, h)
+	{
+		# watch the limits!!
+		w = min (w, $screen_width)
+		h = min (h, $screen_height)
+		if (w == $width and h == $height)
+			return
+		XResizeWindow ($dpy, $W, w, h)
+		$dealloc_fbaddr ()
+		sbpp = $bpp == 3 ? 4 : $bpp
+		$reinit (w, h, sbpp, $alloc_fbaddr (w, h, sbpp))
+		$width, $height = w, h
+	}
+
+	method set_wm_name (name)
+		XStoreName ($dpy, $W, name)
+
+	method flush ((x0, y0, x1, y1))
+	{
+		x0 = max (x0, 0)
+		y0 = max (y0, 0)
+		w = x1 - x0
+		h = y1 - y0
+		if (w > 0 and h > 0)
+			if ($SHM is not None) {
+				w = min (w, $w - x0)
+				h = min (h, $h - y0)
+				XShmPutImage ($dpy, $W, $stdGC, $img, x0, y0, x0, y0, w, h, 0)
+			} else
+				XPutImage ($dpy, $W, $stdGC, $img, x0, y0, x0, y0, w, h)
+		XFlush ($dpy)
+	}
+
+	method shutdown ()
+	{
+		$dealloc_fbaddr ()
+		XCloseDisplay ($dpy)
+	}
+}
+
+Translate = {
+	301:"CAPS",
+	303:"SHIFT",
+	304:"SHIFT",
+	305:"CTRL",
+	306:"CTRL",
+	307:"ALT",
+	308:"ALT",
+	273:"UP",
+	274:"DOWN",
+	275:"RIGHT",
+	276:"LEFT",
+	278:"HOME",
+	279:"END",
+	280:"PAGEUP",
+	281:"PAGEDOWN",
+	27 :"ESC",
+	8  :"BACKSPACE",
+	127:"DEL",
+	13 :"\n",
+}
+
+class Window (**BaseWin)
+{
+	method __init__ (w=0, h=0, DISPLAY=None)
+	{
+		$fb = $dpy = Display (w, h, DISPLAY)
+		$width = $dpy.width
+		$height = $dpy.height
+		$bpp = $dpy.bpp
+		$std_fonts ()
+		$dpy.clear (0)
+
+		$MODS = {
+			"SHIFT":False,
+			"CTRL":False,
+			"ALT":False,
+			# caps-lock is very special in SDL
+			# it acts as a pressed modifier while ON.
+			"CAPS":False,
+		}
+	}
+
+	method resize (w, h)
+	{
+		$dpy.resize (w, h)
+		$width = $dpy.width
+		$height = $dpy.height
+	}
+
+	method draw_line (x0, y0, x1, y1, col)
+		$dpy.draw_line (x0, y0, x1, y1, col)
+
+	method fill_rect (x, y, w, h, col)
+		$dpy.fill_rect (x, y, w, h, col)
+
+	method flush (area)
+	{
+		if (!area)
+			area = 0, 0, $width, $height
+		$dpy.flush (area)
+	}
+
+	method show_image (im, x, y, sx=0, sy=0, w=3200, h=3200)
+		$dpy.put_image (im, x, y, sx, sy, w, h)
+
+	method block_until_event ()
+	{
+		XSelectInput ($dpy.dpy, $dpy.W, $dpy.InputMask | X.PointerMotionMask)
+		XPeekEvent ($dpy.dpy, array ('i', 100))
+		XSelectInput ($dpy.dpy, $dpy.W, $dpy.InputMask)
+	}
+
+	method shutdown ()
+		$dpy.shutdown ()
+
+	method set_wm_name (name)
+		$dpy.set_wm_name (name)
+}
+
+#
+# X11 Input events
+#
+
+Translatable = {
+	# translate from /usr/X11R6/include/X11/keysymdef.h
+	0xff0d:'\n',
+	0xffe1:'SHIFT',
+	0xffe2:'SHIFT',
+	0xffe3:'CTRL',
+	0xffe4:'CTRL',
+	0xffe9:'ALT',
+	0xffea:'ALT',
+	0xff50:'HOME',
+	0xff51:'LEFT',
+	0xff52:'UP',
+	0xff53:'RIGHT',
+	0xff54:'DOWN',
+	0xff55:'PAGEUP',
+	0xff56:'PAGEDOWN',
+	0xff57:'END',
+	0xff58:'BEGIN',
+	0xff63:'INSERT',
+
+	0xff08:'BACKSPACE',
+	0xff09:'\t',
+	0xff0d:'\n',
+	0xff1b:'ESC',
+	0xffff:'DEL',
+}
+
+def translate_key (k)
+{
+	keyin, keysym = XLookupString (k)
+
+	if (32 <= keysym <= 126)
+		return keyin [0]
+
+	try return Translatable [keysym]
+	except { return 'SKIP'; }
+}
+
+method Display.get_event0 ()
+{
+	if ($equeue)
+		return $equeue.pop (0)
+
+	while (XEventsQueued ($dpy, 2)) {
+		E = XEvent ()
+		XNextEvent ($dpy, E)
+		XFlush ($dpy)
+
+		if (E.type == X.KeyPress) {
+			E = xcast (XKeyEvent, E)
+			k = translate_key (E)
+			if (k != 'SKIP')
+				return 'PRESS', k
+		} else if (E.type == X.KeyRelease) {
+			E = xcast (XKeyEvent, E)
+			k = translate_key (E)
+			if (k in ('SHIFT', 'CTRL', 'ALT'))
+				return 'RELEASE', k
+		} else if (E.type == X.ButtonPress) {
+			E = xcast (XButtonEvent, E)
+			if (E.button == 4)
+				return "WHEEL", "up"
+			if (E.button == 5)
+				return "WHEEL", "down"
+			return 'CLICK', E.button, E.x, E.y
+		} else if (E.type == X.ButtonRelease) {
+			E = xcast (XButtonEvent, E)
+			if (E.button in (4, 5))
+				continue
+			return 'UNCLICK', E.button, E.x, E.y
+		} else if (E.type == X.Expose) {
+			E = xcast (XExposeEvent, E)
+			return 'REDRAW', E.x, E.y, E.width, E.height
+		} else if (E.type == X.ConfigureNotify) {
+			E = xcast (XConfigureRequestEvent, E)
+			return 'RESIZE', E.width, E.height
+		} else if (E.type == X.KeymapNotify) {
+			return "FOCUS",
+		} else if (E.type != X.MotionNotify) print "UNKNOWN X11 event:", E.type
+	} 
+}
+
+method Window.get_event ()
+{
+	if !(e = $dpy.get_event0 ())
+		return None
+
+	if (e [0] == 'REDRAW') {
+		# the server may generate multiple
+		# expose events. combine them to one rectangle
+		tx, ty, tw, th = e [1:]
+		while (11) {
+			e = $dpy.get_event0 ()
+			if.break !(e and e [0] == 'REDRAW')
+				if (e) $dpy.equeue.append (e)
+
+			t2x, t2y, t2w, t2h = e [1:]
+			tw = max (tx + tw, t2x + t2w)
+			th = max (ty + th, t2y + t2h)
+			tx = min (tx, t2x)
+			ty = min (ty, t2y)
+			tw -= tx
+			th -= ty
+		}
+		return 'REDRAW', tx, ty, tw, th
+	}
+
+	if (e [0] == 'RESIZE')
+		# combine multiple StructureNotify events
+		while (11) {
+			en = $dpy.get_event0 ()
+			if (!en)
+				break
+			if (en [0] == 'RESIZE') e = en
+			else if.break (en [0] != 'REDRAW')
+				$dpy.equeue.append (en)
+		}
+
+	return e
+}
+
+method Window.where ()
+	return XQueryPointer ($dpy.dpy, $dpy.W)
+
+method Window.move_mouse (x, y)
+	XWarpPointer ($dpy.dpy, $dpy.W, x, y)
+
+def WindowForDpy (DISPLAY)
+{
+	def f (*args, **kwargs)
+	{
+		kwargs ["DISPLAY"] = DISPLAY
+		return Window (*args, **kwargs)
+	}
+	return f
+}

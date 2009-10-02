@@ -1,0 +1,157 @@
+# Script to study the heuristics of our custom diff implementation
+# vs. the system's diff program.
+# A git repository is opened and each file is diffed through its
+# sequential states over its history.
+
+__autosem__
+
+if (__name__ != __main__)
+	raise Error ("%s is not a module" %__file__)
+
+d = @scm."git-core".repository (sys.argp.one ())
+
+### Tune
+
+# Verify that our diff is correct by patching?
+VERIFY = 1
+# Verify that our patch is correct?
+VERIFYPATCH = 1
+# maximum number of diffs to check
+MAXDIFF = 24000
+# save the worst diff in ORIGINAL, MODIFIED, EXTDIFF, INTDIFF, in cwd?
+SAVEBADEST = True
+
+###########################
+time     = @time.time;
+patch    = @scm.patch.patch;
+patch2   = @scm.diff.pypatch;
+diff     = @scm.diff.external_diff;
+diff2    = @scm.diff.pydiff;
+diffstat = @scm.diff.diffstat;
+fprint   = @misc.fprint;
+
+def History ()
+{
+	# We want to find 'diff pairs' which are hashes for ORIGINAL, MODIFIED.
+	# We want to *avoid* merges. merge points are artificial patches.
+	# So we are looking only for commits with just one parent.
+	c = [d.open_commit ()]
+	pairs = {}
+	seen = set ()
+	ii = 0
+	while (c and len (pairs) < MAXDIFF) {
+		p = c.pop (0)
+		while (len (p.parents) == 1) {
+			ii += 1
+			fprint ("\r %i diffs /commit: " %len (pairs) + p.sig)
+			pp = d.open (p.parents [0])
+			L = d.open (pp.tree).lsfiles_r (d)
+			D = dict (d.open (p.tree).lsfiles_r (d))
+			for (k, v in L)
+				try if (v != D [k]) pairs [v, D [k]] = k
+			p = pp
+		}
+		for (x in p.parents)
+			if (x not in seen) {
+				seen.add (x)
+				c.append (d.open (x))
+			}
+	}
+	global Commits
+	Commits = ii
+	print
+	return pairs
+}
+
+def save (orig, new, df1, df2)
+{
+	open ("ORIGINAL", "w").write (orig)
+	open ("MODIFIED", "w").write (new)
+	open ("EXTDIFF", "w").write (df1)
+	open ("INTDIFF", "w").write (df2)
+}
+
+D = History ()
+extdiff = [0, 0, 0]
+pyvdiff = [0, 0, 0]
+dte = dtm = 0
+ii = 0
+jj = 0
+kk = 0
+bb = 0
+MAX = 0
+xx = 0
+for ((old, new), fi in D.iteritems ()) {
+		ii += 1
+		b1 = d.openobj (old).data
+		b2 = d.openobj (new).data
+
+		t0 = time ()
+		df1 = diff (b1, b2, "a/file.c", "b/file.c")
+		dte += time () - t0
+		dd1 = diffstat (df1)
+
+		t0 = time ()
+		df2 = diff2 (b1, b2, "a/file.c", "b/file.c")
+		dtm += time () - t0
+		dd2 = diffstat (df2)
+
+		if (VERIFY and !df2.sw ("Files")) {
+			if (patch (b1, df2) != b2) {
+				print "CRAP DIFF IS BROKEN. SAVING and ABORTING."
+				save (b1, b2, df1, df2)
+				exit ()
+			}
+			if (VERIFYPATCH and patch2 (b1, df1) != b2) {
+				print "CRAP. PATCH IS BROKEN!"
+				save (b1, b2, df1, df2)
+				exit ()
+			}
+		}
+		news = dd1 [0], dd1 [1], df1.count ("\n")
+		olds = dd2 [0], dd2 [1], df2.count ("\n")
+		extdiff [0] += dd1 [0]
+		extdiff [1] += dd1 [1]
+		extdiff [2] += news [2]
+		pyvdiff [0] += dd2 [0]
+		pyvdiff [1] += dd2 [1]
+		pyvdiff [2] += olds [2]
+		sz1 = dd1[0]+dd1[1]
+		sz2 = dd2[0]+dd2[1]
+		if (olds != news) {
+			jj += 1
+			di = olds [0] - news [0]
+			dr = olds [1] - news [1]
+			dp = olds [2] - news [2]
+			if (xx) print
+#			print ": %i more insertions(+)/deletions(-), %i more patchlines" %
+#				(di, dp)
+			xx = 0
+			if (dp > MAX) {
+				MAX = dp
+				BADS = b1, b2, df1, df2
+			}
+			if (dp < 0)
+				bb += 1
+			if (dp > 8)
+				kk += 1
+		} else {
+			xx = 1
+			fprint (".")
+		}
+}
+print 
+print "%i diffs studied (history of %i files over %i commits)" %(ii, len (set (D.values ())), Commits)
+print "%i diffs differ" %jj
+print "From them:"
+print " %i diffs differ big time" %kk
+print " %i diffs are better!" %bb
+print "External diff %i insertions (+), %i deletions (-), patchlines %i" %tuple (extdiff)
+print "Custom   diff %i insertions (+), %i deletions (-), patchlines %i" %tuple (pyvdiff)
+extdiff = extdiff[2]
+pyvdiff = pyvdiff[2]
+prc = pyvdiff - extdiff
+print "%.2f%% bigger patches" %(prc * 100.0 / extdiff)
+print "External diff time: %.2f seconds" %dte
+print "Custom   diff time: %.2f seconds" %dtm
+if (SAVEBADEST and MAX) save (*BADS)

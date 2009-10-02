@@ -1,0 +1,206 @@
+pyvm's GUI tookit
+=================
+
+Although C is a fantastic programming language, is it *not* suitable
+for a GUI toolkit.  Writting a toolkit in C, though, has the very
+important advantage that it will be usable by all other programming
+languages, is sucidal and will not get very far before the complexity
+explodes (not to mention that extreme insight is required in advance
+in order to design a stable API for it).  A toolkit in C++ is also a very
+tedious task and it forces the application to be C++ (and higher).
+
+Writting a GUI toolkit in a dynamic language, is a breeze.  We can
+easily implement features that even the most advanced C/C++ tookits
+haven't dreamt of.  The downside is that only applications that
+use the same dynamic language will be able to use it.
+
+
+in pyvm we have a GUI toolkit that implements widgets, containers and
+main program loop, using only the simple drawing primitives:
+
+	- draw line
+	- fill rectangle
+	- put image
+
+of it's graphical backend.
+
+The tookit is still somewhat "ugly".  That doesn't matter very much
+because:
+	- it's still work in progress. A decent theme engine may
+	  be implemented in future versions.
+	- it's written by programmers whos job isn't graphics designers
+	- it is very easy to do something nicer like the "soundlab"
+	  application. (which some programmers find beautiful)
+	- it doesn't want to appeal to the "average user" at this
+	  stage yet. it is good enough for testing the functionality
+	  of graphical applications.
+
+
+The toolkit does not attempt to be complete.
+Usually, when people start to create a toolkit, they target some
+complex application like thunderbird, etc.
+The fact is however that each application is different and it
+needs it's own special widgets.  For example, thunderbird's
+message list is neither a list or a tree;  it is a special
+"newsgroup message index" widget.  Similarily video players
+need their own widgets, programs like gimp and photoshop need
+their own widgets, etc.
+
+Besides the very basic widget set that is used as a form
+(enter some values on checkboxes, radio buttons, text entries
+and click "Go"), most other interactive widgets to not belong
+in the toolkit.
+(this is true as long as we believe that for some actions the
+ best user interface is the command line.  If one discards
+ the command line as "not user friendly", this puts much
+ more pressure on the features of the toolkit because the
+ command line *is* the best user interface nontheless)
+
+The good news is that pyvm's gui toolkit makes it very easy
+to subclass the base `widget` and override the
+	Draw ()
+	onKey ()
+	onClick ()
+	onRedraw ()
+methods in order to make custom specialized widgets.
+
+And we do not have to do what other programs do.  It is a good
+oportunity to completely forget other programs like thunderbird
+and say: "i have a collection of newsgroup messages. how would
+i like to be able to navigate in it?".  And then make something
+completely different.  Complex widgets that are extensions of
+the basic widgets (like the super threading message list), are
+a bad idea.  The basic widgets just "happened" to be like that
+when they were first designed in the early 80s.  The rest have
+evolved mainly with MS Window's forms.  What we see today is
+just an accidental event that happened to take this form
+because everybody wanted their GUI to look familiar with the
+"other thing".
+
+
+Programming
+===========
+
+Generally you can just see a simple application that uses the gui,
+like display.pe, mandelbrot.pe, etc.
+
+The logic is that, initially we make a "main window", like:
+
+	import gui
+	wm = gui.Wm (800, 600, "my program")
+
+Then we add widgets.  Currently pyvm supports only horizontal
+and vertical containers for automatic placement.  This somewhat
+works, so far, but we may implement more advanced placement
+in the future.  So we can say
+
+	def Hello ()
+		print "Hello"
+
+	with (gui.vcontainer ()) {
+		with (gui.hcontainer ()) {
+			gui.label ("Press hello")
+			gui.image ("logo.gif")
+		}
+		gui.button ("Hello", Action=Hello)
+	}
+
+and finally:
+
+	wm.Start ()
+
+That's more or less it.  Every widget has methods
+
+	draw_line ()
+	fill_rect ()
+	put_image ()
+	draw_string ("hello", 10, 10)
+
+that work relative to it's location.  It is also possible to
+have "framebuffer widgets" that display an image that can
+be modified.
+
+The main GUI loop, sends events to the widgets that propagate
+from containers to final widgets and call the methods
+
+	onClick (x, y)
+	onPress (x, y)	# by default maps onClick
+	onKey (k)
+
+see the file `widget.pe` for more.
+
+Thread safety
+-------------
+
+Only the thread of the main GUI loop is allowed to call drawing
+functions (and generally use methods of the wm).
+For example, the main GUI loop invokes the method
+	onClick ()
+of our widget and this method calls
+	$Draw ()
+which in turn calls
+	$draw_line ()
+This works because the `Draw` is in the thread of the main loop.
+
+If another thread wants to draw something it must use an "asynchronous"
+call.  For instance, if a secondary timer thread wants to call its
+`Draw` method, it should do:
+	$wm.async ($Draw)
+which will transfer the call to the main GUI loop as an event that
+must be processed.
+
+
+Besides the methods inherited from the `widget` class, all other
+APIs are not yet stable.  Premarute standarization is the root
+of bad APIs.
+
+
+On User Interfaces
+==================
+
+There are three levels.
+
+1) Level 1.  Text interface.
+
+This is what we get with text only terminals. With sufficient
+effort we can make menus, windows and even use the mouse.
+
+2) Level 2.  Graphical user interface.
+
+With graphics we can do some very important things, like
+see images (and fill captchas), see HTML and PDF texts;
+have text of different sizes depending on the importance
+of each text, maximize the efficiency of the UI with buttons
+of variable size, use interesting little graphics (like the
+expand/collapse points in a tree widget), etc.
+
+This really bootsts forward the productivity of the user
+and it's a superset of level 1.
+
+3) Level 3.  The eye-kandy.
+
+This is a graphical user interface with transparent windows
+floating on animated 3D cubes.  It is said these days that
+if a GUI does not offer these features, it cannot compete.
+
+But that is not entirely true.  Secretaries for example
+who are the major user of office tools, are very practical
+people.  They do not care about eye kandy.  Secretary A wants
+to open document sent by secretary B and prepare a document
+that is going to announce the decisions of the board to the
+students.  And they want this job done with as little hassle
+as possible.  They would not mind even doing this in DOS if
+that was the most troubleproof way to perform this taks.
+They have enough work to worry about than desire extra trouble
+with broken software, and they definitelly don't care about
+eye kandy.
+
+#########################################################
+The bottom-line is that in gui we want to conquer level 2.
+In this case the only acceleration we care about is 
+fill_rectangle (graphics memset) and blit image (graphics memcpy)
+and maybe copy_rectangle (graphics memmove).
+
+We do not care about OpenGL and other 3D capabilities.
+
+For games and demos, that is a different story.

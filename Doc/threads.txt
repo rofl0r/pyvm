@@ -1,0 +1,183 @@
+Threading in pyvm
+-----------------
+
+pyvm is a stackless vm.  The term "stackless" appeared in the "stackless python"
+implementation by Christian Tismer.  In the standard CPython vm, python function
+calls are implemented with C function calls and each python thread is managed by
+one OS thread.
+
+In the stackless mode, all the python threads are executed in the same
+C function by switching contexts and one OS thread can schedule many
+python threads.
+
+Stackless has many advantages like faster generators, raising and
+the ability to implement far-yield, but the most important feature is
+by far the flexibility in threading, the ability to interrupt threads, etc.
+
+
+thread states
+-------------
+
+A thread in pyvm can be in one of the three states:
+
+ 1) Running.  The currently active thread or other threads that are
+    waiting to run.
+ 2) Soft blocking, when blocking is caused by:
+	- sleep()
+	- thread.lock (and friends, like semaphores)
+	- the network functions: connect, accept, send, recv
+ 3) Real blocking, for example something like
+	os.system ("bash")
+    or external Clib functions that are declared blocking.
+
+Every real blocking thread needs a different OS thread of handle it.
+
+Soft blocking threads are cheap. Especially threads waiting on locks
+semaphores and FIFOs are even cheaper and it's safe to create hundreds
+of them.
+
+thread IDs, returned from thread.start_new() are increasing integers.
+
+
+scheduler
+---------
+
+thread switching is done by the main interpreter loop.  Normally the
+main loop "ticks" every 2ms to switch to a different thread.  Whether
+a tick has happened is checked when them VM executes the JUMP_ABSOLUTE
+opcode.
+
+the vm may tick sooner than 2ms if
+ - a thread that was blocking has unblocked
+ - the current thread has called thread.sched_yield()
+
+If the vm detects more than 300 ticks and during that time all the
+threads are blocked, it will enter "hibernation" and will stop ticking
+until a real event happens.
+
+The above operation can -in some cases- detect deadlocks.
+
+Because thread switching is done on the JUMP_ABSOLUTE opcode, that
+guarantees that the operations within a basic block that doesn't call
+any -python- functions are executed atomically.
+
+
+sched_yield
+-----------
+
+the function
+
+	thread.schecd_yield ([thread_id])
+
+will cause a thread switch as soon as possible (at the next JUMP_ABSOLUTE)
+opcode.  If thread_id is provided, the thread queue is reordered so
+that the specified id will run next.
+
+
+interrupts (soft signals)
+-------------------------
+
+it is possible (and very useful) to be able to interrupt threads.
+That is achieved with the function:
+
+	thread.interrupt (thread_id, [exception], [if_running])
+
+when the thread with id `thread_id` is interrupted it will raise
+the `exception` (which defaults to `thread.Interrupt`).
+
+The `if_running` parameter can take the followig values.
+
+ 0) Only the threads that are in "soft blocking" mode will
+     be interrupted.  The action, like `sleep()` or waiting to
+     acquire a lock will be cancelled and the exception is raised.
+     This is the default value.
+
+ 1) Interrupt all states.
+	- soft blocking just like 0
+	- running threads raise the exception no matter what they
+	  are doing. In fact, the exception will be raised when
+	  a thread will try to become the "currently running thread".
+	- real blocking threads cannot be interrupted (imagine
+	  for example `os.system ("fsck")`). The exception will
+	  be raised nontheless, when the thread unblocks.
+
+ 2) used by ctrl-C, to stop everything including real blocking
+    threads, immediately.  This can lead to an fsckd state!
+
+
+An example program:
+
+	__autosem__
+	import thread, time, os
+
+	# soft blocking threads
+	def t1 ()
+		try sleep (100)
+		except (thread.Interrupt) print 'sleep interrupted'
+
+	def t2 ()
+	{
+		l = thread.allocate_lock ()
+		l.acquire ()
+		try l.acquire ()
+		except (thread.Interrupt) print "OK lock interrupted"
+	}
+
+	# running thread
+	def t3 ()
+		try while (1)
+		except (thread.Interrupt) print "RUNING THREAD INTERRUPTED AS WELL"
+
+	# real blocking
+	def t4 ()
+		try os.system ("sleep 2")
+		except (thread.Interrupt) print "blocking raised the interrupt"
+
+	ids = [
+		thread.start_new_thread (t1, ()),
+		thread.start_new_thread (t2, ()),
+		thread.start_new_thread (t1, ()),
+		thread.start_new_thread (t1, ()),
+		thread.start_new_thread (t2, ()),
+		thread.start_new_thread (t3, ()),
+		thread.start_new_thread (t4, ()),
+	]
+
+	time.sleep (1)
+	for (i in ids)
+		thread.interrupt (i, if_running=1)
+	time.sleep (2)
+
+
+When the above program is executed, the threads `t1` and `t2` will be
+interrupted from their `time.sleep` and waiting on a `thread.lock`.
+Because the parameter `if_running` is 1, the thread `t3` will also
+be interrupted. `t4` will raise the interrupt exception after two
+seconds.
+
+
+details
+-------
+
+pyvm is mostly stackless.  when a C function has to call back to
+bytecode (for example, calling the __cmp__ method of an instance
+from the dictionary lookup code), the main interpreter loop is
+reentered recursively.  This breaks the stacklessness and the
+vm enters "preemption".  In preemption soft blocking becomes
+real blocking and the scheduler is not allowed to switch threads.
+
+However, it has been observed that preemption is very rare -if
+used at all- so there is no need to talk more about it.
+
+
+servers
+-------
+
+running a pyvm server with 100 python threads on a system where
+two other processes are running will only use 1/3 of the CPU!
+
+
+GIL
+---
+
+pyvm is blessed with a GIL.

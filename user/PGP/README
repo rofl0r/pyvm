@@ -1,0 +1,6 @@
+Files:
+
+- PUBKEYS.PGP
+
+  contains the locally stored public keys. Every line has two fields separated with
+  a space.  The keyID and the hexlified binary blob of the keyring.

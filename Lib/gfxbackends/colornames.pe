@@ -1,0 +1,16 @@
+from re import re;
+
+cpat = re (r'\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*+)');
+
+C = {};
+
+for (i in open (HOME + 'Lib/gfxbackends/rgb.txt'))
+	if (M = cpat (i)) {
+		M = M.groups ();
+		C [M [3]] = ' '.join (M [:3]);
+	}
+
+del re, cpat, M, i;
+
+def lookup (color)
+	return __rgb__ (*ints (C [color].split (' ')));

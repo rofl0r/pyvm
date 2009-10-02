@@ -1,0 +1,242 @@
+__autosem__
+from widget import widget
+from container import hcontainer, vcontainer
+from pinmisc import arrow
+
+## Generic horizontal and vertical scrollbars.
+
+class scrollbar (widget)
+{
+	method Init ($cwidget, $hidebarz=False, **kw)
+	{
+		kw [$PXE] = $A.scroller_width
+		$widget_init (**kw)
+		$ds = $A.scroller_height
+
+		$mkarrows ()
+		$getTVO = $cwidget.($GETTVO)
+		$setTVO = $cwidget.($SETTVO)
+	}
+
+	method updateTVO (d=None, o=None)
+	{
+		orig = $getTVO ()
+		$setTVO (d, o)
+		new = $getTVO ()
+		if (orig != new)
+			$draw_bar ()
+		return new
+	}
+
+	method getbar ()
+	{
+		t, v, o = $getTVO ()
+		ds = $ds
+		if (t < v or !t) return -ds, $($EXP)
+
+		sp = $($EXP) - 2 * ds
+		offs = sp * o / t
+		size = max (sp * v / t, 7)
+		if (offs + size > sp)
+			offs = sp - size
+
+		return offs, size
+	}
+
+	method modTVO ()
+		$Draw ()
+
+	method Draw ()
+	{
+		$up.Draw ()
+		$down.Draw ()
+		$draw_bar ()
+	}
+
+	method doClick (x, y)
+	{
+		if ($up.xy_in (x, y))
+			d = -1
+		else if ($down.xy_in (x, y))
+			d = 1
+		else {
+			d = 2 * $inBar (x, y)
+			if (!d) return
+		}
+		$updateTVO (d)
+	}
+
+	method onKey (k)
+	{
+		if (k not in ("UP", "DOWN", "PAGEUP", "PAGEDOWN"))
+			return False
+		$updateTVO ({"UP":-1, "DOWN":1, "PAGEUP":-2, "PAGEDOWN":2}[k])
+		return True
+	}
+
+	method onClick (x, y)
+	{
+		if (!$mouse_pressed ()) {
+			$doClick (x, y)
+			return
+		}
+
+		if ($up.xy_in (x, y) or $down.xy_in (x, y)) {
+			for (i in $A.untilUnclick ())
+				$doClick (x, y)
+		} else {
+			if (!$inBar (x, y)) {
+				None, barsz = $getbar ()
+				sp = $($EXP) - 2 * $ds
+				t, v, o = $getTVO ()
+				for (yy in $followAxisMotion ($AM)) {
+					yy = minmax (0, yy - $ds, sp - barsz)
+					noffs = t * yy / sp
+					$updateTVO (o=noffs)
+				}
+			} else for (i in $A.untilUnclick ())
+				$doClick (x, y)
+		}
+	}
+
+	method in_bar (v)
+	{
+		offs, size = $getbar ()
+		return v < $ds + offs ? -1 : v < $ds + offs + size ? 0 : 1
+	}
+}
+
+class hscrollbar (*scrollbar)
+{
+	AM  = "Y"
+	EXP = "h"
+	PXE = "w"
+	GETTVO = "getTVOh"
+	SETTVO = "setTVOh"
+	espace = 0	# (xx: used by console widget to allow some space for the "ground". hack)
+
+	method mkarrows ()
+	{
+		$up = arrow ("u", w=$w-1, h=$ds-1, x=0, y=0, p=self)
+		$down = arrow ("d", w=$w-1, h=$ds-1, x=0, y=$h-$ds, p=self)
+	}
+
+	method _resize_h (dh)
+	{
+		# assuming that the cwidget has resized first...
+		$h = $cwidget.h - $espace
+		$down.y = $h - $ds
+	}
+
+	method draw_bar ()
+	{
+		dh = $ds
+		sp = $h - 2 * dh
+		w = $w - 2
+		y0, y1 = $getbar ()
+		if (y0 == 0 and y1 == sp and $hidebarz)
+			$fill_rect (1, dh + 1, w, y1, $A.bar_bg)
+		else if (y0 >= 0) {
+			$fill_rect (1, dh + 1, w, y0, $A.bar_bg)
+			$fill_rect (1, dh + y0 + y1 + 1, w, sp - (2 + y0 + y1), $A.bar_bg)
+			$draw_rect (0, dh, w + 1, sp - 1, $A.color_txt)
+			$fill_rect (1, dh + y0, w, y1, $A.bar_fg)
+			$draw_rect (1, dh + y0, w - 1, y1 - 1, $A.color_txt)
+		} else $draw_blank ()
+	}
+
+	method inBar (x, y)
+		return $in_bar (y)
+}
+
+class vscrollbar (*scrollbar)
+{
+	AM  = "X"
+	EXP = "w"
+	PXE = "h"
+	GETTVO = "getTVOv"
+	SETTVO = "setTVOv"
+
+	method mkarrows ()
+	{
+		$up = arrow ("l", h=$h-1, w=$ds-1, y=0, x=0, p=self)
+		$down = arrow ("r", h=$h-1, w=$ds-1, y=0, x=$w-$ds, p=self)
+	}
+
+	method _resize_w (dw)
+	{
+		$w = $cwidget.w
+		$down.x = $w - $ds
+	}
+
+	method draw_bar ()
+	{
+		dh = $ds
+		sp = $w - 2 * dh
+		h = $h - 2
+		x0, x1 = $getbar ()
+
+		if (x0 == 0 and x1 == sp and $hidebarz)
+			$fill_rect (dh + 1, 1, x1, h+1, $A.bar_bg)
+		else if (x0 >= 0) {
+			$fill_rect (dh + 1, 1, x0, h+1, $A.bar_bg)
+			$fill_rect (dh + x0 + x1, 1, sp - (1 + x0 + x1), h+1, $A.bar_bg)
+			$draw_rect (dh, 0, sp - 1, h + 1, $A.color_txt)
+			$fill_rect (dh + x0, 1, x1, h, $A.bar_fg)
+			$draw_rect (dh + x0, 1, x1-1, h, $A.color_txt)
+		} else $draw_blank ()
+	}
+
+	method inBar (x, y)
+		return $in_bar (x)
+}
+
+class hscrollable (widget)
+{
+	method Init (**kw)
+	{
+		# Extreme hack alert.  What happens is that a hcontainer is actually
+		# placed under the currently open container, and in this hcontainer we
+		# insert "self" and the "ybar".
+		p = "p" in kw ? kw.pop ("p") : None
+		with (hcontainer (p=p)) {
+			$widget_init (**kw)
+			kw2 = {k:v for (k,v in kw.items ()) if (k in ("h",))}
+			$ybar = hscrollbar (self, **kw2)
+		}
+	}
+
+	parent_init = Init
+}
+
+class vscrollable (widget)
+{
+	method Init (**kw)
+	{
+		p = "p" in kw ? kw.pop ("p") : None
+		with (vcontainer (p=p)) {
+			$widget_init (**kw)
+			kw2 = {k:v for (k,v in kw.items ()) if (k in ("h",))}
+			$xbar = vscrollbar (self, **kw2)
+		}
+	}
+
+	parent_init = Init
+}
+
+class hvscrollable (*widget)
+{
+	method Init (**kw)
+	{
+		p = "p" in kw ? kw.pop ("p") : None
+		with (hcontainer (p=p)) {
+			with (vcontainer ()) {
+				$widget_init (**kw)
+				$xbar = vscrollbar (self)
+			}
+			$ybar = hscrollbar (self)
+		}
+	}
+
+	parent_init = Init
+}

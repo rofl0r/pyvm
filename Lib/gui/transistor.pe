@@ -1,0 +1,69 @@
+#
+# transistor is the widget that connects the radio buttons!
+# it is not a real, visible widget.
+#
+__autosem__
+from radiobox import radiobox
+
+class transistor
+{
+	method __init__ (radios=None)
+		if (radios)
+			$add (radios)
+		else $r = []
+
+	# one way to create boxes
+	method make (boxes)
+	{
+		$r = [radiobox (x) for (x in boxes)]
+		for (i in $r) {
+			i.Transistor = self
+			i.state = False
+		}
+		$r [0].state = True
+		return self, $r
+	}
+
+	method activate (x)
+	{
+		c = $active ();
+		if (c is x)
+			return;
+
+		if (c) {
+			c.state = False;
+			c.DrawCheck ();
+		}
+		x.state = True;
+		x.DrawCheck ();
+
+		$onSwitch (x);
+	}
+
+	method active ()
+		for (c in $r)
+			if (c.state)
+				return c;
+
+	method add (x)
+	{
+		$r = list (x)
+		have = False
+		for (i in x) {
+			i.Transistor = self
+			if (i.state)
+				if (have) i.state = False
+				else have = True
+		}
+	}
+
+	method Draw ()
+		for (c in $r)
+			c.Draw ();
+
+	method onSwitch (x)
+		return;
+}
+
+def radioboxes (*args)
+	return transistor ().make (args)

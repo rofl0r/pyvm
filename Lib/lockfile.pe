@@ -1,0 +1,88 @@
+##  lockfiles
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+__autosem__
+
+# What we want is to detect whether a process crashed and leaved a stale
+# lockfile or running. In this implementation each lockfile stores the pid,
+# command-line and starttime of the owning process. These are looked up
+# in procps (linux only) to determine if a lockfile is active or zombie.
+#
+# Lockfiles are not race-safe; their usage in pyvm, so far, doesn't
+# have any uses that'd make races likely.
+#
+# Lockfiles don't have to be released (unless the same process wants
+# to release and re-acquire the lock more than one time).
+
+import procps, os
+
+LDIR = USERHOME + "lockfiles/"
+
+def validate (f)
+{
+	try pid, stt, cmdl = readfile (f).split ("\n") [:3]
+	except return
+	p = procps.Process (pid)
+	if (p.exists ())
+		try if (p.cmdline () == cmdl and p.starttime () == stt)
+			return pid, stt, cmdl
+}
+
+def lname (name)
+	return "/" in name ? name : LDIR + name + ".lock"
+
+def get (name)
+{
+	f = lname (name)
+	if (havefile (f)) {
+		print "Lockfile found [%s]"%f
+		if (validate (f))
+			return False
+		print "stale lockfile. will delete"
+	}
+
+	s = procps.SELF
+	open (f, "w").write ("%s\n%s\n%s\n"%(s.pid, s.starttime(), s.cmdline()))
+	return True
+}
+
+def islocked (name)
+{
+	f = lname (name)
+	return havefile (f) and bool (validate (f))
+}
+
+def leave (name)
+	os.remove (lname (name))
+
+class lockfile
+{
+	method __init__ ($name)
+		$held = False
+	method get ()
+		return $held = get ($name)
+	method leave ()
+		if ($held) leave ($name)
+}
+
+def exclusive (name, prog)
+	if (!get (name)) {
+		print prog, " already running"
+		exit ()
+	}
+
+# list lockfiles
+
+if (__name__ == __main__)
+	for (f in os.listdir_fullpath (LDIR))
+		if (f.ew (".lock")) {
+			print "Lockfile: ", f,
+			if (v = validate (f)) {
+				print "valid."
+				print " pid:", v [0]
+				print " cmd:", v [2]
+			} else print "zombie."
+		}

@@ -1,0 +1,354 @@
+# Pyvm Global System Configuration.
+#
+# The configuration of the system consists of some descriptive
+# variables like `UseLinuxFramebuffer`.
+# This file (which is tracked with git) contains the defaults.
+# Each user can override values with:
+#
+# 	pyvm sysconfig set uselinuxframebuffer yes
+#
+# The overriden values are kept into file "Registry" which
+# is a dictionary stored with the serialize format and is not
+# tracked.  Resetting to the default is done with:
+#
+# 	pyvm sysconfig reset uselinuxframebuffer
+#
+# Without any arguments sysconfig prints the values of all
+# the variables.  Overriden values are preceded by "+"
+#
+# New temporary system variables that exist in Registry
+# but not in this file are controlled with (NOT IMPLEMENTED):
+#
+#	pyvm sysconfig new MyNewOption boolean yes
+#	pyvm sysconfig set mynewoption false
+#	pyvm sysconfig del mynewoption
+#
+# Modules that are interested in accessing the options
+# should:
+#
+#	from sysconfig import GETCONF
+#	print GETCONF ("uselinuxframebuffer")
+# or:
+#	print @sysconfig.GETCONF ("reclevel")
+#
+# in whitespaceless
+#
+
+
+__autosem__
+
+# Variable types.  The default type for a variable is "string variable"
+# There are various subtypes for flexibility, value-checking.
+
+Vars = {}
+
+class Var
+{
+	overriden = False
+
+	method set ($name, $doc, value)
+	{
+		try $Eval (value)
+		except {
+			print "Bad value for [%s]:"%name, value
+			return
+		}
+		$default = $value = value
+		Vars [name.lower ()] = self
+	}
+
+	__init__ = set
+
+	method Override (value)
+	{
+		$Eval (value)
+		$value = value
+		$overriden = True
+	}
+
+	method Reset ()
+	{
+		$value = $default
+		$overriden = False
+	}
+
+	method Eval (v)
+		return v
+}
+
+# A boolean variable can be set with any of the strings:
+# 	yes, ok, on, true, 1, no, off, false, 0
+# and evals to True/False
+
+class Boolean (Var)
+{
+	method __init__ (name, doc, value)
+		$set (name, doc, value)
+
+	method Eval (v)
+	{
+		TrueStr = "yes", "ok", "on", "true", "1"
+		FalseStr = "no", "off", "false", "0"
+		v = v.lower ()
+		if (v in TrueStr) return True
+		if (v in FalseStr) return False
+		raise Error ("Bad value for boolean [%s]" %v)
+	}
+}
+
+# A limited set of possible values
+
+class ValSet (Var)
+{
+	method __init__ (name, doc, value, $acceptable)
+		$set (name, doc, value)
+
+	method Eval (v)
+	{
+		v = v.lower ()
+		if (v not in $acceptable)
+			raise Error ("Value should be one of: %s"
+				%", ".join ($acceptable))
+		return v
+	}
+
+}
+
+# A List of strings. Defined with comma separated values and
+# evals to a list of strings.
+
+class StringListValue (Var)
+{
+	method __init__ (name, doc, value)
+		$set (name, doc, value)
+
+	method Eval (x)
+		return x.split (",")
+}
+
+# A path. If starts with $PYVM, pyvm home directory is replaced.
+
+class PathValue (Var)
+{
+	method __init__ (name, doc, value)
+		$set (name, doc, value)
+
+	method Eval (x)
+	{
+		if (!x.sw ("$PYVM")) return x
+		x = x [5:]
+		if (x [0] == "/") x = x [1:]
+		return HOME + x
+	}
+}
+
+# Limited integer
+
+class LimInt (Var)
+{
+	method __init__ (name, doc, value, $minval, $maxval)
+		$set (name, doc, value)
+
+	method Eval (x)
+	{
+		x = int (x)
+		if ($minval <= x <= $maxval)
+			return x
+		raise Error ("%s should be between %i and %i" %($name, $minval, $maxval))
+	}
+}
+
+#/////////////////////////////////////
+
+def GETCONF (name)
+{
+	v = Vars [name.lower ()]
+	return v.Eval (v.value)
+}
+
+def HELP (name)
+{
+	v = Vars [name.lower ()]
+	print '"%s"' %v.name
+	print "\t", v.doc
+	print "  value:", v.value
+	print "default:", v.default
+}
+
+import serialize
+Registry = HOME + "Lib/Registry"
+
+def LOAD ()
+{
+	D = serialize.load (Registry, {})
+	for (k, x in D.items ()) {
+		k = k.lower ()
+		if (k in Vars) {
+			v = Vars [k]
+			v.Override (x)
+		}
+	}
+}
+
+def SETCONF (name, value)
+{
+	try v = Vars [name.lower ()]
+	except {
+		print "No such system option:", name
+		return
+	}
+	v.Override (value)
+	SAVE ()
+}
+
+def RESETCONF (name)
+{
+	try v = Vars [name.lower ()]
+	except {
+		print "No such system option:", name
+		return
+	}
+	v.Reset ()
+	SAVE ()
+}
+
+def SAVE ()
+{
+	D = {}
+	for (v in Vars.values ())
+		if (v.overriden) D [v.name] = v.value
+	serialize.save (Registry, D)
+}
+
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+
+Boolean ("AlwaysUseLibjpeg",
+	"Always use libjpeg instead of the native jpeg decoder?",
+	"No")
+
+Boolean ("StartFBGUI",
+	"use framebuffer display? (in other words, if the user starts
+	 a graphical program from the console, do gui or refuse?)",
+	"No")
+
+StringListValue ("FramebufferBackend",
+	"Framebuffer backend: linux, dfb, sdl",
+	"linux")
+
+StringListValue ("X11Backend",
+	"In X Windows: SDL or X11 native?",
+	"sdl, x11")
+
+Boolean ("LinuxFBAcceleration",
+	"Use acceleration in linuxfb if available?",
+	"No")
+
+Boolean ("UseScrollWheelInFB",
+	"Try to use the scrollwheel ImPS/2 mouse in framebuffer backends.
+	(this will become the default in the future, currently experimental)",
+	"No")
+	  
+PathValue ("Webcache",
+	"Default directory for the webcache (grows fast!)",
+	"$PYVM/user/wcache")
+
+PathValue ("UsenetDir",
+	"Directory under which the `usenet` program stores messages, etc",
+	"$PYVM/user/usenet/")
+
+PathValue ("MailDir",
+	"Directory under which the e-mails are stored",
+	"$PYVM/user/mail/")
+
+Boolean ("PelfWorks",
+	"pelf loader/linker works on this system?
+	 This value can be overriden by the setupsys script
+	 if not.",
+	"ok")
+
+Var ("RC4Method",
+	"""Which method is faster for RC4 for the current arch/compiler.
+	 "test" means that the rc4 module will try both methods and
+	 set this value itself to either "int" or "char".""",
+	"test")
+
+LimInt ("RecLevel",
+	"Volume recording level.  Should be consistent between recordings!",
+	40, 0, 100)
+
+Var ("NetHost",
+	"Hostname whos successful name lookup means that network is
+	 reachable, or not.",
+	"WWW.GOOGLE.COM")
+
+ValSet ("AltGr",
+	"Keyboard mapping for AltGr (ALT-SHIFT).  By default AltGr does nothing.
+	 We have implemented only support for Greek keyboard.  If you add more,
+	 update the acceptable values of this entry.",
+	"none", ("none", "greek"))
+
+# note MMX: just setting this may not be enough. some ".c" files must be
+# recompiled. grep&touch the .c files in Clib for "PYVM_MMX"
+Boolean ("MMXRGB",
+	"Use MMX routines for RGB conversions",
+	"no")
+
+Var ("Editor",
+	"Preferred text editor",
+	"")
+
+Boolean ("AutoHint",
+	"Enable the auto-hinter for the builtin rasterizer? (enable unless very slow PC)",
+	"yes")
+
+Boolean ("pyvmRasterizer",
+	"Use the builtin rasterizer by default (otherwise, use freetype)",
+	"yes")
+
+Boolean ("NoStereo",
+	"All audio is played in Mono mode. Useful if one speaker is dead",
+	"no")
+
+Boolean ("ESCScreenShot",
+	"Pressing CTRL-ALT-ESC on the linuxfb saves a screenshot",
+	"no")
+
+Boolean ("DoPGPMime",
+	"Verify all signed e-mail and newsgroup messages in the mailreader?",
+	"no")
+
+Var ("GitUser",
+	"String in the form 'name <address>' to be used as git committer id",
+	"Please Set <GitUser at sysconfig>")
+
+#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#
+
+LOAD ()
+
+USAGE = "Modify/inspect global configuration parameters. Usage:
+ sysconfig			: show the config
+ sysconfig set <key> <value>	: override a parameter
+ sysconfig reset <key>		: reset parameter to default
+ sysconfig help <key>		: show some info
+
+The <key> is case insensitive.
+see the file sysconfig.pe for more explanations.
+"
+
+if (__name__ == __main__)
+{
+	if (!sys.argp.have_args ()) {
+		for (k, v in Vars.items ().sort ())
+			print "%s%s = \"%s\"" %(v.overriden ? "+":" ", v.name, v.value)
+		print "See the file sysconfig.pe for explanations"
+		exit ()
+	}
+	a = sys.argp.pop_command ("help,set,reset")
+	opt = sys.argp.pop_one_arg ()
+	if (a == "help")
+		HELP (opt)
+	else if (a == "set")
+		SETCONF (opt, sys.argp.one_arg ())
+	else if (a == "reset")
+		RESETCONF (opt)
+}

@@ -1,0 +1,181 @@
+Backend HOWTO
+=============
+
+Making a new backend should be easy.
+
+You'll need to provide a class "Window" which corresponds to a graphics
+display. In a windowing environment it can be a standalone window.
+It could also be the entire screen on framebuffer, etc.
+(in the case of a framebuffer, you can subclass from backend-base)
+
+The Backend will provide :
+* the simple drawing primitives:
+      draw_line, draw_point, fill_rect
+* the simple image display routines:
+	Image, show_image
+* event handling for keyboard and mouse events.
+* optional font and color managment 
+* optional clipboard copy/paste
+
+The Window class should provide the following functions:
+
+-------------------------------------------------------
+	method __init__ (w=None, h=None, name='') ;
+-------------------------------------------------------
+
+Initialize the device. width, height and name
+may be used if possible. It should also initialize the
+default fonts (see stdfont).  It would set two attributes
+of the window, `width` and `height`.
+
+-------------------------------------------------------
+	method draw_line (x0, y0, x1, y1, col);
+	method draw_point (x0, y0, col);
+	method fill_rect (x0, y0, w, h, col);
+-------------------------------------------------------
+
+Draw a line from x0, y0 to x1, y1. The points x0,y0,x1,y1 may be
+outside the Window area and that should not cause any trouble
+Draw a point at x0, y0.
+Fill rectangle from x0, y0, width, height.
+`col` is an 0xRRGGBB integer.
+
+-------------------------------------------------------
+	method Image (data, w, h)
+	method show_image (image, x, y, sx=0, sy=0, w=None, h=None)
+-------------------------------------------------------
+
+The method `Image` creates and returns an "image" from
+RGB data (so the `data` will be a string of x*y*3 bytes).
+The image returned from `Image` can be passed to show_image
+which will display it at poisition x, y (left up corner).
+If the parameters sx, sy, w, h are specified they will
+be used to clip the image (display a subimage).
+
+The image returned by `Image` is a form convenient for
+displaying the image and varies in each backend. The
+client is not supposed to directly edit this image and
+consequently these functions are not suitable for
+image editting or direct video memory access. They are
+suitable for just viewing images.
+
+-------------------------------------------------------
+	method flush ();
+-------------------------------------------------------
+
+The client will use this function to signal that the graphics
+should be transfered to the screen. It may do nothing for some
+backends that draw directly to video memory anyway.
+
+-------------------------------------------------------
+	method get_event ();
+-------------------------------------------------------
+
+This function is non-blocking and returns immediatelly. The return
+value may be:
+* No event: None
+* Key press event: 
+	'PRESS', key
+	If a key is continuously pressed get_events() will keep yielding
+	the same event unless the key is 'SHIFT', 'CTRL' or 'ALT'.
+	The Backend is supposed to translate keys to a common standard.
+	* All ascii keys between 32 and 126 return a signle character
+	  string.
+	* For special keys `key` may have the -string- values
+		'SHIFT', 'CTRL', 'ALT', 'LEFT', 'RIGHT',
+		'UP', 'DOWN', 'END', HOME', 'INSERT',
+		'PAGEUP', 'PAGEDOWN', 'ESC'
+	and maybe others.
+	* newline and tab are the one-character
+	  strings '\n', '\t'
+	* backspace is the string "BACKSPACE" and del is "DEL"
+* Key release event:
+	'RELEASE', key
+	This should be returned only when the key is SHIFT, CTRL or ALT.
+	For example, if the user presses shift, then holds down 's' and then
+	releases shift the backend should generate:
+		"PRESS", "SHIFT"
+		"PRESS", "S"
+		"PRESS", "S"
+		...
+		"RELEASE", "SHIFT"
+* Button press event:
+	'CLICK', button, x, y
+	where button is 1, 2 or 3. The backend does not need to
+	produce double-clicks, etc. They will be detected by the
+	toolkit.
+* Button release event:
+	'UNCLICK', button, x, y
+* Redraw event:
+	'REDRAW', (x,y,w,h) or None
+	means that the contains of the display have been erased and the
+	application should redraw. The erased region may be returned
+	and may or may not be used by the client.
+* Resize event:
+	'RESIZE', w, h
+	when in a windowing environment the size of the main window
+	has changed.
+
+-------------------------------------------------------
+	method block_until_event ();
+-------------------------------------------------------
+
+Waits until an event has occured.  Blocking function.
+
+-------------------------------------------------------
+	method where ();
+-------------------------------------------------------
+
+returns the location of the mouse pointer in the window
+
+-------------------------------------------------------
+	method FrameBuffer (x, y, w, h)
+-------------------------------------------------------
+
+Returns a subclass of graphics.framebuffer class which
+supports direct drawing with the methods provided by this
+class.  The bytes-per-pixel parameter of the instance
+is set by the backend.
+
+The returned instance should have a function .Update()
+which will be used by the client application to transfer
+the contains to the drawing device, sync or do nothing.
+
+The advantage of a framebuffer is that it can be used by
+compiled C code with direct memory access.  There is a
+demo somewhere.
+
+===================================================
+That's it. If you give these, you'll get a full featured
+toolkit for your display.
+
+
+####################################################
+Base methods
+============
+
+draw_string:
+	if font->fonts do, otherwise...
+fill_circle
+blank
+img_string (s, font, fg, bg)
+	-> $Image(*font.DrawText());
+################################################
+
+Pixel Formats
+=============
+
+The frontend only knows about pixel formats:
+
+	- 16 bit, BGR 656
+	- 24 bit, RGB 888
+	- 32 bit, BGR 888 and 1 unused byte
+
+It doesn't know anything about true/pseudo color,
+palettes, colormaps, alpha blending, etc, etc, etc.
+
+This is relevant for the framebuffer.
+
+##################################################
+It would be desirable to add another class to
+get a full framebuffer from the backend for games/demos.

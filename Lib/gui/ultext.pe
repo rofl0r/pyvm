@@ -1,0 +1,27 @@
+__autosem__
+
+def split_underlines (t)
+{
+	if ("\\" not in t)
+		return [(0, t)]
+	s = []
+	p = ""
+	i = 0
+	while (i < len (t)) {
+		if (t [i] != "\\") p += t [i]
+		else {
+			if (p) {
+				s << (0, p)
+				p = ""
+			}
+			try s << (1, t [i+1])
+			i += 1
+		}
+		i += 1
+	}
+	if (p) s << (0, p)
+	return s
+}
+
+def hotkey (t)
+	return "".join ([s for (u, s in split_underlines (t)) if (u)]).lower ()

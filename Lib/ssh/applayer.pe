@@ -1,0 +1,17 @@
+__autosem__
+from ssh.transport import SSHClient
+
+#
+# The function `Connect` abstracts the entire transport layer.
+#
+
+def Connect (host, port, user=None, pass=None, privkey=None)
+{
+	from ssh.keydb import use_key;
+	s = @socket.Connect (host, port)
+	def keys (exp, mod)
+		return use_key (host, exp, mod)
+	if (user) userpass = user, pass, privkey
+	else userpass = None
+	return SSHClient (s, userpass=userpass, keydb=keys)
+}

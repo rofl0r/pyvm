@@ -1,0 +1,354 @@
+##  PNG Image
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# rfc2083
+
+if (1) C = @DLL.Import ("png", "-O3", pelf=1)
+else C = @DLL.Import ("png", "-O3 -g", pelf=0)
+
+class png
+{
+	alphatab = width = height = rgb = None
+
+	method __init__ ($filename) { }
+
+	method size ()
+	{
+		if ($width)
+			return $width, $height
+
+		pngdat = @datastream.data_parser (open ($filename).read (8+8+8))
+		if (!pngdat.match ("\211PNG\r\n\032\n"))
+			raise Error ("Not a PNG")
+
+		if (pngdat.match ("IHDR"))
+			return $width, $height = pngdat.unpack_be ("ii")
+
+		return $read () [1:-1]
+	}
+
+	method read ()
+	{
+		if (!$rgb)
+			$decode ()
+		return $rgb, $width, $height, $alphatab
+	}
+
+	method decode ()
+	{
+		pngdat = readfile ($filename)
+		pp = @datastream.data_parser (pngdat)
+#print "READING...", $filename
+		if (!pp.match ("\211PNG\r\n\032\n"))
+			raise Error ("Not a PNG")
+
+		tRNS = False
+		ch = []
+		while (pp.left ()) {
+			l = pp.r32b ()
+			ct = pp.rn (4)
+			if (ct == "IEND") break
+			if (ct == "tRNS")
+				tRNS = True
+			ch.append ((ct, pp.offset, pp.offset + l))
+			pp.skip (l + 4)
+			# we don't check crc. why? transport streams are reliable.
+		}
+
+		IHDR = ch.pop (0)
+		if (IHDR [0] != "IHDR") raise Error ("No IHDR")
+		$width, $height, depth, colortype, zmeth, filter, interlace =
+			@struct.unpack ("!IIbbbbb", pngdat [IHDR [1]:IHDR [2]])
+#print		$width, $height, depth, colortype, zmeth, filter, interlace
+
+		if ($width * $height > 9000000 or $width * $height <= 0)
+			raise Error ("PNG image too big")
+
+		if (zmeth or filter)
+			raise Error ("Unsupported PNG %i %i" %(zmeth, filter))
+
+#print $filename
+#whereami ()
+		if ((colortype, depth) not in ((2, 8), (2, 16), (3, 8), (6, 8), (3, 4),
+						(0, 1), (0, 2), (0, 4),
+					       (0, 8), (3, 2), (3, 1), (4, 8), (6, 16)))
+			raise Error ("Unsupported colortype/depth combination %i/%i [%s]"
+					 %(colortype, depth, $filename))
+
+		# channels
+		channels = { 0:1, 2:3, 3:1, 4:2, 6:4 } [colortype]
+
+		bits_per_pixel = depth * channels
+
+		# transparency
+		if (tRNS)
+			for (ct, st, en in ch)
+				if.break (ct == "tRNS")
+					tRNS = pngdat [st:en]
+
+		# read palette
+		PLTE = ""
+		if (colortype == 3) {
+			for (ct, st, en in ch)
+				if.break (ct == "PLTE")
+					PLTE = pngdat [st:en]
+			if (tRNS) {
+				ncolors = len (PLTE) / 3
+				if (len (tRNS) < ncolors)
+					tRNS += "\xff" * (ncolors - len (tRNS))
+			}
+		} else if (tRNS)
+			print "png: tRNS transparency ignored", $filename
+
+		# compressed idat
+		data = "".join ([ pngdat [st:en] for (ct, st, en in ch) if (ct == "IDAT") ])
+		pngdat = ""
+
+		# This if test is the default code path.
+		if (!interlace) {
+			explen = image_bytes ($width, $height, bits_per_pixel, colortype, depth)
+
+			data = @zlib.decompress (data, bufsize=explen)
+			if (len (data) > explen)
+				data = data [:explen]
+			if (len (data) < explen)
+				print "less data than expected in png"
+
+			# to rgb
+			$rgb, $alphatab = decode_image (data, $width, $height, colortype,
+							depth, PLTE, tRNS)
+			return
+		}
+
+		# ------------ interlaced -------------
+		if (interlace != 1) raise Error ("Unknown interlace")
+
+		passes = []
+		explen = 0
+		for (i in *7) {
+			pw = Adam7.pass_width (i, $width)
+			ph = Adam7.pass_height (i, $height)
+			bytes = image_bytes (pw, ph, bits_per_pixel, colortype, depth)
+			passes.append ([pw, ph, bytes])
+			explen += bytes
+		}
+
+		data = @zlib.decompress (data, bufsize=explen)
+
+		if (len (data) != explen)
+			raise Error ("Bad size calculation in %s" %$filename)
+
+		o = 0
+		subs = []
+		asubs = []
+		ws = []
+		hs = []
+		for (p in passes) {
+			pw, ph, bytes = p
+			ws << pw
+			hs << ph
+			rgb, alpha = decode_image (data [o:o+bytes], pw, ph,
+						   colortype, depth, PLTE, tRNS)
+			subs << rgb
+			if (alpha)
+				asubs << alpha [0]
+			o += bytes
+		}
+
+		$rgb = _buffer ($width * $height * 3)
+		C.deinterlace (ws, hs, subs, $width, $height, $rgb)
+		# deinterlace alphatable
+		if (asubs) {
+			alphatab = _buffer ($width * $height * 3)
+			C.deinterlacea (ws, hs, asubs, $width, $height, alphatab)
+			$alphatab = alphatab, 1
+		}
+	}
+
+}
+
+namespace Adam7
+{
+	def pass_width (pass, w)
+	{
+		xmin = [0, 4, 0, 2, 0, 1, 0] [pass]
+		if (w < xmin)
+			return 0
+		sh = [3, 3, 2, 2, 1, 1, 0] [pass]
+		return (w - xmin + (1 << sh) - 1) >> sh
+	}
+
+	def pass_height (pass, h)
+		return (h / 8) * (1, 1, 1, 2, 2, 4, 4)[pass] + (
+			(0, 1, 1, 1, 1, 1, 1, 1),
+			(0, 1, 1, 1, 1, 1, 1, 1),
+			(0, 0, 0, 0, 0, 1, 1, 1),
+			(0, 1, 1, 1, 1, 2, 2, 2),
+			(0, 0, 0, 1, 1, 1, 1, 2),
+			(0, 1, 1, 2, 2, 3, 3, 4),
+			(0, 0, 1, 1, 2, 2, 3, 3),
+		) [pass][h%8]
+}
+
+def strpr (s, n)
+	for (i in *(len (s) / n))
+		print s [i*n:i*n+n].hexlify ()
+
+def decode_image (data, width, height, colortype, depth, PLTE, tRNS)
+{
+	if (!height) return "", None
+
+	# decode filter
+	dlen = len (data)
+	row_width = dlen / height - 1
+	bpp = (row_width / width) or 1
+#strpr (data, row_width + 1)
+	if (C.defilter (data, dlen / height - 1, height, data, bpp))
+		raise Error ("Defiltering failed")
+	data = data [:dlen - height]
+#strpr (data, row_width)
+
+	# expand bits
+	if (colortype in (0, 3) and depth in (1, 2, 4)) {
+		data2 = _buffer (width * height)
+		f = depth == 4 ? C.expand4bits : depth == 2 ? C.expand2bits : C.expand1bit
+		f (data, data2, width, height)
+		data = data2
+		if (colortype == 3)
+			depth = 8
+	}
+#strpr (data, width)
+
+	# to rgb
+	if (colortype == 2 and depth == 8)
+		return data, None
+
+	rgb = _buffer (width * height * 3)
+
+	colorkey = None
+	if ((colortype, depth) in ((6, 8), (6, 16), (4, 8))
+	or (colortype == 3 and tRNS))
+		alpha = _buffer (width * height)
+	else alpha = None
+
+	if (colortype == 3) {
+		C.depalette (data, PLTE, len (data), rgb)
+		if(tRNS) C.depalettea (data, tRNS, len (data), alpha)
+	} else if (colortype == 2 and depth == 16)
+		C.rrggbb2rgb (data, len (data), rgb)
+	else if (colortype == 6 and depth == 8)
+		C.rgba2rgb (data, len (data), rgb, alpha)
+	else if (colortype == 6 and depth == 16)
+		C.rrggbbaa2rgb (data, len (data), rgb, alpha)
+	else if (colortype == 0)
+		C.gray2rgb (data, len (data), rgb, depth)
+	else if (colortype == 4)
+		C.graya2rgb (data, len (data), rgb, alpha)
+
+	if (alpha) {
+		on_off = True
+		for (c in alpha)
+			if.break (c not in "\0\xff")
+				on_off = False
+		alpha = alpha, !on_off
+	}
+
+	return rgb, alpha
+}
+
+def image_bytes (width, height, bits_per_pixel, colortype, depth)
+{
+	if (colortype in (3, 0) and depth in (1, 2, 4)) {
+		bp = 8 / depth
+		bytes_per_line = width / bp
+		if (width % bp) bytes_per_line += 1
+		return (bytes_per_line + 1) * height
+	}
+
+	return int ((bits_per_pixel * width * height) / 8 + height)
+}
+
+#
+# png write.
+#
+# Only the RGB with None filter supported.
+# In `optimize' mode, it may emit palettized.
+# Todo: reduce palette, maybe do 3/4 or 3/2.
+#
+
+crc32 = @zlib.crc32
+
+def write_section (wf, sec, data)
+{
+	d2 = sec + data
+	wf ("%MI" %len (data))
+	wf (d2)
+	wf ("%MI" %crc32 (d2))
+}
+
+def store (name, data, w, h, optimize=1)
+{
+	if (len (data) != w * h * 3)
+		raise Error
+
+	colortype = 2
+	data2 = _buffer (3 * w * h + h)
+	C.enfilter (data, 3 * w, h, data2)
+	data2 = @zlib.compress (data2, 8)
+
+	if (optimize and len ((H = histogram (data))) <= 256) {
+		rgbiter = @graphics.cutil.rgbiter
+
+		PLTE = H.keys ()
+		for (n, i in enumerate (PLTE))
+			H [i] = n
+		# (speed up)
+		PLTE = "".join (["%c%c%c" %(i,i>>8,i>>16) for (i in PLTE)])
+		Z = []
+		for (i in rgbiter (data))
+			Z.append (chr (H [i]))
+		data = "".join (Z)
+		hdata2 = _buffer (w * h + h)
+		C.enfilter (data, w, h, hdata2)
+		hdata2 = @zlib.compress (hdata2, 8)
+		if (len (hdata2) + len (PLTE) < len (data2)) {
+			data2 = hdata2
+			colortype = 3
+		}
+	}
+
+	f = open (name, "w").write
+	f ("\211PNG\r\n\032\n")
+	write_section (f, "IHDR", "%MI%MI%c%c%c%c%c" %(w, h, 8, colortype, 0, 0, 0))
+	if (colortype == 3) write_section (f, "PLTE", PLTE)
+	write_section (f, "IDAT", data2)
+	write_section (f, "IEND", "")
+}
+
+def histogram (data)
+{
+	rgbiter = @graphics.cutil.rgbiter
+
+	D = {}
+	inc = D.count_inc
+	for (i in rgbiter (data))
+		inc (i)
+	# (stop early if too many colors)
+	return D
+}
+
+
+if (__name__ == __main__)
+{
+	P = png (sys.argp.filename_ex ())
+	print P.size ()
+	P.read ()
+	print "SAVED";
+	@graphics.ppm.store ("tmp.ppm", P.rgb, P.width, P.height)
+}

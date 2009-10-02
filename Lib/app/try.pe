@@ -1,0 +1,38 @@
+#
+# Try.pe
+#
+# It will open your favorite editor and when you exit,
+# it will execute its contents with pyvm and then ask you
+# if you want to re-edit/re-run the thing.
+#
+# useful for trying out little stuff.
+# The temporary files are kept.
+
+__autosem__
+
+import os
+from misc import execfile
+
+EDITOR = @sysconfig.GETCONF ("editor")
+if (!EDITOR) {
+	print "Set sysconfig editor first!"
+	exit ()
+}
+
+if (len (sys.argv) > 1) f = sys.argv [1]
+else {
+	D = USERHOME + 'tmp/'
+	N = max ([int (i [4:-3]) for (i in os.listdir (D)) if (i.sw ('TMP_') and i.ew (".pe")) ]) ?? 0
+
+	N += 1
+	f = D + 'TMP_%i.pe'%N
+}
+
+while (1) {
+	os.system ("%s %s" %(EDITOR, f))
+	os.system ('pyvm %s' %f)
+	x = raw_input ("MORE (nN):?")[0]
+	if (x in 'nN') break
+}
+
+print "Saved to :", f

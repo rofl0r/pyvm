@@ -1,0 +1,82 @@
+##  Base64
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# In python this is part of binascii.
+# Taken out of the hardcoded VM modules since not used so much.
+
+__autosem__
+
+C = @DLL.Import ("base64", "-O3 -Wall", pelf=1)
+
+def enc (s)
+{
+	if(!s) return ""
+
+	l = len (s)
+	s2 = _buffer (4 * (l / 3 + (l%3?1:0)))
+	C.Encode64 (s, l, s2, 0)
+	return s2
+}
+
+def dec (s)
+{
+	if(!s) return ""
+
+	l = len (s)
+	if (l % 4)
+		raise Error ("Not a multiple of 4")
+	ld = 3 * l / 4
+	if (s) {
+		if(s [-1] == '=') ld -= 1
+		if(s [-2] == '=') ld -= 1
+	}
+	s2 = _buffer (ld)
+	if (C.Decode64 (s, l, s2))
+		raise Error ("Non-base64 digits")
+	return s2
+}
+
+# mutli-line, i.e b2a and a2b, binary<->ascii
+# Not fastest but barely a bottleneck
+
+def b2a (s)
+{
+	# 76 chars per line
+	tot = len (s)
+	off = 0
+	l = []
+	while (tot - off >= 57) {
+		s2 = _buffer (76)
+		C.Encode64 (s, 57, s2, off)
+		l.append (s2)
+		off += 57
+	}
+	l.append (enc (s [off:]))
+	return "\n".join (l)
+}
+
+def a2b (s)
+{
+	# (count whitespaces, allocate _buffer(), do in C)
+	return dec ("".join (s.split ()))
+}
+
+if (__name__ == __main__)
+{
+	USAGE = "usage: base64 [e|d|t] file"
+	t = sys.argp.pop_one_arg ()
+	f = sys.argp.filename_ex ()
+	if (t == 't') {
+		d = readfile (f)
+		print a2b (b2a (d)) == d
+	} else if (t == 'e') {
+		print b2a (readfile (f))
+	} else if (t == 'd') {
+		sys.stdout.write (a2b (readfile (f)))
+		sys.stdout.flush ()
+	}
+}

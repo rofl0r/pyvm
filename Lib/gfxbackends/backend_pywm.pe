@@ -1,0 +1,293 @@
+##  pyvm windowing environment backend
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Assume X11 terminology: the "server" is the application that draws the
+# graphics to the screen (and on a remote connection, the machine on which
+# the user sits). The "client" is the application that does drawing requests,
+# in other words, the running programs (and on remote connection the remote
+# machine upon which the application is launched).
+#
+# The "pyvm windowing environment" is the "server" which is using an other
+# backend (linuxfb, SDL, X11). The applications connect to the pyvm windowing
+# environment with an IPC mechanism, arrange a shared framebuffer and use
+# these channels to send drawing requests to the "server" and receive
+# input events.
+#
+# At the moment, this is an implementation for a "local" server: The IPC
+# mechanism is UNIX domain sockets and the shared framebuffer happens with
+# the SYS V IPC shm* functions.
+# Converting this to a remote, network transparent, backend is trivial
+# although large amounts of data will be transferred since shared fb is
+# not possible through the network and all the updates will have to be
+# performed by tranferring images.
+#
+# Implementation details:
+#  Normally a pyvm backend supplies functions like "draw_line". There
+#  would be two possibilities:
+#	1. send the "draw_line" request over the IPC channel
+#	2. draw the line on a framebuffer local to the application
+#	   and then update the modified region to the remote framebuffer
+#	   (for a *shared* framebuffer, these two are the same memory).
+# we do the latter. This is -apparently- what X11 does for local display's
+# too and that's why oportunities for acceleration are limited, but stuff
+# that really cares about accelration, like games, runs in full-screen
+# mode. Windowing environment + acceleration == don't expect much.
+#
+# A possibility is to (if possible) allocate the shared framebuffers in
+# video memory and that would indeed help in the case of drawing visible
+# parts of windows with clipping.
+
+__autosem__
+
+# routines for sharing a framebuffer and an IPC channel
+
+import DLL, ipc, random, os, time, thread
+
+FrameBuffer = importFB ()
+
+shmget = DLL.libcload ("i", "shmget", "iii")
+shmat  = DLL.libcload ("i", "shmat", "iii")
+shmdt  = DLL.libcload ("i", "shmdt", "i")
+shmctl = DLL.libcload ("i", "shmctl", "iii")
+
+class shm
+{
+	method __init__ (key, size, clean=False)
+	{
+		$shmid = shmget (key, size, 01644)
+		$addr = shmat ($shmid, 0, 0)
+		if (clean)
+			shmctl ($shmid, 0, 0)
+	}
+
+	method __del__ ()
+		shmdt ($addr)
+}
+
+class protocol
+{
+	method __init__ ($channel);
+
+	method say (x)
+		$channel.send (x + "\n")
+
+	method ack (x)
+		if ((r = $channel.readline_rstr ()) != x)
+			raise Error ("Didn't ACK [%s]" %x + str (r))
+
+	method expect (sw)
+	{
+		c = $channel.readline_rstr ()
+		s = c.split ()
+		if (s [0] != sw)
+			raise Error ("Expected [%s] got [%s]" %(sw, c))
+		return [int (i) for (i in s [1:])]
+	}
+
+	method expect1 (sw)
+		return $expect (sw)[0]
+
+	method expectsw (sw)
+	{
+		c = $channel.readline_rstr ()
+		if (!c.sw (sw))
+			raise Error ("Expected [%s] got [%s]" %(sw, c))
+		return c [len (sw):]
+	}
+}
+
+# client side protocol
+
+def connect_rfb (w, h, RESOURCE)
+{
+	S = ipc.Client (RESOURCE)
+	c = S.connect ()
+	s = c.socketfile ()
+	P = protocol (s)
+	W, H, BPP = P.expect ("HI")
+	if (w == 0) w = W
+	else w = min (w, W)
+	if (h == 0) h = H
+	else h = min (h, H)
+	shkey = random.random_int32 ()
+	mem = shm (shkey, w*h*BPP)
+	P.say ("SHKEY %i %i %i" %(w, h, shkey))
+	P.ack ("YO!")
+	F = FrameBuffer (w, h, BPP, mem.addr)
+	F.put_pixel (0, 0, random.random_int32 ())
+	mm = F.get_pixel (0, 0)
+	P.say ("TEST %i" %mm)
+	P.ack ("OK")
+	P.say ("OK")
+	P.ack ("OK2")
+	F.shmdata = mem
+	return F, s, [W, H]
+}
+
+# server side protocol
+
+def establish (W, H, BPP, c)
+{
+	s = c.socketfile ()
+	P = protocol (s)
+	P.say ("HI %i %i %i" %(W, H, BPP))
+	w, h, sid = P.expect ("SHKEY")
+	mem = shm (sid, w*h*BPP, True)
+	P.say ("YO!")
+	F = FrameBuffer (w, h, BPP, mem.addr)
+	v = P.expect1 ("TEST")
+	if (F.get_pixel (0, 0) == v)
+		P.say ("OK")
+	else raise Error ("shm TEST failed!")
+	P.ack ("OK")
+	P.say ("OK2")
+	F.shmdata = mem
+	return F, s
+}
+
+def resize (F, W, H, sid)
+{
+	mem = shm (sid, W*H*F.bpp, True)
+	F.shmdata = mem
+	F.reinit (W, H, F.bpp, mem.addr)
+	F.shmdata = mem
+}
+
+def accept_rfb (W, H, BPP, RESOURCE, timeout=15)
+	return establish (W, H, BPP, ipc.Server (RESOURCE).accept (timeout=timeout))
+
+def rfb_server (W, H, BPP, RESOURCE)
+{
+	S = ipc.Server (RESOURCE)
+	while (1)
+		yield establish (W, H, BPP, S.accept ())
+}
+
+# backend: "the client" in X11 terminology
+
+from backend_base import Window as BaseWin
+
+class WindowClass (**BaseWin)
+{
+	inX = False
+
+	method screen_size ()
+		return $WH
+
+	method __init__ (w=0, h=0)
+	{
+		$EL     = thread.xlock ()
+		$cblock = thread.xlock (False)
+		$fb, $ipc, $WH = connect_rfb (w, h, $pywm_file)
+		$draw_line  = $fb.draw_line
+		$fill_rect  = $fb.fill_rect
+		$show_image = $fb.put_image
+		$width, $height, $bpp = $fb.w, $fb.h, $fb.bpp
+		$std_fonts ()
+		$fifo = thread.fifo ()
+		$mouse_xy = 0, 0
+		thread.start_new ($read_events)
+	}
+
+	method resize (w, h)
+	{
+		w = minmax (0, w, $WH [0])
+		h = minmax (0, h, $WH [1])
+		if (w == $fb.w and h == $fb.h or w == 0 or h == 0)
+			return
+		shkey = random.random_int32 ()
+		mem = shm (shkey, w*h*$fb.bpp)
+		$ipc.send ("REMAP %i %i %i\n" %(w, h, shkey))
+		$fb.reinit (w, h, $fb.bpp, mem.addr)
+		$fb.shmdata = mem
+		$width, $height = $fb.w, $fb.h
+	}
+
+	method read_events ()
+	{
+		s = $ipc#.socketfile ()
+		while (1) {
+			try r = s.readline ()
+			except break
+			if !(r = r.rstrip ())
+				break
+
+			$EL.release ()
+			r = r.split ()
+			r0 = r [0]
+			# MotionNotification
+			if.continue (r0 == "M")
+				$mouse_xy = [int (x) for (x in r [1:])]
+			if.continue (r0 == "PASTED") {
+				$pasted = unhexlify (r [1])
+				$cblock.release ()
+			}
+
+			if (r0 == "CLICK")
+				r [1:] = [int (x) for (x in r [1:])]
+			else if (r0 == "PRESS")
+				if (r [1] == "NL")
+					r [1] = "\n"
+				else if (r [1] == "SP")
+					r [1] = " "
+				else if (r [1] == "TAB")
+					r [1] = "\t"
+			$fifo.put (*r)
+		}
+		$fifo.put ("exit")
+	}
+
+	method flush (area=None)
+	{
+		area = area or (0, 0, $width, $height)
+		$ipc.send ("F %i %i %i %i\n" %area)
+	}
+
+	method set_wm_name (name)
+		$ipc.send ("NAME %s\n" % name.partition ("\0")[0].replace ("\n", "\\n").hexlify ())
+
+	method Copy (text)
+		$ipc.send ("COPY %s\n" %text.hexlify ())
+
+	method Paste ()
+	{
+		$ipc.send ("PASTE\n")
+		$cblock.acquire ()
+		return $pasted
+	}
+
+	method shutdown ()
+	{
+		$ipc.send ("EXIT\n")
+		$ipc.close ()
+		del $fb.shmdata
+		del $fb
+	}
+
+	method where ()
+		return $mouse_xy
+
+	method move_mouse (x, y);
+
+	method block_until_event ()
+		$EL.acquire ()
+
+	method get_event ()
+	{
+		e = $fifo ? $fifo.get () : None
+		return e -> str ? [e] : e
+	}
+}
+
+def Window (pywm)
+{
+	class Window (**WindowClass)
+		pywm_file = pywm
+	return Window
+}
+
+# framebuffer??

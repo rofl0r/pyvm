@@ -1,0 +1,396 @@
+/*
+ *  Threading routines
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+extern REFPTR devnull;
+
+/* start_new_thread */
+
+extern PyFuncObj *BootThread, *MultiTask;
+extern void *boot1;
+
+_module __object__ *start_new_thread (REFPTR argv [], int argc)
+{
+static	int taskID;
+	(*BootThread).call (devnull, argv - 1, 2);
+	CtxSw.setretval (&devnull);
+	CtxSw.vm->caller = boot1;
+	new Task (CtxSw.vm, ++taskID, RC);
+	return newIntObj (taskID);
+}
+
+/* get_ident */
+
+_module __object__ *get_ident_thread ()
+{
+	return newIntObj (RC->ID);
+}
+
+/* interrupt */
+
+extern void vmintr (void*);
+extern PyFuncObj *RaiseAsm;
+
+_module __object__ *interrupt_thread (REFPTR argv[], int argc)
+{
+	/* The if_runnning parameter has the following effect:
+		0: interrupt only (soft)blocking threads
+		1: interrupt (soft)blocking and runnning threads
+		2: interrupt the above and do a disruptive interrupt
+		   on blocking threads.  This is a panic action done
+		   by ctrl-c in order to terminate the program.
+		   After that, the program is broken but we hope
+		   do end the VM cleanly through the BIOS before anything
+		   bad happens.
+	*/
+	int ID = argv [0].CheckInt ()->i;
+	int if_running;
+	Task *T;
+
+	if (argc < 3) if_running = 0;
+	else if (IntObj.isinstance (argv [2].o)) if_running = argv [2].as_int->i;
+	else if_running = argv [2]->Bool ();
+
+	for (T = RALL; T; T = T->_next)
+		if (T->ID == ID)
+			break;
+	if (!T)
+		return &None;
+	if (T->state == TH_BLOCKED) {
+		if (if_running > 1) {
+			// here we _could_ try to send sigint to the process
+			RaiseAsm->call (devnull, argv, 1);
+			CtxSw.vm->retval = &devnull;
+			CtxSw.vm->caller = T->vm;
+			T->vm = CtxSw.vm;
+			T->move_running ();
+//			pthread_kill (T->PID, SIGINT);
+			return &None;
+		} else if (!if_running)
+			return &None;
+//			RaiseNotImplemented ("Can't interrupt a REAL blocking thread (ask on list)");
+	} else if (T->state == TH_SOFTBLOCK) {
+		if (T->LOCKER.o != &None) {
+			((ThrLockObj*) T->LOCKER.o)->remove_waiter (T);
+			T->LOCKER = &None;
+		} else {
+			vmintr (T);
+			/* xxx: vmintr does move running? */
+		}
+		T->move_running ();
+	} else if (!if_running)
+		return &None;
+	if (0) {
+		// xxx: this would be the preferred way to interrupt a thread.
+		// however, it fails. It is assumed that the thread will raise
+		// an interrupt when the scheduler attempts to make it running.
+		// however there is this case: all threads are blocking and
+		// a thread is made running not by the scheduler, but by setting
+		// RC and releasing GIL, which escapes this test. So go for the
+		// other method. (need to adapt to TAKE_OVER in boot_pyvm())
+		T->INTERRUPT = argv [1].o;
+	} else {
+		RaiseAsm->call (devnull, argv, 1);
+		CtxSw.vm->retval = &devnull;
+		CtxSw.vm->caller = T->vm;
+		T->vm = CtxSw.vm;
+	}
+	return &None;
+}
+
+void Task.interrupt ()
+{
+	// Needed any more? Used?
+fprintf (stderr, "HAVE TO INTERRUPT SOFT BLOCKING THREAD\n");
+}
+
+/* lock object */
+
+static DictObj LockMethods __noinit ();
+
+static const char ThreadLockType [] = "Lock object";
+static TypeObj ThreadLockTypeObj;
+
+static class ThrLockObj : __container__
+{
+	const char *const stype = ThreadLockType;
+	const TypeObj &type = &ThreadLockTypeObj;
+	DictObj *type_methods = &LockMethods;
+
+	bool reentrant, unlocked;
+	int count, ownerID;
+	REFPTR waiters, blockers;
+   public:
+	ThrLockObj (bool = false);
+	bool acquire (int);
+
+trv	void traverse ()	{ waiters.traverse_ref (); blockers.traverse_ref (); }
+	void print ()		{ print_out (STRL ("<Lock object>")); }
+};
+
+static TypeObj ThreadLockTypeObj ctor (ThrLockObj._v_p_t_r_);
+
+ThrLockObj.ThrLockObj (bool b)
+{
+	reentrant = b;
+	count = 0;
+	ownerID = -1;
+	unlocked = true;
+	__container__.ctor ();
+	waiters.ctor (new ListObj);
+	blockers.ctor (new ListObj);
+}
+
+bool ThrLockObj.acquire (int rqID)
+{
+	/* 1: acquired ok
+	 * 0: must block
+	 */
+	if (!reentrant) {
+		if (!unlocked) return 0;
+		unlocked = false;
+		return 1;
+	}
+	if (unlocked) {
+		unlocked = false;
+		ownerID = rqID;
+		count = 1;
+		return 1;
+	}
+	if (ownerID != rqID)
+		return 0;
+	count++;
+	return 1;
+}
+
+void ThrLockObj.release ()
+{
+	if (!reentrant) {
+	do_release:
+		unlocked = true;
+		if (blockers.as_list->len) {
+			REFPTR y = blockers.as_list->pop (0);
+			((sem*)y.as_int->i)->post ();
+		} else if (waiters.as_list->len) {
+			REFPTR y = waiters.as_list->pop (0);
+			Task *W = (Task*) y.as_int->i;
+			W->LOCKER = &None;
+			W->move_running ();
+			acquire (W->ID);
+		}
+		return;
+	}
+	if (ownerID != RC->ID) {
+		fprintf (stderr, "Reentrant lock not released by owner %i %i\n", ownerID, RC->ID);
+		whereami ();
+		RaiseSystemExit (0);
+	}
+	if (!--count)
+		goto do_release;
+}
+
+static void ThrLockObj.remove_waiter (Task *T)
+{
+	long Ti = (long) T;
+	int i;
+	for (i = 0; i < waiters.as_list->len; i++)
+		if (waiters.as_list->data [i].as_int->i == Ti) {
+			waiters.as_list->pop (i);
+			return;
+		}
+}
+
+_module __object__ *release_ThrLockObj (REFPTR argv [])
+{
+	ThrLockObj *T = ThrLockObj.checkedcast (argv [0].o);
+	T->release ();
+	return &None;
+}
+
+_module __object__ *locked_ThrLockObj (REFPTR argv [])
+{
+	ThrLockObj *T = ThrLockObj.checkedcast (argv [0].o);
+	return T->unlocked ? &FalseObj : &TrueObj;
+}
+
+extern PyFuncObj *block_thread ();
+
+_module __object__ *acquire_ThrLockObj (REFPTR argv [], int argc)
+{
+	ThrLockObj *T = ThrLockObj.checkedcast (argv [0].o);
+	bool ac = T->acquire (RC->ID);
+	if (argc == 2 && !IntObj.checkedcast (argv [1].o)->i && !ac)
+		return &FalseObj;
+	if (ac)
+		return argc == 2 ? &TrueObj : &None;
+
+	/*** Must Block ***/
+
+	if (RC->preemptive) {
+		sem S;
+		T->blockers.as_list->append (new IntObj ((long) &S));
+		RELEASE_GIL
+		S.wait ();
+		ACQUIRE_GIL
+		return &None;
+	} else {
+		T->waiters.as_list->append (new IntObj ((long) RC));
+		RC->LOCKER = T;
+		block_thread ()->call (devnull, argv, 0);
+		return &CtxSw;
+	}
+}
+
+_module __object__ *allocate_lock_thread ()
+{
+	return new ThrLockObj;
+}
+
+// sched_yield (th=None)
+//  Makes the current thread give up the VM and another thread take over.
+//  if `th` is specified, the VM will switch to this thread, otherwise the
+//  next thread in the queue will take over.
+//
+//  Also, this demonstrates the entire concept of stackless/non-stackless vm.
+//  If preeptive (non-stackless) the only way to sched_yield is to tell the
+//  kernel to sched_yield for thread switch.
+//
+
+#ifdef _POSIX_PRIORITY_SCHEDULING
+extern int sched_yield ();
+#else
+static void sched_yield ()
+{
+	// usleep() is supposed to make the kernel switch a task
+	usleep (1);
+}
+#endif
+
+void py_sched_yield ()
+{
+	RELEASE_GIL
+	sched_yield ();
+	ACQUIRE_GIL
+}
+
+static void Task.make_next ()
+{
+	/* remove */
+	if (next) next->prev = prev;
+	else RL = prev;
+	if (prev) prev->next = next;
+	else RF = next;
+	/* insert after RC */
+	if (RC->next) {
+		next = RC->next;
+		next->prev = this;
+	} else {
+		next = 0;
+		RL = this;
+	}
+	RC->next = this;
+	prev = RC;
+}
+
+_module __object__ *sched_yield_thread (REFPTR argv[], int argc)
+{
+	if_unlikely (RC->preemptive) {
+		py_sched_yield ();
+		return &TrueObj;
+	}
+
+	if (argc) {
+		int tn = argv [0].CheckInt ()->i;
+		for (Task *T = RF; T; T = T->next)
+			if (T->ID == tn) {
+				// if aleady current or not running, return false
+				if (T == RC || T->state != TH_RUNNING || T->LOCKER.o != &None)
+					return &FalseObj;
+				T->make_next ();
+				break;
+			}
+	}
+
+	DoSched |= SCHED_YIELD;
+	return &TrueObj;
+}
+
+_module __object__ *all_thread ()
+{
+	ListObj *L = new ListObj ();
+	for (Task *T = RALL; T; T = T->_next)
+		L->append (newIntObj (T->ID));
+	return L;
+}
+
+//******************************************************************************
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+// we make the reentrant Import Lock here and return two bound functions
+
+void make_IL_lock (REFPTR acf, REFPTR ref)
+{
+	REFPTR IL = new ThrLockObj (1);
+	acf.ctor (IL->getattr (Interns.acquire));
+	ref.ctor (IL->getattr (Interns.release));
+}
+
+ThrLockObj *kLock;
+
+void klock_up ()
+{
+	acquire_the_gil ();
+	kLock->release ();
+	release_the_gil (1);
+}
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+static const method_attribute lock_methods [] = {
+	{"locked",	"Lock.locked", SETARGC (1, 1), locked_ThrLockObj},
+	{"acquire",	"Lock.acquire", SETARGC (1, 2), acquire_ThrLockObj},
+	{"release",	"Lock.release", SETARGC (1, 1), release_ThrLockObj},
+	MENDITEM
+};
+
+static const bltinfunc funcs [] = {
+	{ "start_new_thread",	SETARGC (2, 3), start_new_thread },
+	{ "allocate_lock",	SETARGC (0, 0), allocate_lock_thread },
+	{ "get_ident",		SETARGC (0, 0), get_ident_thread },
+	{ "sched_yield",	SETARGC (0, 1), sched_yield_thread },
+	{ "interrupt",		SETARGC (2, 3), interrupt_thread },
+	{ "all",		SETARGC (0, 0), all_thread },
+	{ "_local",		SETARGC (0, 0), 0 },
+	BENDITEM
+};
+
+static class InitLock : InitObj {
+	int priority = INIT_ATTR;
+	void todo ()
+	{
+		LockMethods.ctor (lock_methods);
+	}
+};
+
+slowcold __object__ *import__thread ()
+{
+	ModuleObj *tr;
+	kLock = new ThrLockObj (0);
+	kLock->unlocked = false;
+	tr = new ModuleObj ictor (
+		("__klock__", kLock),
+		("error", new DynClassObj (new DictObj, new Tuplen (DynExceptions.Exception),
+			Interns.error)));
+	tr->GC_ROOT ();
+	tr->AddFuncs (funcs);
+	return tr;
+}

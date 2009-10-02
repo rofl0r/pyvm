@@ -1,0 +1,596 @@
+/*
+ *  Helpers for HTML parsing
+ * 
+ *  Copyright (c) 2007, 2008 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "dynlib.h"
+
+/* place in own section so that if html is not used the code is not loaded
+   from disk by OS */
+#define htmodule __section__ (".text.htmlpage") static
+
+struct wsctx
+{
+	int have_space;
+	int n;
+};
+
+/* whitespace collapser for HTML */
+/* - in whitespace mode "normal" whitespace is collasped.
+     anything in '\r\n\t ' is converted to a space.
+ args:
+   0: the state, i.e. if we have space from previous call, etc
+   2: string to process or int to change the state
+   3: if above string, an integer for "normal", "pre", "nowrap", "pre-wrap", "pre-line"
+*/
+htmodule __object__ *html_whitespace (REFPTR argv[])
+{
+	wsctx *ws = (wsctx*) argv [0].check_string ()->str;
+	if (IntObj.isinstance (argv [1].o)) {
+		ws->have_space = argv [1].as_int->i;
+		return &None;
+	}
+	StringObj *s = argv [1].check_string ();
+	int mode = argv [2].as_int->i;
+	if ((mode & 1) == 0)
+		return html_ws_normal (ws, s);
+	return html_ws_pre (ws, s);
+}
+
+htmodule __object__ *html_ws_normal (wsctx *ws, StringObj *s)
+{
+	int have_space = ws->have_space;
+
+	const char *c = s->str;
+	int i, l;
+	l = s->len;
+	if (!l)
+		return s;
+	if (have_space && in4 (c [0], ' ', '\t', '\n', '\r'))
+		goto doit;
+	if (in3 (c [0], '\t', '\n', '\r'))
+		goto doit;
+	for (i = 1; i < l; i++)
+		if (in3 (c [i], '\r', '\n', '\t') || (c [i] == ' ' && c [i-1] == ' '))
+			goto doit;
+	ws->have_space = c [l - 1] == ' ';
+	return s;
+  doit:;
+	char *n;
+	if (l < 100) n = alloca (l + 1);
+	else n = seg_alloc (l + 1);
+	char *n0 = n;
+
+	i = 0;
+	if (have_space)
+		while (i < l && in4 (c [i], ' ', '\t', '\n', '\r'))
+			++i;
+
+	while (i < l)
+		if ((unsigned char) c [i] > 32) *n++ = c [i++];
+		else if (in4 (c [i], ' ', '\t', '\n', '\r')) {
+			*n++ = ' ';
+			++i;
+			while (i < l && in4 (c [i], ' ', '\t', '\n', '\r'))
+				++i;
+		} else *n++ = c [i++];
+
+	if (n == n0) {
+		if (l >= 100)
+			seg_free (n0);
+		return NILstring;
+	}
+
+	__object__ *o = new StringObj binctor (n0, n - n0);
+	if (l >= 100)
+		seg_free (n0);
+	ws->have_space = n [-1] == ' ';
+	return o;
+}
+
+/* in whitespace mode "pre":
+	'\r\n' converted to \n
+	plain '\r' converted to \n
+	tabs are expanded in next multiple of 8 from the last \n
+*/
+
+htmodule __object__ *html_ws_pre (wsctx *ws, StringObj *s)
+{
+	unsigned int ntab = 0, ncr = 0, hcr = 0, i, l;
+	const char *c = s->str;
+	int lastnl = -1;
+
+	for (i = 0, l = s->len; i < l; i++)
+		if (c [i] == '\t') ntab++;
+		else if (c [i] == '\r') {
+			if (c [i + 1] == '\n') ncr++;
+			else hcr = 1;
+			lastnl = i;
+		} else if (c [i] == '\n')
+			lastnl = i;
+
+	// no changes
+	if (!ncr && !ntab && !hcr) {
+		ws->have_space = in2 (c [i - 1] , ' ', '\n');
+		if (lastnl == -1)
+			ws->n += l - 1;
+		else ws->n = l - lastnl - 1;
+		return s;
+	}
+
+	int l2 = s->len + ntab * 7 - ncr;
+	int ci = ws->n;
+	char *ss = seg_alloc (l2 + 1);
+	char *sp = ss;
+
+	for (i = 0; i < l; i++)
+		if (c [i] == '\t') {
+			do *sp++ = ' ';
+			while (++ci & 7);
+		} else if (c [i] == '\r') {
+			if (c [i + 1] != '\n') {
+				*sp++ = '\n';
+				ci = 0;
+			}
+		} else {
+			if (c [i] == '\n')
+				ci = 0;
+			else ++ci;
+			*sp++ = c [i];
+		}
+
+	ws->have_space = in2 (sp [-1] , ' ', '\n');
+	*sp = 0;
+	int l3 = sp - ss;
+	if (l3 != l2)
+		ss = seg_realloc (ss, l3 + 1);
+	ws->n = ci;
+	return new StringObj allocated (ss, l3);
+}
+
+/* Given a string like: 
+		A href = foo NAME="bar" isindex
+   Generate a tuple:
+		('a', ['href', 'foo', 'name', 'bar', 'isindex', None])
+   Tagname and attribute name are converted to low case and interned.
+*/
+
+static StringObj *icache;
+
+typedef struct attr_pair_t {
+	__object__ *name, *value;
+	struct attr_pair_t *prev;
+} attr_pair;
+
+htmodule inline __object__ *uniqlower (const char *s, unsigned int l, DictObj *udict)
+{
+	int i;
+	char ss [l];
+
+	for (i = 0; i < l; i++)
+		ss [i] = tolower (s [i]);
+
+	icache->str = ss;
+	icache->len = l;
+	icache->mkhash ();
+
+	__object__ *r = udict->contains (icache);
+	if_likely (((long) r))
+		return r;
+
+	if_likely (l < 14)
+		r = intern_string2 (ss, l);
+	else r = new StringObj binctor (ss, l);
+
+	udict->xsetitem_str (r, r);
+	return r;
+}
+
+htmodule __object__ *attrsplit (const char *s, unsigned int l, __object__ *cdata, DictObj *udict)
+{
+	/* this function must not raise */
+	unsigned int i, j, k;
+	char q;
+
+	for (i = 0; i < l; i++)
+		if (isspace (s [i]) || s [i] == '=')
+			break;
+
+	for (k = i; s [k - 1] == '/' && k; k--);
+
+	__object__ *tagobj = uniqlower (s, k, udict);
+
+	attr_pair *top = 0, *ap;
+	int np = 0;
+
+	if (i < l) while (np < 100) {
+		while (isspace (s [i]))
+			if (++i == l)
+				goto out;
+		if (s [i] == '/' && i == l - 1)
+			goto out;
+
+		// get attribute name
+		j = i++;
+		while (!isspace (s [i]) && s [i] != '=' && i < l)
+			i++;
+
+		++np;
+		ap = (attr_pair*) alloca (sizeof *ap);
+		ap->prev = top;
+		top = ap;
+		top->name = uniqlower (s + j, i - j, udict);
+		top->value = 0;
+
+		// after name
+		if (i == l)
+			goto out;
+
+		if (isspace (s [i])) {
+			while (isspace (s [i]))
+				if (++i == l)
+					goto out;
+
+			if (s [i] != '=') 
+				continue;
+		}
+
+		// we are at '='
+		++i;
+
+		while (isspace (s [i]))
+			if (++i == l)
+				goto out;
+		if (s [i] == '/' && i == l - 1)
+			goto out;
+		if (s [i] == '>')
+			goto out;
+
+		if (s [i] == '"' || s [i] == '\'') {
+			// quoted value
+			q = s [i++];
+			j = i;
+			while (s [i] != q)
+				if (++i == l)
+					goto out;
+			top->value = new StringObj binctor (s + j, i - j);
+			++i;
+		} else {
+			// unquoted value
+			j = i;
+			while (!isspace (s [i]))
+				if (++i == l)
+					break;
+			top->value = new StringObj binctor (s + j, i - j);
+		}
+
+		if (i == l)
+			break;
+	}
+
+   out:;
+	int lp = 2 * (np + (cdata ? 1 : 0));
+	if (!lp)
+		return new Tuplen (tagobj, NILTuple);
+
+	ListObj *L = new ListObj __sizector (lp);
+	L->len = lp;
+	for (i = 2 * np - 1, ap = top; ap; ap = ap->prev) {
+		L->__inititem (i--, ap->value ?: &None);
+		L->__inititem (i--, ap->name);
+	}
+	if (cdata) {
+		L->__inititem (2 * np, char_string ('>'));
+		L->__inititem (2 * np+1, cdata);
+	}
+
+	return new Tuplen (tagobj, L);
+}
+
+/* ============================= html lexer =============================== */
+
+/* This html lexer is almost 4 times faster than the pure pyton one and makes
+   parsing+layout(non-css mode) run in 50% of the time.
+
+   The problem is things like:
+		<table size="3 color="0xffffff">
+   which are wrong but should not confuse the lexer to eat the text, etc.
+*/
+
+#if 1
+htmodule class html_lex0 : iteratorBase
+{
+	char *s, *e;
+	int state;
+	int cdata;
+	REFPTR udict;
+	__object__ *omark, *cmark, *rmark, *amark;
+   public:
+	html_lex0 (__object__ *ud, __object__ *t, char *_s, char *_e)
+	{
+		udict.ctor (ud);
+		iteratorBase.ctor (t);
+		s = _s;
+		e = _e;
+		state = 0;
+		omark = char_string ('<');
+		cmark = char_string ('/');
+		rmark = char_string ('!');
+		amark = char_string ('&');
+	}
+	void traverse ()
+	{
+		udict.traverse_ref ();
+		iteratorBase.traverse ();
+	}
+	__object__ *xnext ();
+	void print ();
+};
+
+htmodule void html_lex0.print ()
+{
+	print_out ("<html lexer0>");
+}
+
+htmodule __object__ *html_lex0.get_data ()
+{
+	int ref = 0;
+	char *ss = s, *ee = e-3;
+	for (;ss < ee; ss++) {
+		if (ss [0] == '&')
+			ref = 1;
+		if (ss [0] != '<') continue;
+		if (isalpha (ss [1])) {
+			state = 1;
+			goto t0;
+		}
+		if (ss [1] == '/') {
+			state = 2;
+			goto t0;
+		}
+		if (ss [1] == '!' && ss [2] == '-' && ss [3] == '-') {
+			state = 3;
+			goto t0;
+		}
+	}
+	ss = e;
+	state = 4;
+	if (ss == s)
+		RaiseStopIteration ();
+   t0:;
+	if (s == ss)
+		switch (state) {
+			case 1: return get_otag ();
+			case 2: return get_ctag ();
+			case 3: return get_comm ();
+		}
+
+	__object__ *S;
+	if (ss - s == 1)
+		S = char_string ((unsigned char) s [0]);
+	else S = new StringObj binctor (s, ss-s);
+	s = ss;
+	return new Tuplen ((ref ? amark : NILstring), S);
+}
+
+#define CASELESS(s, cl, cu) (s == cl || s == cu)
+htmodule bool caseless_word (char *source, const char *match)
+{
+	do {
+		if (tolower (*source) != *match)
+			return false;
+		++source; ++match;
+	} while (*match);
+
+	return !isalnum (*source);
+}
+	
+htmodule __object__ *html_lex0.get_otag ()
+{
+	char *ss = ++s, *ee = e;
+	int quote = 0;
+
+	/* The CDATA elements are script, style, title, textarea, option */
+	state = 0;
+	switch (ss [0]) {
+	case 's': case 'S':
+		if (caseless_word (ss + 1, "cript"))
+			state = 5, cdata = 0;
+		else if (caseless_word (ss + 1, "tyle"))
+			state = 5, cdata = 1;
+	ncase 't': case 'T':
+		if (caseless_word (ss + 1, "extarea"))
+			state = 5, cdata = 2;
+		else if (caseless_word (ss + 1, "itle"))
+			state = 5, cdata = 3;
+	ncase 'o': case 'O':
+		if (caseless_word (ss + 1, "ption"))
+			state = 5, cdata = 4;
+	}
+
+	/* A problematic case is something like
+		<table size="3 color=" 0xfffff">
+	A naive parser skips from the third quote to the next quote eating many
+	HTML nodes.  So, what's the rule?  Not all quoted values are to be skipped.
+	Another rule of mozilla is that a stray '<' CLOSES the tag. Try this
+		<body < foo </body>
+	*/
+
+	for (;ss < ee; ss++) {
+		if (ss [0] == '>')
+			goto t0;
+		if_unlikely (ss [0] == '<') {
+			--ss;
+			goto t0;
+		}
+		if ((ss [0] == '"' || ss [0] == '\'')) {
+			if_unlikely (ss [-1] != '=') {
+				char *sr = ss - 1;
+				while (isspace (*sr)) --sr;
+				if (*sr != '=')
+					continue;
+			}
+
+			quote = ss [0];
+			for (ss++ ;ss < ee; ss++)
+				if (ss [0] == quote)
+					break;
+			quote = 0;
+		}
+	}
+	state = 4;
+	RaiseStopIteration ();
+    t0:;
+	__object__ *CDATA = 0;
+	char *s0 = s;
+	s = ss + 1;
+	if_unlikely (state)
+		CDATA = get_cdat ();
+	__object__ *ret = attrsplit (s0, ss - s0, CDATA, udict.as_dict);
+	return new Tuplen (omark, ret);
+}
+
+htmodule __object__ *html_lex0.get_cdat ()
+{
+static	const char *cdtags [] = {
+		"Sscript",
+		"Sstyle",
+		"Ttextarea",
+		"Ttitle",
+		"Ooption"
+	};
+	/* use fastsearch variant */
+	char *ss = s, *ee = e-3;
+	state = 2;
+	for (;ss < ee; ss++) {
+		if (ss [0] != '<' || ss [1] != '/') continue;
+		const char *cdt = cdtags [cdata];
+		if (!CASELESS (ss [2], cdt [0], cdt [1])) continue;
+		if (!caseless_word (ss + 3, cdt + 2)) continue;
+
+		StringObj *S;
+		S = new StringObj binctor (s, ss-s);
+		s = ss;
+		return S;
+	}
+	state = 4;
+	RaiseStopIteration ();
+}
+
+#if PYVM_ENDIAN != PYVM_ENDIAN_LITTLE
+#define STR4INT(A, B, C, D) (D | (C << 8) | (B << 16) | (A << 24))
+#else
+#define STR4INT(A, B, C, D) (A | (B << 8) | (C << 16) | (D << 24))
+#endif
+
+static const unsigned int iihtml = STR4INT ('h', 't', 'm', 'l'), iibody = STR4INT ('b', 'o', 'd', 'y');
+
+htmodule __object__ *html_lex0.get_ctag ()
+{
+	s += 2;
+	char *ss = s, *ee = e - 2, *se = 0;
+
+	for (;ss < ee; ss++)
+		if (ss [0] == '>') {
+			if (!se) se = ss;
+			goto t0;
+		} else if_unlikely (!isalnum (ss [0]))
+			// garbage after tag name until '>'?
+			se = ss;
+	state = 4;
+	RaiseStopIteration ();
+    t0:;
+	state = 0;
+	int l = se - s;
+	StringObj *ret = (StringObj*) uniqlower (s, l, udict.as_dict);
+	s = ss + 1;
+	if (l == 4) {
+		unsigned int as_int = *(unsigned int*) ret->str;
+		/* closing tags for </html> and </body> are ignored and added explicitly
+		   after everything is finished */
+		if_unlikely (as_int == iihtml || as_int == iibody)
+			return get_data ();
+	}
+	return new Tuplen (cmark, ret);
+}
+
+htmodule __object__ *html_lex0.get_comm ()
+{
+	s += 3;
+	char *ss = s, *ee = e - 2;
+
+	/* comment tag: specifications don't know WTF they are talking about!
+	   What other browsers seem to do:
+		1. comments close at "-->", no text between the "--" and ">".
+		2. if there is no "-->", comments close at the innermost ">"
+	*/
+
+	for (;ss < ee; ss++)
+		if (ss [0] == '-' && ss [1] == '-' && ss [2] == '>') {
+			ss += 2;
+			goto t0;
+		}
+	for (ss = s; ss < ee; ss++)
+		if (ss [0] == '>')
+			goto t0;
+	state = 4;
+	RaiseStopIteration ();
+    t0:;
+	state = 0;
+	/* At the moment, drop comments! */
+//	StringObj *S;
+//	S = new StringObj binctor (s, ss-s);
+	s = ss + 1;
+return xnext ();
+//	return new Tuplen (rmark, S);
+}
+
+htmodule __object__ *html_lex0.xnext ()
+{
+	if_unlikely (state == 4)
+		RaiseStopIteration ();
+
+	switch (state) {
+		case 0: return get_data ();
+		case 1: return get_otag ();
+		case 2: return get_ctag ();
+		case 3: return get_comm ();
+		case 5: return get_cdat ();
+	}
+	RaiseNotImplemented ("BUG IN HTML");
+}
+
+/* first argument: string to tokenize
+   second argument: a dictionary used to intern tag and attribute names
+
+   The lexer makes sure that tag names and attribute names are interned
+   strings, so it is possible to compare them against literals with "is".
+*/
+htmodule __object__ *lex0 (REFPTR argv[])
+{
+	StringObj *s = argv [0].CheckString ();
+	DictObj.enforcetype (argv [1].o);
+	return new html_lex0 (argv [1].o, s, s->str, s->str+s->len);
+}
+#endif
+
+/* module */
+
+static bltinfunc funcs [] = {
+	{ "html_whitespace",	 SETARGC (2, 3), html_whitespace },
+//	{ "html_whitespace_pre", SETARGC (1, 1), html_whitespace_pre },
+	{ "lex0",		 SETARGC (2, 2), lex0 },
+	BENDITEM
+};
+
+slowcold __object__ *import_html00 ()
+{
+	icache = new StringObj ("");
+	return new ModuleObj BltinModule ("html00", funcs);
+}

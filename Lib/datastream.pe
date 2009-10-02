@@ -1,0 +1,198 @@
+##  Generic data parser
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This is a class where, given some data it creates a stream of primitive
+# values: bytes, 16-bit ints, 32-bit ints, strings, etc.
+# That is useful in many binary file formats
+
+__autosem__
+
+class MatchFailed (Error);
+
+class data_parser
+{
+	method __init__ ($data, $offset=0, LEN=None)
+	{
+		$len = LEN is None ? len (data) - offset : LEN
+		$offset0 = offset
+	}
+
+	method rn (n)
+	{
+		b = $data [$offset:$offset+n]
+		$offset += n
+		return b
+	}
+
+	method read (n)
+	{
+		if (n & 0xf0000000)
+			raise Error ("bad size")
+		b = $rn (n)
+		if (len (b) != n)
+			raise Error ("Insufficient data")
+		return b
+	}
+
+	method seek (p)
+		$offset = $offset0 + p
+
+	method tell ()
+		return $offset
+
+	method jump (p)
+		$offset += p
+
+	method copyfrom (start)
+		return $data [start:$offset]
+
+	method left ()
+		return $len - ($offset - $offset0)
+#		return len ($data) - $offset
+
+	method rest ()
+		return $data [$offset:$offset+$left ()]
+
+	######
+
+	method rbyte	()
+	{
+		r = $rn (1)
+		if (!r) raise Error ("EOF")
+		return r
+	}
+
+	method r8	() return ord ($rn (1))
+	method r8s	() return ord_signed ($rn (1))
+	method r8h	() return "0x%x" %$r8 ()
+	method r16l	() return ord16l ($rn (2))
+	method r16b	() return ord16b ($rn (2))
+	method r16ls	() return ord16ls ($rn (2))
+	method r16bs	() return ord16bs ($rn (2))
+	method r32l	() return ord32l ($rn (4))
+	method r32b	() return ord32b ($rn (4))
+
+	if (sys.byteorder == "little") {
+		r32m = r32l
+		r16m = r16l
+		r16ms = r16ls
+	} else {
+		r32m = r32b
+		r16m = r16b
+		r16ms = r16bs
+	}
+
+	method skip (n)
+		if (n & 0xf0000000)
+			raise Error ("bad size")
+		else $offset += n
+
+	# various udocumented features used by various parts of the Lib.
+	# should stabilize..
+	method nr16b	(n) return [ord16b ($rn (2)) for (i in *n)]
+
+	method unpack_le (f)
+	{
+		L = []
+		for (f in f)
+			if (f == "i") L << $r32l ()
+			else if (f == "H") L << $r16l ()
+			else if (f == "h") L << $r16ls ()
+			else if (f in "bB") L << $r8 ()
+			else raise Error ("datastream: UNKNOWN [%s]" %f)
+		return L
+	}
+	method rleints (n)
+		return [$r32l () for (i in *n)]
+	method rbeints (n)
+		return [$r32b () for (i in *n)]
+
+	###
+
+	method match (s) return $rn (len (s)) == s
+	method match_raise (s) if ($rn (len (s)) != s) raise MatchFailed ()
+
+	# export names from this object to some other object
+	method export (target, names)
+		for (thisname, thatname in names)
+			target.(thatname or thisname) = $(thisname)
+
+	# dereference the data
+	method kill ()
+		del $data
+}
+
+class data_parser_le (**data_parser)
+{
+	r32 = r32l
+	r16 = r16l
+	r16s = r16ls
+}
+
+class data_parser_be (**data_parser)
+{
+	r32 = r32b
+	r16 = r16b
+	r16s = r16bs
+}
+
+class file_parser (**data_parser)
+{
+	method __init__ (filename)
+	{
+		$f = open (filename)
+		$data = ""
+		$offset = 0
+	}
+
+	method rn (n)
+	{
+		if ($offset + n <= len ($data)) {
+			d = $data [$offset:$offset+n]
+			$offset += n
+			return d
+		}
+
+		extra = n - (len ($data) - $offset)
+		more = $f.read (max (extra, 8192))
+		d = $data [$offset:] + more [:extra]
+		$offset = extra
+		$data = more
+		return d
+	}
+
+	method skip (n)
+		if (n & 0xf0000000)
+			raise Error ("bad size")
+		else if ($offset + n <= len ($data))
+			$offset += n
+		else $rn (n)
+
+	method seek (n) raise Error ("Seek not available in file streams")
+	left = jump = seek
+}
+
+class socketfile_parser (**data_parser)
+{
+	method __init__ ($f);
+
+	method rn (n)
+		return $f.read (n)
+
+	method skip (n)
+		$rn (n)
+
+	method seek (n) raise Error ("Seek not available in file streams")
+	left = jump = seek
+}
+
+class socketfile_parser_le (**socketfile_parser)
+{
+	r32 = r32l
+	r16 = r16l
+	r16s = r16ls
+}

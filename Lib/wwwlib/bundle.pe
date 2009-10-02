@@ -1,0 +1,349 @@
+##  Save Bundled Page
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# Budle: save a page and all its secondary elements to one directory.
+# various hrefs/links are rewritten, stylesheets are rewritten to
+# point to local url()s, etc.
+
+# This might be used as a real bundler and allow recursive fetching,
+# www spider mirroring, etc.
+# At the moment though, the reason for the creation of bundles is
+# for debugging various errors in css layout. By having all the
+# relevant files it is easy to edit, reduce testcases and test
+# with mozilla without having to ensure similar network transfers.
+
+# todo:
+# favicon
+
+# Note: In bundle mode when parsing the HTML we do not replace entity references
+# because they will be converted back to references when writting back the HTML
+# in the bundle. When we need to use some data, do that first.
+
+import os, re
+from wwwlib.dom import produce
+from wwwlib.lex import OEMPTY, refsub
+from wwwlib.js.jslex import indent as jsindent
+
+importrule = re.compile ("@import\s+[^;]*").sub
+imagerule = re.compile (r"(background(-image)?|content)\s*:[^;}]*url\s*\([^)]*\)").sub
+urlrule = re.compile (r"url\s*\(([^)]*)\)").sub
+needquote = re.compile ("[' =><]").search
+
+REFS = {
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;"
+}
+
+def refent (x)
+	return REFS [x [0]]
+
+refrep = re.compile ("[&<>]").subwith (refent)
+
+def getext (p)
+{
+	e = p.rpartition (".")[2]
+	if (e and len (e) < 5 and "/" not in e) {
+		if ("?" in e)
+			e = e.partition ("?")[0]
+		return "." + e
+	}
+	return ""
+}
+
+NLT = {
+	"table", "h1", "h2", "h3", "h4", "h5", "h6", "body", "head", "html",
+	"ul", "ol", "dl", "li", "tr", "td", "dt", "dd", "form", "meta", "br",
+	"div", "p"
+}
+
+class BundleDumper
+{
+	method geturl (u, op=None)
+	{
+		op = op or $operation
+		if (op == "offline") {
+			u2 = u.load_cached ()
+			if (!u2) print "NEED DOWNLOAD:", u
+			return u2
+		}
+		try {
+			# TODO: use a webnet.fetcher to pipeline
+			u = u.get_it (op)
+			return u.Status == "OK" ? u : u.load_cached ()
+		}
+	}
+
+	method __init__ (dir, dom, $url, $operation="offline")
+	{
+		filename = dir + "/index.html"
+
+		# add a <link href=$url rel=original> tag to the head,
+		# then we can "View Source" and follow this
+		dom.head.new_kid ("link", ["href", url.url, "rel", "original"])
+
+		$renames = {}
+		$frames = {}
+		$secondaries = {"image":[], "css":[], "bimg":[], "js":[]}
+		F = open (filename, "w")
+		$W = F.write
+		$visit (dom)
+		F.close ()
+		if (operation != "offline")
+			print " Fetching stuff, mode =", operation
+
+		for (k, v in $secondaries ["css"])
+			if (u = $geturl (k)) {
+				open (dir + "/" + v, "w").write ($rewrite_css (u.readfile (), k))
+				print " Stored css:", v
+			}
+		for (name, key in [["image", "image"], ["bgimage", "bimg"], ["script", "js"]])
+			for (k, v in $secondaries [key])
+				if (u = $geturl (k, key == "js" ? "ifmodified" : None)) {
+					data = u.readfile ()
+					if (key == "js")
+						if (data.count (";") > 3 * data.count ("\n"))
+							data = jsindent (data)
+					open (dir + "/" + v, "w").write (data)
+					print " Stored %s:"%name, v
+				}
+	}
+
+	# convert an href to absolute from the original location
+	method absolute_href (href)
+	{
+		uu = $url.generate (refsub (href))
+		return refrep (uu.same ($url) ? "#" + uu.label : uu.url)
+	}
+
+	method visit (node)
+	{
+		tag = node.tag
+		if (!tag)
+			return $doText (node)
+
+		# avoid base
+		if (tag == "base")
+			return
+
+		a = []
+		attrs = dict (node.attr_pairs ())
+		g = attrs.get
+
+		if ("style" in attrs)
+			attrs ["style"] = $rewrite_css (attrs ["style"], $url)
+
+		if (tag == "frame" and g ("src")) {
+			fn = "Frame%i" %len ($frames)
+			$frames [$url.generate (g ("src")).url] = fn
+			attrs ["src"] = fn + "/index.html"
+		}
+
+		if (tag == "img")
+			$img_rewrite (attrs)
+
+		if (tag == "input" and g ("type") == "image")
+			$img_rewrite (attrs)
+
+		if (tag == "script" and "src" in attrs)
+			$js_rewrite (attrs)
+
+		if (tag == "link" and g ("rel", "").lower () == "stylesheet") {
+			if (href = g ("href")) {
+				attrs ["href"] = $secondary (href, "css")
+				print " rewrote link:", href, "->", attrs ["href"]
+			}
+		}
+		if (tag == "style")
+			attrs [">"] = $rewrite_css (attrs [">"], $url)
+
+		if (tag == "a" and "href" in attrs)
+			attrs ["href"] = $absolute_href (attrs ["href"])
+
+		is_cdata = False
+		for (k, v in attrs.items ())
+			if (k != ">") {
+				if (v is None) {
+					if (k not in """"'""")
+						a << k
+				} else {
+					if (!v or needquote (v))
+						v = '"%s"'%v
+					a << '%s=%s' %(k, v)
+				}
+			} else is_cdata = True
+		
+		if (tag in NLT)
+			$W ("\n")
+		if (a) $W ("<%s %s>" %(tag, " ".join (a)))
+		else $W ("<%s>" %tag)
+
+		if (is_cdata) {
+			$W (attrs [">"])
+			$W ("</%s>" %tag)
+			return
+		}
+
+		if (tag in OEMPTY)
+			return
+
+		if (tag == "pre") $W ("\n") 
+
+		kids = tag == "select" ? node.kids2 : node.kids
+		for (k in kids)
+			$visit (k)
+
+		if (tag == "pre") $W ("\n") 
+
+		$W ("</%s>" %tag)
+		if (tag in NLT)
+			$W ("\n")
+	}
+
+	method rewrite_css (style, url)
+	{
+		def rewr (m) {
+			rurl = url_from_import (m [0])
+			if (rurl) {
+				if (rurl [0] == rurl [-1] == "'")
+					rurl = rurl [1:-1]
+				return '@import "%s"' %$secondary (rurl, "css")
+			}
+			return m [0]
+		}
+		def rewr_url (m)
+		{
+			url = m [1]
+			if (url and (url [0] == url [-1] == '"' or url [0] == url [-1] == "'"))
+				url = url [1:-1]
+			url = $secondary (url, "bimg")
+			print " rewrote css image:", m [1], "->", url
+			return "url('%s')"%url
+		}
+		def rewr2 (m)
+		{
+			return urlrule (rewr_url, m [0])
+		}
+
+		o, $url = $url, url
+		style = importrule (rewr, style)
+		style = imagerule (rewr2, style)
+		style = style.replace ("}", "}\n")
+		$url = o
+		return style
+	}
+
+	method rewrite (attrs, t)
+	{
+		try v = attrs ["src"]
+		except return
+		attrs ["src"] = $secondary (v, t)
+		print " rewrote %s:"%t, v, "->", attrs ["src"]
+		return True
+	}
+
+	method img_rewrite (attrs)
+		return $rewrite (attrs, "image")
+	method js_rewrite (attrs)
+		return $rewrite (attrs, "js")
+
+	method secondary (v, t="image")
+	{
+		url = $url.generate (refsub (v))
+		u = url.url
+		if (u in $renames)
+			return $renames [u]
+		if (t == "css") ext = ".css"
+		else if (t == "js") ext = ".js"
+		else ext = getext (u) or ".img"
+		un = "%s%i%s" %(t, len ([x for (x in $renames.values ()) if (x.sw (t))]), ext)
+		$secondaries [t] << (url, un)
+		return $renames [u] = un
+	}
+
+	method doText (node)
+		if (node.Type == "text")
+			$W (node.text)
+}
+
+def url_from_import (u)
+{
+	print " Rewrite import rule:", u
+	u = u [7:].strip ()
+	url = None
+	if (u [0] == u [-1] == '"' or u [0] == u [-1] == "'")
+		url = u [1:-1]
+	else if (u.sw ("url")) {
+		u = u [3:].strip ()
+		if (u [0] == "(" and u [-1] == ")") {
+			u = u [1:-1]
+			if (u [0] == u [-1] == '"')
+				url = u [1:-1]
+			else url = u
+		}
+	}
+	if (!url)
+		print "FAILED:", u
+	return url
+}
+
+# main entry function
+
+def create (url, dir=None, operation="offline")
+{
+	print "= = = = = = = = = = = S T A R T  S A V E  B U N D L E = = = = = = = = = = = = "
+	print "URL:", url
+	dom = produce (url.readfile (), False)
+	if (!dir)
+		for (i in  *140) {
+			dir = "Bundle%i" %i
+			try {
+				os.mkdir (dir)
+				break
+			}
+		} else raise Error ("Couldn't create bundle dirs")
+	print "BUNDLE WILL BE SAVED INTO:", os.getcwd () + "/" + dir
+	B = BundleDumper (dir, dom, url, operation)
+	print "= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = "
+	for (k, v in B.frames.items ()) {
+		u = url.generate (k)
+		u = u.get_it (op="ifmodified")
+		try os.mkdir (dir + "/" + v)
+		create (u, dir + "/" + v, operation)
+	}
+}
+
+# as script
+
+USAGE = """usage: bundle [-or] <url> <directory>
+
+Download the url and its elements (images, css), rewrite the urls and
+store to directory. Note that it is better to use this from within the
+web browser because it will download only what is relevant for the
+layout. As a script it will try to download everything and that may
+lead to unused/unexpected/broken stuff.
+
+-o	: offline. Use what's in the webcache (will fetch what has
+	  been used by the browser if the page has been visited)
+-r	: force reload even if not modified
+"""
+
+if (__name__ == __main__)
+{
+	from wwwlib import webnet
+	offline, reload = sys.argp.check_switches ("-o", "-r")
+	url, dir = sys.argp.nargs (2)
+	url = webnet.START_URL (url)
+	print "Fetching ", url
+	op = offline ? "offline" : reload ? "reload" : "ifmodified"
+	url = url.get_it (op=op)
+	try os.mkdir (dir)
+	create (url, dir, op)
+	print "done"
+}

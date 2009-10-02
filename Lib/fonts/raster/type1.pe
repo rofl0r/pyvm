@@ -1,0 +1,252 @@
+##  Type1 fonts
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import pfb
+from fonts import standardEncoding
+from pspath import PsPath as Path
+from fonts.raster.rasterizer import BaseRasterizer, MissingGlyph
+
+# Adobe Glyph Names
+
+AGL = None
+def load_agl ()
+{
+	global AGL
+	if (AGL)
+		return
+	AGL = {}
+	for (l in open (HOME + "Lib/fonts/raster/GLN.txt")) {
+		if (l [0] == "#")
+			continue
+		k, v = l.strip ().split (';')
+		if (" " in v)
+			v = v.split ()[0]
+		AGL [k] = int (v, 16)
+	}
+}
+
+# A Type1 font uses lines and curves (cubic bezier) to define the outlines
+# of glyphs. The basic drawing commands are in the `Chars` dictionary for
+# each glyph.  Those commands may call "subroutines" from the `Subr` dictionary.
+
+class Type1 (BaseRasterizer)
+{
+	ucs = None
+	UnitsPerEM = 1000.0
+
+	method Init (data, encoding=None)
+	{
+		if (ord (data [0]) == 128 and ord (data [1]) in (1,2,3))
+			$FontName, $BBox, Encoding, Subr, $Char = pfb.parse (data)
+		else if (ord (data [0]) == 1 and ord (data [2]) == 4 and ord (data [3]) <= 4) {
+			import cff
+			$FontName, $BBox, Encoding, Subr, $Char = cff.parse (data)
+		} else if (data.sw ("%!PS-AdobeFont") or data.sw ("%!FontType")) {
+			import pfa
+			$FontName, $BBox, Encoding, Subr, $Char = pfa.parse (data)
+		} else raise Error ("Type1: Format not recognized")
+
+		$Encoding = encoding or Encoding
+
+		p = {}
+		for (k, v in $Char.items ())
+			if ((prog = prepare_type1_program (v, Subr)) is not None)
+				p [k] = prog
+
+		# Type1 provides "glyph names", ie, things like "Theta", "tilde" and "zero"
+		# for its glyphs. The code below coverts these names to unicode values
+		# for use by the common utf8 subsystem
+		load_agl ()
+		$ucs = ucs = {}
+		agl = AGL
+		for (k in $Char) {
+			# see freetype/src/psnames/psmodule.c:ps_unicode_value()
+			if (k.sw ("uni") and len (k) == 7) {
+				try {
+					ucs [int (k [3:], 16)] = k
+					continue
+				}
+			}
+			if (k [0] == 'u' and 4 < len (k) < 8) {
+				try {
+					ucs [int (k [1:], 16)] = k
+					continue
+				}
+			}
+			try ucs [agl [k]] = k
+			except {
+				if ("." in k and k [0] != ".")
+					try {
+						ucs [agl [k.partition (".")[0]]] = k
+						continue
+					}
+				if (k [0] != ".")
+					print "type1: unknown unicode value for glyph named '%s'"% k
+			}
+		}
+
+		$Char = p
+	}
+
+	method utf2id (u)
+		return $ucs [u]
+	method height_at (px)
+		return px * ($BBox [3] - $BBox [1]) / 1000.0
+
+	method char2id (c)
+		return $Encoding [ord (c)]
+	method name2id (c)
+		return c
+
+	method glyph_names ()
+		return $Char.keys ().sort ()
+
+	# reentrant
+	method exec_glyph (ctm, g)
+	{
+		path = Path (ctm)
+		try g = $Char [g]
+		except raise MissingGlyph
+		$exec_r (g, path)
+		return path
+	}
+
+	method exec_r (cmds, path)
+	{
+		args = []
+		pparg = None
+
+		##print "Execute microprogram:", cmds
+		for (c in cmds) {
+			if (c -> int or c -> float) {
+				args.append (c)
+				continue
+			}
+
+			if (c in {"hsbw", "rmoveto", "rlineto", "hlineto",
+				"rrcurveto", "hvcurveto", "vlineto", "closepath",
+				"vhcurveto", "hmoveto", "vmoveto"})
+				path.(c) (*args)
+			else if (c == "seac") {
+				# atm the accent is off by some pixels. need
+				# to use asb in place of accent's (achar) hsbw?
+				asb, abx, aby, bchar, achar = args
+				wx = path.wx
+				$exec_r ($Char [standardEncoding [bchar]], path)
+				path._move (abx, aby)
+				$exec_r ($Char [standardEncoding [achar]], path)
+				path.wx = wx
+			} else if (c not in ("endchar", "return", "hstem", "vstem", "hstem3", "vstem3"))
+				print "NotImplemented:", c
+			args = []
+		}
+	}
+
+	method px2adv (advance, px, em, dbg=0)
+	{
+		# Unlike truetype, decimals in px sizes do matter now (why?)
+		return lround ((px*advance*64)/em)
+	}
+
+	method advance_of (g, px, dbg=0)
+		try {
+			p = $Char [g]
+			if (p [2] == "hsbw")
+				#return px * p [1] / 1000.0
+				# compatible with freetype maths (right though?)
+				return $px2adv (p [1], px, 1000, dbg)
+			print "No hsbw", p
+		} except return 0.0
+
+	method info ()
+		print "Font: <%s> File: <%s>, %i glyphs" %($FontName, $filename, len ($Char))
+}
+
+from math import ceil
+
+##
+## Convert a type1 microprogram to an optimized form that:
+## - inlines subroutines
+## - precomputes `div`
+## - removes stuff we don't implement (stems)
+#
+# Normally, this is a postscript interpreter where values are pushed
+# to the stack and each command pops as many values as it wants.
+# The least-stack-use of a program is for example:
+#
+#	3 hstem 200 100 moveto
+#
+# But, in theory the same effect can be achieved by
+#
+#	200 100 3 hstem moveto
+#
+# Here we assume that programms are ALWAYS written in the first form.
+# This appears to be true.  In other word, each command comsumes all
+# the values currently on the stack.
+
+def prepare_type1_program (prog, subrs)
+{
+	prog = list (prog)
+
+	while (1) {
+		if ("callothersubr" in prog) {
+			# hack: normally, we should predefine
+			# the builtin subroutines (othersubrs). How-ever,
+			# the only subroutine used seems to be subr 3.
+			# subr 3, installs some stems and then returns its
+			# arguments.  The second argument is poped and the
+			# first fed to a callsubr.  So, iow, we shortcircuit
+			# all this to a callsubr.
+			i = prog.index ("callothersubr")
+			s0, None, so, None, c1, c2 = prog [i-3:i+3]
+			if (so == 3 and c1 == "pop" and c2 == "callsubr") {
+				prog [i-3:i+3] = [s0, "callsubr"]
+			} else {
+				print prog [i-3:i+1]
+				raise Error ("Othersubr, not 3")
+			}
+			continue
+		}
+
+		if ("callsubr" in prog) {
+			i = prog.index ("callsubr")
+			try prog [i-1:i+1] = subrs [prog [i - 1]]
+			except {
+				print "TYPE1: Subr not found. Glyph skipped"
+				return
+			}
+			continue
+		}
+
+		break
+	}
+
+	while ("div" in prog) {
+		i = prog.index ("div")
+		prog [i-2:i+1] = [float (prog [i - 2]) / prog [i - 1]]
+	}
+
+	for (r in ("return", "endchar"))
+		while (r in prog)
+			prog.remove (r)
+
+	for (r in ("hstem", "vstem"))
+		while (r in prog) {
+			i = prog.index (r)
+			prog [i-2:i+1] = []
+		}
+
+	for (r in ("hstem3", "vstem3"))
+		while (r in prog) {
+			i = prog.index (r)
+			prog [i-6:i+1] = []
+		}
+
+	return tuple (prog)
+}

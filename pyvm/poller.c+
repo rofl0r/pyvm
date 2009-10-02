@@ -1,0 +1,527 @@
+/*
+ *  File descriptor polling library
+ * 
+ *  Copyright (c) 2006, 2009 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+ * Polling multiplexer and event notifier.
+ *
+ * This is a user space event notifier based on poll().
+ * What we achieve with this library is to pass multiple
+ * blocking calls to *one* handler thread which will use
+ * callbacks to notify the rest of the program when there
+ * is activity.
+ *
+ * The library has four entry points:
+ *
+ *	int Request (long token, int fd, long long int timeout, int writting)
+ *		request polling on file descriptor fd.
+ *		'timeout' is microseconds (-1 == no timeout)
+ *		'writting' boolean to test for POLLOUT or POLLIN
+ *		'fd' if -1 this is just a timer
+ *		'token' must be > 0
+ *		This function is not thread safe.
+ *
+ *	void (*Notify) (long token, int timedout)
+ *		when an event occurs the library will call
+ *		the Notify callback with the token of the client.
+ *		timedout=1 if the client's timer expired.
+ *		the Notify callback is thread safe (the lib won't
+ *		re-enter)
+ *
+ *	void setNotify (void (*f)(long, int))
+ *		initializer to set the callback.
+ *
+ *	void Cancel (long token)
+ *		stop polling on the token
+ *
+ * Free builtin timer:
+ *
+ *	void startPeriodicTimer (int (*f)(), int every)
+ *		will start the periodic timer which will invoke
+ *		the callback every `every` milliseconds.
+ *		If the callback returns zero, the periodic
+ *		timer stops and can be restarted with `restartTimer`
+ *		There can be only one such timer, so this function
+ *		should be called only once.
+ *
+ *	void restartTimer ()
+ *		Restarts the periodic timer.
+ *
+ * The library creates new threads to handle polling.
+ * Initially no threads are created until the first Request.
+ * Each thread can handle (NCLIENTS-1) events.
+ *
+ * The total number of events is 8192. Normally the maximum
+ * number of file descriptors is like 1024 so we got a few
+ * extra for timers and the case sysadmin has increased the
+ * limit. For a server with thousands of client sockets it
+ * should be increased.
+ */
+
+extern int upoll (struct pollfd *, int, long long int);
+
+#define NCLIENTS 1024
+#define MAX_POLLERS 8
+
+extern "sys/poll.h" {
+#include <sys/poll.h>
+}
+#include "include.h"
+#include "mallok.h"
+
+struct poll_client
+{
+	long token;
+	int fd;
+	short events;
+	timeval timeout;
+};
+
+//
+// class semaphore
+//
+
+static
+class sem
+{
+	sem_t s;
+    public:
+	sem (int i = 0)	{ sem_init (&s, 0, i); }
+	void post ()	{ sem_post (&s); }
+	void wait ()	{ while (sem_wait (&s) == -1); }
+};
+
+//
+// convenient member functions to struct timeval
+//
+
+static inline bool timeval.before (timeval T)
+{
+	return tv_sec < T.tv_sec || (tv_sec == T.tv_sec && tv_usec <= T.tv_usec);
+}
+
+static inline long long int timeval.us_ahead_of (timeval T)
+{
+	return 1000000 * ((long long int) tv_sec - T.tv_sec) + (tv_usec - T.tv_usec);
+}
+
+static inline bool timeval.sametime (timeval T)
+{
+	return tv_sec == T.tv_sec && tv_usec == T.tv_usec;
+}
+
+static inline void timeval.now ()
+{
+	gettimeofday (this, 0);
+}
+
+static inline void timeval.never ()
+{
+	tv_sec = INT_MAX;
+	tv_usec = 0;
+}
+
+static inline void timeval.add_ms (unsigned int ms)
+{
+	tv_sec += ms / 1000;
+	ms %= 1000;
+	tv_usec += ms * 1000;
+	if (tv_usec > 1000000) {
+		tv_sec += tv_usec / 1000000;
+		tv_usec %= 1000000;
+	}
+}
+
+static inline void timeval.add_us (long long int us)
+{
+	tv_sec += us / 1000000;
+	tv_usec += us % 1000000;
+	if (tv_usec > 1000000) {
+		tv_sec += tv_usec / 1000000;
+		tv_usec %= 1000000;
+	}
+}
+
+//
+// poller class.
+// Because the only way to search for poll events is O(n)
+// a single poller thread would be inefficient for too many
+// threads (would it?).
+// For that we spawn 'poller classes' which divide the event
+// array.
+//
+
+static
+class poller
+{
+	sem plock;
+
+	int nclients;
+	poll_client client [NCLIENTS];
+
+	pollfd active [NCLIENTS];
+	int nactive;
+	long long int min_timeout;
+	timeval min_timeval;
+
+	int ctrl_w, ctrl_r;
+
+	void fill_active ();
+	void notify (int, bool);
+	void notify_min_timevals ();
+	void notify_fd (int);
+	void ctrl ();
+	void main_loop ();
+    public:
+	poller ();
+	void request (long, int, long long int, int);
+	bool can_serve ();
+	bool serves (long);
+};
+
+void poller.notify (int i, bool timedout)
+{
+	long token = client [i].token;
+
+	client [i].token = -1;
+	--nclients;
+	_Notify (token, timedout);
+}
+
+void poller.fill_active ()
+{
+	int i;
+	timeval mintime never ();
+
+	/* find the minimum timeout */
+	nactive = 0;
+	for (i = 0; i < NCLIENTS; i++)
+		if (client [i].token != -1) {
+			if (client [i].timeout.before (mintime))
+				mintime = client [i].timeout;
+			if (client [i].fd != -1) {
+				active [nactive].fd = client [i].fd;
+				active [nactive].events = client [i].events;
+				active [nactive++].revents = 0;
+			}
+		}
+
+	if (mintime.tv_sec != INT_MAX) {
+		timeval now now ();
+		min_timeout = mintime.us_ahead_of (now);
+		min_timeval = mintime;
+		if (min_timeout <= 0) {
+			notify_min_timevals ();
+			return fill_active ();
+		}
+	} else
+		min_timeout = -1;
+}
+
+static int (*PeriodicTimer) ();
+static int Period;
+
+void poller.notify_min_timevals ()
+{
+	for (int i = 0; i < NCLIENTS; i++)
+		if (client [i].token != -1
+		 && client [i].timeout.sametime (min_timeval)) {
+			if (client [i].token)
+				notify (i, true);
+			else {
+				if (PeriodicTimer ()) {
+					client [i].timeout.now ();
+					client [i].timeout.add_ms (Period);
+				} else {
+					client [i].timeout.never ();
+				}
+			}
+		}
+}
+
+void poller.notify_fd (int fd)
+{
+	for (int i = 0; i < NCLIENTS; i++)
+		if (client [i].token != -1 && client [i].fd == fd) {
+			notify (i, false);
+			return;
+		}
+}
+
+void poller.main_loop ()
+{
+	int n;
+
+	for (;;) {
+		fill_active ();
+		plock.post ();
+		n = upoll (active, nactive, min_timeout);
+		plock.wait ();
+
+		if (n == 0)
+			notify_min_timevals ();
+		else if (n > 0) {
+			if (active [0].revents) {
+				ctrl ();
+				--n;
+			}
+			if (n) for (int i = 1; i < nactive; i++)
+				if (active [i].revents)
+					notify_fd (active [i].fd);
+		} else if (errno != EINTR) {
+			/* os.system() can cause EINTR [SIGCHLD?],
+			 * which is harmless though and we should
+			 * proceed. Other errors are reported.  */
+			fprintf (stderr, "poll error %i\n", n);
+			perror ("INFO:");
+		}
+	}
+}
+
+struct marshal_request
+{
+	int fd, writting;
+	long token;
+	long long int timeout;
+};
+
+void poller.ctrl ()
+{
+	int i;
+	marshal_request M;
+
+	read (ctrl_r, &M, sizeof M);
+
+	/* special values: timer restart */
+	if (M.token == 0 && M.timeout == 0) {
+		client [0].timeout.now ();
+		client [0].timeout.add_ms (Period);
+		return;
+	}
+
+	/* special values: cancel a poll */
+	if (M.fd == -1 && M.timeout == -1 && M.writting == -1) {
+		for (i = 0; i < NCLIENTS; i++)
+			if (client [i].token == M.token) {
+				client [i].token = -1;
+				--nclients;
+				return;
+			}
+	}
+
+	/* add new poller client */
+	for (i = 0; client [i].token != -1; i++)
+		;
+	client [i].token = M.token;
+	client [i].events = (M.writting ? POLLOUT : (POLLIN | POLLPRI)) | POLLHUP | POLLERR;
+	client [i].fd = M.fd;
+	if (M.timeout < 0)
+		client [i].timeout.never ();
+	else {
+		client [i].timeout.now ();
+		client [i].timeout.add_us (M.timeout);
+	}
+}
+
+static void *_enter_main_loop (void *t)
+{
+	poller *p = (poller*) t;
+	p->main_loop ();
+	return 0;
+}
+
+poller.poller ()
+{
+	int ctrl_fd [2];
+
+	plock.ctor ();
+	pipe (ctrl_fd);
+	ctrl_w = ctrl_fd [1];
+	client [0].fd = ctrl_r = ctrl_fd [0];
+	client [0].token = 0;
+	client [0].timeout.never ();
+	client [0].events = POLLIN;
+	nclients = 1;
+	for (int i = 1; i < NCLIENTS; i++)
+		client [i].token = -1;
+
+	// spawn new thread and wait until in working state
+	pthread_t T;
+	pthread_attr_t A;
+	pthread_attr_init (&A);
+	pthread_attr_setdetachstate (&A, PTHREAD_CREATE_DETACHED);
+	pthread_create (&T, &A, _enter_main_loop, this);
+	plock.wait ();
+	plock.post ();
+}
+
+void poller.request (long token, int fd, long long int timeout, int writting)
+{
+	marshal_request M;
+	M.token = token;
+	M.fd = fd;
+	M.timeout = timeout;
+	M.writting = writting;
+	++nclients;
+	write (ctrl_w, &M, sizeof M);
+}
+
+void poller.cancel (long token)
+{
+	marshal_request M;
+	M.token = token;
+	M.fd = -1;
+	M.timeout = -1;
+	M.writting = -1;
+	write (ctrl_w, &M, sizeof M);
+}
+
+bool poller.can_serve ()
+{
+	return nclients < NCLIENTS;
+}
+
+bool poller.serves (long token)
+{
+	for (int i = 0; i < NCLIENTS; i++)
+		if (client [i].token == token)
+			return true;
+	return false;
+}
+
+//
+// poll domain.
+//
+
+static
+class poller_domain
+{
+	poller *P [MAX_POLLERS];
+	int nP;
+    public:
+	poller_domain ();
+	void request (long, int, long long int, int);
+	void cancel (long);
+};
+
+poller_domain.poller_domain ()
+{
+	nP = 0;
+}
+
+void poller_domain.request (long token, int fd, long long int timeout, int writting)
+{
+	poller *p = 0;
+
+	// timer restart
+	if (token == 0 && timeout == 0)
+		p = P [0];
+	else for (int i = 0; i < nP; i++)
+		if (P [i]->can_serve ()) {
+			p = P [i];
+			break;
+		}
+
+	if (!p) p = P [nP++] = new poller;
+
+	p->request (token, fd, timeout, writting);
+}
+
+void poller_domain.cancel (long token)
+{
+	for (int i = 0; i < nP; i++)
+		if (P [i]->serves (token)) {
+			P [i]->cancel (token);
+			break;
+		}
+}
+
+static poller_domain PollerControlCenter;
+
+////////////////////////////////////////////////////////////////////
+
+static sem Nlock (1);
+static void (*Notify) (long, int);
+
+static void _Notify (long token, int fd)
+{
+	Nlock.wait ();
+	Notify (token, fd);
+	Nlock.post ();
+}
+
+void setNotify (void (*f)(long, int))
+{
+	Notify = f;
+}
+
+/* these are called by the owner of the GIL */
+
+int Request (long token, int fd, long long int timeout, int writting)
+{
+	if (token == -1 || (fd == -1 && timeout < 0))
+		return -1;
+	PollerControlCenter.request (token, fd, timeout, writting);
+	return 0;
+}
+
+int Request_ms (long token, int fd, int timeout, int writting)
+{
+	return Request (token, fd, timeout == -1 ? -1 : timeout * 1000, writting);
+}
+
+void Cancel (long token)
+{
+	PollerControlCenter.cancel (token);
+}
+
+void startPeriodicTimer (int (*f)(), int every)
+{
+	PeriodicTimer = f;
+	Period = every;
+	Request_ms (0, -1, every, 0);
+}
+
+void restartTimer ()
+{
+	Request_ms (0, -1, 0, 0);
+}
+
+///////////////// testing ************************
+
+#if 0
+void testNotify (long token, bool timedout)
+{
+	printf ("TOKEN: %i %i\n", token, timedout);
+}
+
+int main ()
+{
+	setNotify (testNotify);
+
+	/* wait for 2 secs, token '11' */
+	Request (11, -1, 2000);
+	sleep (1);
+
+	/* wait on stdin (press enter) for no more than 2 secs, token '13' */
+	Request (13, fileno (stdin), 2000);
+	sleep (3);
+
+	/* lots of timers */
+	printf ("Will do some lots:\n");
+	for (int i = 0; i < 300; i++)
+		Request (i, -1, 4000+i*10);
+	printf ("should start RSN...\n");
+	sleep (7);
+	for (int i = 0; i < 20; i++)
+		Request (i+1000, -1, 1000+i);
+	sleep (4);
+}
+#endif

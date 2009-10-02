@@ -1,0 +1,58 @@
+__autosem__
+
+# gameui in an embedded framebuffer widget that supports a method for
+# dispatching control to a user-supplied main loop function a-la pygame.
+# The goal is to wrap this in a pygame-compatible API that would make
+# porting pygames easy.
+# See freecell.pe for an example
+
+import thread
+from fb import fbview
+
+class gameui (fbview)
+{
+	method Init (width, height, $main_loop)
+	{
+		fbview.Init (self, setupcb=$dispatch_main, w=width, h=height)
+		@graphics.framebuffer.pygame ()
+	}
+
+	method dispatch_main ()
+	{
+		$fifo = thread.fifo ()
+		thread.start_new ($main_loop, $game_ns)
+	}
+
+	method onClick (x, y)
+		$fifo.put (["CLICK", x, y, now ()])
+
+	namespace game_ns
+	{
+		method screen ()
+			return $fb
+
+		method flip ()
+			$wm.async ($flip_fb)
+
+		namespace event
+		{
+			method wait ()
+			{
+				v = list ($fifo.get ())
+				if (v [0] == "CLICK") {
+					sleep (0.21)
+					if ($fifo and $fifo.peek ()[0] == "CLICK") {
+						None, x0, y0, t0 = v
+						None, x1, y1, t1 = $fifo.peek ()
+						if (x0 == x1 and y0 == y1 and t1 - t0 < 0.21) {
+							v [0] = "CLICK2"
+							$fifo.get ()
+						}
+					}
+					v = v [:-1]
+				}
+				return v
+			}
+		}
+	}
+}

@@ -1,0 +1,141 @@
+List of toplevel pyvm applications
+==================================
+
+All these apps accept the `--help` command-line option for more info.
+Most graphical apps can be terminated with <ESC>
+
+pyvm windows
+	start the pyvm windowing environment. From within that some of the other
+	applications mentioned here can be started from the "Start" menu.
+	More useful when running pyvm-on-linuxfb backend.
+
+pyvm www <URL>
+	Web browser / advanced web bot.
+	Currently, the web browser is supposed to work flawlessly in the plain
+	HTML mode. There is a CSS rendering engine but because of reasons
+	mentioned in the www/README, this rendering engine is considered broken
+	and a new one is under construction. Switching to CSS mode may work
+	for some sites and may be completely crap for others.
+
+pyvm pdf <PDF-FILE>
+	PDF reader.  For PDFs created with TeX and other simple producers
+	the result is pretty good.  For ones created with latest versions
+	of Adobe PDF Creator, things are a bit messed up but still rather
+	readable.  Embeded images work.  Drawing operations are mostly
+	broken.
+
+pyvm show <IMAGE>|<DIR>
+	show an image
+
+pyvm xterm
+	terminal application. more useful for the windowing environment
+	but also works in X.
+
+applications that require ffmpeg
+--------------------------------
+
+pyvm avplay <VIDEO-FILE>
+	video player.  see the file ffmpeg.txt for information to install ffmpeg.
+
+pyvm mp3 <MP3-FILES>
+	audio player (text mode).
+
+pyvm soundlab <MP3-FILE>
+	this is a graphical audio player with the ability to chop
+	an mp3 into smaller chunks. 
+
+pyvm rec
+	Record from the mic-in to an mp3.  You can connect vinyl or
+	a radio cable there
+
+pyvm CD
+	rip an audio CD to mp3 (basically requires lame or bladeenc)
+	Can also mount the cd into the filesystem with FUSE and
+	use 'pyvm wav -r' to play the tracks.
+
+other
+-----
+
+pyvm torrent <TORRENT-FILE>
+	bittorrent client
+pyvm torfs
+	mount downloaded torrents into the filesystem
+
+pyvm git [diff|init-db|checkin|checkout|...]
+	Minimal implementation of the git distributed version control
+	system, mainly useful for self-hosting pyvm and fetching "updates".
+	See GIT.txt for more
+pyvm gitex
+	local git repository explorer
+
+pyvm youtube <video_id>
+	download/preview youtube videos
+
+pyvm gpg [--verify|--sign|...]
+	OpenPGP implementation.  Can be used to sign or verify files
+	and messages.
+
+pyvm sshell <HOST-ALIAS>
+	open a SSH connection to a host.  The host aliases are
+	placed in the file user/etc/ssh-hosts
+pyvm sftp <HOST-ALIAS>
+	open an SFTP connection to a host
+pyvm sshfs <mount-point> <HOST-ALIAS>
+	mount remote filesystem over sftp with FUSE (unstable!)
+
+pyvm usenet
+pyvm mail
+pyvm mymbox
+	Usenet and e-mail tools, and mymbox, mail&news reader.
+	See Lib/mailnews/README for info
+
+pyvm radio <MMS-URL>
+	play internet radio (needs ffmpeg to playback).
+	Known to work with a limited -supplied- set of stations.
+
+pyvm keygen
+	generate RSA keys suitable for PGP and SSH
+
+pyvm irc <server> <nickname>
+	very simple text mode irc client
+
+pyvm git-checkout
+pyvm svn-checkout
+	checkout latest revision from these protocols
+
+pyvm setvol 0-100
+	set the volume. Uses the OSS interface and thus doesn't
+	work properly for new HD 6-channel cards. Use alsamixer
+	for now.
+
+pyvm freecell
+pyvm mahjongg
+	the games
+
+pyvm sysconfig
+	Inspect/modify global system parameters like the graphical
+	backend, networking, etc.  See the file lib/sysconfig.pe
+	for more.
+
+pyvm mandelbrot
+	a fractal explorer.  This little program, except from the
+	fun, is used to demonstrate how combining python code with
+	C code results in very fast code nicely.
+
+
+some smaller ones include
+-------------------------
+
+pyvm:
+	bell, df, captcha, disasm, fontdump, getrfc, loadavg, pegrep,
+	try, transcode, mms, ftp, cptree, wav, ip2country, dns, diff,
+	diffstat, bundle, encfile, tar, time, md5, sha, procps, mime
+
+
+There are several other toplevel "applications" which are either
+useful for development, too small, alias-like or too silly to
+mention.
+Generally, any file in the Lib/ tree can be run with "pyvm name".
+Some do something, others test their correct operation and others
+are just libraries.
+Feel free to add any new application you find useful or exciting!

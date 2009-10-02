@@ -1,0 +1,22 @@
+__autosem__
+from graphics import image_from_grayscale
+
+class RenderedGlyph
+{
+	method __init__ ($g, $bitmap, $advance, $rows, $cols, $px=0, $py=0, $issp=0)
+		{ }
+
+	method rgb_img ()
+		return image_from_grayscale ($bitmap, $cols, $rows)
+
+	# per rglyph.h
+	method pack (ffixed=0)
+	{
+		advance = $advance
+		if (ffixed)
+			advance = 64 * ffixed
+		return "%ai%ai%ai%ai%ai%ai%ai" %(
+			advance, $px, $py, $rows, $cols, $cols, $g == "space" or $issp) + 
+				"".join ([chr (255 - ord (c)) for (c in $bitmap)])
+	}
+}

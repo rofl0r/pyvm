@@ -1,0 +1,237 @@
+##  inter-process communication module
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Our model is client-server.  There can be one server in control
+# of a "resource" and clients can connect, send a message and receive
+# a reply.  Then the connection is closed.
+#
+# A message is one marshalled python object preceded by its length
+# in little endian.
+#
+# "None" is the PING signal. The server shall reply with a None.
+# "False" is the KILL signal. This is to be used internally to
+#   shutdown the server from within the same process.
+#
+# Our client-server IPC can also be used as smart lockfiles and
+# interprocess semaphores.
+#
+# The current implementation uses UNIX Domain sockets, but other
+# methods can be used too.
+
+__autosem__
+
+# all resources create unix domain sockets (files) in this directory
+IPCHOME = HOME + "user/UNIX-IPC/"
+
+import socket, thread
+from marshal import loads, dumps
+import time
+from os import remove, listdir, access
+
+class Error_InUse { }
+class Error_Stale { }
+
+def socksend (sock, data)
+{
+	data = dumps (data)
+	data = "%mi" %len (data) + data
+	sock.send (data)
+}
+
+class EOF { }
+
+def sockrecv (sock)
+{
+	data = sock.recv ()
+	if (!data)
+		raise EOF
+	l = ord32l (data [:4])
+	data = data [4:]
+	while (len (data) < l)
+		data += sock.recv ()
+	return loads (data)
+}
+
+class Server
+{
+	Threaded = False
+	Owner = False
+
+	method __init__ (resource)
+	{
+		$base_resource = resource
+		$resource = IPCHOME + resource
+		s = $s = socket.socket (socket.AF_UNIX)
+		try s.bind ($resource)
+		except {
+			c = connect (resource, timeout=2)
+			if (c) {
+				print "Server on resource [%s] is running" %resource
+				raise Error_InUse
+			}
+			print "Stale server on resource [%s]. Removing file" %resource
+			remove ($resource)
+			s.bind ($resource)
+		}
+		$Owner = True
+		s.listen (100)
+	}
+
+	method accept (timeout=-1)
+		return $s.accept (timeout=timeout)
+
+	# The server MUST respond to a ping within 2 secs.  Otherwise the resource
+	# is reclaimed.  Long running actions should use their thread.
+
+	method run ()
+	{
+		$Stop = False
+		while (not $Stop) {
+			try c = $accept ()
+			except (thread.Interrupt) break
+			except {
+				print sys.exc_info ()
+				print "accept failed in ipc:", sys.exc_info ()
+				break
+			}
+			thread.start_new ($serve, c)
+		}
+		remove ($resource)
+	}
+
+	method serve (c)
+		while (1) {
+			try msg = sockrecv (c)
+			except break
+
+			if (msg is None) {
+				socksend (c, None)
+			} else if.break (msg is False) {
+				socksend (c, False)
+				$dtor ()
+				$Stop = True
+				try thread.interrupt ($server_id, thread.Interrupt, 0)
+			##	print "Received command to terminate"
+			} else
+				socksend (c, $domsg (msg))
+		}
+
+	method run_bg ()
+		$server_id = thread.start_new ($run)
+
+	method domsg (m)
+		return
+
+	method stop()
+		Client ($base_resource).msg (False)
+
+	method dtor ();
+
+	method __del__ ()
+	{
+		try $s.close ()
+		if ($Owner)
+			try remove ($resource)
+	}
+}
+
+class Client
+{
+	method __init__ ($resource, $timeout=2)
+	{
+		$resource = IPCHOME + resource
+		$con = None
+	}
+
+	method connect ()
+	{
+		s = socket.socket (socket.AF_UNIX)
+		s.connect ($resource, timeout=$timeout)
+		return s
+	}
+
+	method ping ()
+		return $msg (None) is None
+
+	method msg (m)
+	{
+		if (!$con) $con = $connect ()
+		socksend ($con, m)
+		return sockrecv ($con)
+	}
+
+	method close ()
+		try $con.close ()
+	__del__ = close
+}
+
+def connect (resource, timeout=2)
+{
+	c = Client (resource, timeout=timeout)
+	try return c.ping () ? c : False
+}
+
+##
+## server manager script
+##
+
+if (__name__ == __main__)
+{
+	USAGE = """IPC manager. Usage:
+ pyvm ipc servers		: list all servers
+ pyvm ipc dummy			: start the "dummy" server and print what it does
+ pyvm ipc say <server> <what>	: send a string to <server> and print reply
+ pyvm ipc shutdown <server>	: shut down
+ pyvm ipc shutdown ALL		: shut down all servers
+"""
+	try {
+		act = sys.argv [1]
+		args = sys.argv [2:]
+	} except {
+		print USAGE
+		exit ()
+	}
+
+	if (act == "servers") {
+		for (l in listdir (IPCHOME))
+			print "%s:\t"%l, connect (l) ? "running" : "not responding"
+	} else if (act == "dummy") {
+		method Server.domsg (m)
+		{
+			print "dummy ipc server. Got [%s]" %m
+			return m
+		}
+		name = args ? args [0] : "dummy"
+		S = Server (name)
+		S.run ()
+	} else if (act == "say") {
+		resource = args [0]
+		what = args [1]
+		C = connect (resource)
+		if (C is None) print "No such ipc server [%s]" %resource
+		else if (!C) print "Server [%s] not responding" %resource
+		else print "Response:", C.msg (what)
+	} else if (act == "shutdown") {
+		resource = args [0]
+		if (resource == "ALL") {
+			# shut down all zombies
+			for (l in listdir (IPCHOME))
+				if (!connect (l))
+					remove (IPCHOME + l)
+		} else {
+			if (!access (IPCHOME + resource))
+				print "No such ipc server [%s]" %resource
+			else {
+				C = connect (resource)
+				if (!C) {
+					print "Server [%s] not responding. Removing file." %resource
+					remove (IPCHOME + resource)
+				} else print C.msg (False) is False ? "OK" : "MAYBE OK"
+			}
+		}
+	} else print USAGE, "No such action:", act
+}

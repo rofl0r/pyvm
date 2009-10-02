@@ -1,0 +1,13 @@
+#
+# List all the newsgroups of a news server
+#
+
+__autosem__
+
+USAGE = "lsgroups <server>"
+
+from mailnews.usenet import nntp
+
+N = nntp (sys.argp.one ())
+for (g in N.LIST ())
+	print g

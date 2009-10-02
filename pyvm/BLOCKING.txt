@@ -1,0 +1,44 @@
+Cases of blocking:
+
+1. On a file descriptor with the poller. Happens mostly for
+   sockets send/recv/accept.  Can be interrupted.
+
+2. sleep().  Done with the poller and can be interrupted.
+
+3. locks and semaphores from the `thread` module.  This is
+   soft blocking that can be interrupted, althrough it does
+   not use the poller.  It's even faster.
+
+4. On a file descriptor with hard blocking.  At the moment
+   this happens on sys.stdin/sys.stdout.  Cannot be interrupted.
+   We should move this to the poller.
+
+5. When the JITer calls a blocking DLL function. Hard blocking
+   that cannot be interrupted.  For example gui:wait_for_key()
+   Should move in the poller with some technique.
+
+6. os.system.  Hard Blocking.  Cannot be interrupted.
+
+
+Hard blocking generates new OS threads to run the vm while
+blocking.  Soft threads work only with the poller thread
+no matter how many.
+
+All soft blocking cases become hard blocking in preemption.
+Generally, preemption should be avoided as much as possible;
+in the currect code there is no preemption at all.
+
+=====
+SIGINT
+
+We want sigint to terminate things.  The sigint has to interrupt
+the main thread with thread-id 0.  When this exits the program
+terminates.
+
+For that we should try to avoid cases where the main thread
+is hard blocking.  One way to avoid this is to create a
+secondary thread to do the hard blocking and keep the main
+thread waiting on a semaphore which will be released by the
+secondary thread when done.
+
+

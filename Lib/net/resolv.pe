@@ -1,0 +1,174 @@
+##  Access to the Internet Domain Name System
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Applications may use the module `dns` directly and call the function
+# gethostbyname.
+#
+# Alternatively, applications can use gethostbyname from this module
+# which runs a central resolver daemon which is good because it has
+# a global system cache.  Communication is done with ipc UNIX domain sockets.
+#
+# In the end though, since all networking goes through the `socket`
+# module, an app just needs to import `resolv` so that all its sockets
+# will use the resolver automatically.
+
+__autosem__
+
+import ipc, thread
+
+if (__name__ != __main__ or "client" in sys.argv)
+{
+	from net.dns import IsIP
+	NL = thread.xlock ()
+
+	c = None
+	# Client -- when imported 
+	def startd ()
+	{
+		global c
+		if (c) return
+		DNS = ipc.Client ("DNS")
+		try c = DNS.connect ()
+		except {
+			from os import execbin_bg_quiet
+			execbin_bg_quiet ("pyvm", "resolv")
+			for (i in *8) {
+				sleep (0.2)
+				try {
+					c = DNS.connect ()
+					break
+				}
+			} else {
+				print "COULDN'T START RESOLV SERVICE!"
+				exit ()
+			}
+		}
+		c = c.socketfile ()
+	}
+
+	LocalCache = {}
+
+	def gethostbyname (host)
+	{
+		if (IsIP (host))
+			return host
+
+		try return LocalCache [host]
+
+		with (NL) {
+			try c.send ("%s\n" %host)
+			except (thread.Interrupt) raise
+			except {
+				print "UNEXPECTED FAILURE talking to resolv.pe", sys.exc_info ()
+				return None
+			}
+
+			while (1) {
+				# if we get a `thread.Interrupt` it means that some other
+				# code wants to cancel this action ASAP. re-raise this
+				# exception. However, if the request has already been sent,
+				# it may be received as a reply by the next request!
+				# that's why there is this loop that drops unexpected
+				# answers.
+
+				try rez = c.readline_rstr ()
+				except (thread.Interrupt) raise
+				except {
+					print "UNEXPECTED FAILURE talking to resolv.pe", sys.exc_info ()
+					return None
+				}
+
+				rhost, None, ip = rez.partition (" ")
+				if (host == rhost) {
+					if (ip is not None)
+						LocalCache [host] = ip
+					return ip
+				}
+				print "Unexpected answer by resolv [%s] [%s]" %(host, rez)
+			}
+		}
+	}
+
+	def gethostbyname0 (host)
+	{
+		startd ()
+		socket.gethostbyname = gethostbyname
+		return gethostbyname (host)
+	}
+
+	if (__name__ == __main__) {
+		startd ()
+		for (n in sys.argv [2:])
+			print gethostbyname (n)
+		exit ()
+	}
+
+	# override the standard lookup function of the socket module
+	import socket
+	socket.gethostbyname = gethostbyname0
+} else {
+	######## Resolv Server #########
+
+	import dns
+	gethostbyname = dns.gethostbyname_nocache
+
+	NETHOST = @sysconfig.GETCONF ("nethost")
+
+	try S = ipc.Server ("DNS")
+	except {
+		print "resolv server is apparently running already"
+		exit ()
+	}
+
+	# if the lookup for a host fails we try to lookup the NETHOST
+	# (WWW.GOOGLE.COM) in order to figure out if the failure was because
+	# of network-down or the host really does not exist.
+	# In the case of network-down, it is possible that the network will
+	# come back up soon, otherwise the host is supposed to always
+	# fail and that is cached.
+
+	# for $DOWN_FOR seconds after a fail to lookup NETHOST, always return
+	# "network-down"...
+	DOWN_FOR = 5
+	name_cache = {}
+
+	def do_client (cli)
+	{
+		cli = cli.socketfile ()
+		network_down = False
+		while (1) {
+			try host = cli.readline_rstr ()
+			except break
+			if (!host) break
+
+			if.continue (host in name_cache)
+				cli.send ("%s %s\n" %(host, name_cache [host]))
+
+			if (network_down) {
+				if.continue (now () - network_down < DOWN_FOR)
+					cli.send ("%s %s\n" %(host, None))
+				network_down = False
+			}
+
+			ip = gethostbyname (host)
+			if (!ip) {
+				pingip = gethostbyname (NETHOST)
+				if (!pingip)
+					network_down = now ()
+				else name_cache [host] = ip = False
+			} else name_cache [host] = ip
+
+			cli.send ("%s %s\n" %(host, ip))
+		}
+	}
+
+	print "Server started"
+	while (1) {
+		cli = S.accept ()
+		thread.start_new (do_client, cli)
+	}
+}

@@ -1,0 +1,62 @@
+For pyvm you'll need gcc 3.4 or some newer 4.x version (3.3/3.2 may work but are untested).
+gcc 4.2 is known to generate a very fast vm.
+
+If you need to install it here is how.
+
+- Go to gcc.gnu.org, click 'releases' download gcc-core-4.x.x.tar.bz2
+
+- Unpack.
+
+- Make a new directory somewhere you have disk space, say, /xxx/objdir
+
+- cd to objdir and from inside objdir type:
+
+	<path-to-gcc-source>/configure --prefix=~/gcc4.0 --program-suffix=4.0 --with-cpu=k6
+
+  this is the way to make a private installation of gcc that will not conflict with your
+  distribution's gcc/g++/java/etc. "~/gcc-4.0" is "<your-home-dir>/gcc-4.0".
+  For cpu pick your favorite.
+
+- type
+
+	make bootstrap; make install
+
+  this takes about 20 minutes at 1.5GHz. For much older systems you can arrange
+  to go out and drink some beers.
+  On newer versions of gcc, something happened and this takes hours.
+
+- go to your ~/bin/ and
+
+	ln -s ../gcc4.0/bin/gcc4.0 gcc4.0
+
+DONE!
+
+Now you should go to the pyvm directory and run
+	./configure --cc=gcc4.0
+and from the toplevel of pyvm `make`
+
+
+#########################################################
+#	best gcc version benchmarks:			#
+#							#
+#	the time to run the richard.py benchmark on a	#
+#	Pentium-M 1.6GHz (smaller is better)		#
+#							#
+#	GCC version	richards.py			#
+#	-----------	-----------			#
+#	4.2.0		774				#
+#	4.0.2		783				#
+#	4.1.1		800				#
+#	3.4.4		832				#
+#	4.3.1		950				#
+#	4.4.0		924				#
+#							#
+#	unfortunatelly, although gcc-4.3 has some	#
+#	nice features like cold function attributes,	#
+#	it is more than 15% slower.			#
+#							#
+#	This is consistent with the speed of CPython	#
+#	and also a very serious regression for gcc :(	#
+#							#
+#	benchmarks for other cpu types, welcome		#
+#########################################################

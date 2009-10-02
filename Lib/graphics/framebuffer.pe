@@ -1,0 +1,396 @@
+##  Framebuffer class
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import fblib
+from rawimage import image, image_from_grayscale
+from math import sqrt
+from bezier import bezier2
+
+#
+# The framebuffer is a very useful class for three different cases.
+# It can:
+#
+# 1) Be used to create pictures programatically.  For example a CAPTCHA
+#    or the image of a fractal, etc.  These images can then be converted
+#    to jpeg/gif/png and saved.
+#
+# 2) It can serve as an interface to direct video memory for drawing to
+#    a real framebuffer, or anything that maps to a graphics device.
+#    In this case, usually, the `buffer` argument would be supplied
+#    by the external library.  Drawing primitives may be accelerated.
+#
+# 3) It can connect either of the above to JITTed C code to perform
+#    fast pixel drawing.  At the same time, drawing can be performed
+#    at python level with the fb drawing primitives.  A ToDo item is
+#    to make our drawing primitives available to the C code in the
+#    form of a library, which links back to pyvm.
+#
+
+C = @DLL.Import ('vfb', '-O3 -DPYVM_MEMOPS -Wall', pelf=1)
+
+class FrameBuffer
+{
+	colorkey = None
+
+	method __init__ ($w, $h, $bpp, $buffer=0)
+	{
+		if (bpp not in (1, 2, 3, 4)) raise "Error bpp must be 1,2,3,4"
+		if (!buffer) $buffer = _buffer (w * h * bpp)
+
+		$stdclip = array ("i", [0, 0, $w, $h])
+		$fb = _buffer (C.sizeof_fb)
+		C.fb_init ($fb, w, h, bpp, $buffer)
+	}
+
+	method reinit ($w, $h, $bpp, $buffer)
+		C.fb_init ($fb, w, h, bpp, $buffer)
+
+	method col (cc)
+		return cc
+
+	method fill_rect (x, y, w, h, c)
+		C.fb_fill_rect ($fb, x, y, w, h, c)
+
+	method put_pixel (x, y, c)
+		C.fb_put_pixel ($fb, x, y, c)
+
+	method get_pixel (x, y)
+	{
+		if !(0 <= x < $w and 0 <= y < $h)
+			raise Error ("get_pixel out of bounds")
+		return C.fb_get_pixel ($fb, x, y)
+	}
+
+	method fill_circle (x, y, r, c)
+	{
+		r2 = r*r
+		for (i in range (2*r)) {
+			a = abs (r - i)
+			j = int (sqrt (r2 - a*a))
+			yy = y - (i - r)
+			$draw_line (x - j, yy, x + j, yy, c)
+		}
+	}
+
+	method draw_rect_p (x0, y0, x1, y1, c)
+	{
+		$draw_line (x0, y0, x1, y0, c)
+		$draw_line (x0, y1, x1, y1, c)
+		$draw_line (x0, y0, x0, y1, c)
+		$draw_line (x1, y0, x1, y1, c)
+	}
+
+	method draw_rect (x, y, w, h, c)
+		$draw_rect_p (x, y, x+w, y+h, c)
+
+	method vscroll (dy)
+		C.fb_vscroll ($fb, dy)
+
+	method vmove (destline, srcline, dh)
+		if (C.fb_vmove ($fb, destline, srcline, dh))
+			raise Error ("vmove out of bounds")
+
+	# *NOTE*:  put_image will convert the image's bpp to the custom
+	# format in-place!
+
+	method put_image (image, x, y, sx=0, sy=0, sw=3200, sh=3200)
+	{
+		if (image.bpp != $bpp)
+			image.convert_bpp ($bpp)
+
+		if (image.colorkey is None and image.alphatab is None)
+			C.fb_put_image ($fb, image.data, x, y, sx, sy, image.w, image.h, sw, sh)
+		else if (image.alphatab is not None) {
+			alpha, blend = image.alphatab
+			if (blend) C.fb_put_image_alpha ($fb, image.data, x, y, sx, sy, image.w,
+					      image.h, sw, sh, alpha)
+			else C.fb_put_image_alpha01 ($fb, image.data, x, y, sx, sy, image.w,
+					        image.h, sw, sh, alpha)
+		} else
+			C.fb_put_image_ckey ($fb, image.data, x, y, sx, sy, image.w,
+					     image.h, sw, sh, image.colorkey)
+	}
+
+	method blit_data (x, y, data, w, h)
+		C.fb_put_image ($fb, data, x, y, 0, 0, w, h, w, h)
+
+	method draw_line (x1, y1, x2, y2, c)
+		C.fb_draw_line ($fb, x1, y1, x2, y2, c)
+
+	method draw_line_rel (x, y, w, h, c)
+		C.fb_draw_line ($fb, x, y, x + w, y + h, c)
+
+	method clear (rgb=0)
+		$fill_rect (0, 0, $w, $h, rgb)
+
+	method to_rgb ()
+	{
+		out = _buffer ($w * $h * 3)
+##		if ($w*$h > 100000)
+##			print "TO RGB:", $bpp, $w*$h
+		C.fb_to_rgb ($fb, out)
+		return out
+	}
+
+	method to_image ()
+		return image ($to_rgb (), $w, $h, colorkey=$colorkey)
+
+	# Get a subimage from the framebuffer in custom framebuffer bpp
+	method sub_image (x, y, w, h)
+	{
+		if (x == y == 0 and w == $w and h == $h and $buffer -> str)
+			return $as_image ()
+
+		dest = _buffer (w * h * $bpp)
+		if (C.fb_get_image ($fb, dest, x, y, w, h))
+			raise Error ("Bad parameters to get_subimage!")
+
+		return image (dest, w, h, bpp=$bpp)
+	}
+
+	method gray_to_image ()
+		return image_from_grayscale ($buffer, $w, $h)
+
+	method as_image ()
+	{
+		i = image ($buffer, $w, $h, $bpp, colorkey=$colorkey)
+		if ($buffer -> int)
+			i.data_is_addr = True
+		return i
+	}
+
+	method as_image_dup ()
+	{
+		dest = _buffer ($w * $h * $bpp)
+		if (C.fb_get_image ($fb, dest, 0, 0, $w, $h))
+			raise Error ("as image failed!")
+		return image (dest, $w, $h, bpp=$bpp)
+	}
+
+	method save_as_ppm (filename)
+	{
+		from ppm import store
+		store (filename, $to_rgb (), $w, $h)
+	}
+
+	# before access by C code
+	method lock();
+	method unlock();
+	method __enter__ () $lock ()
+	method __exit__ (*a) $unlock ()
+	method __context__ () return self
+
+	# libs
+	from fblib.select_rect update *
+
+	#
+	method draw_conic (x0, y0, x1, y1, x2, y2, col)
+	{
+		p = bezier2 (x0, y0, x1, y1, x2, y2, 30).topairs ()
+		x0, y0 = p [0]
+		for (x1, y1 in p [1:]) {
+			$draw_line (x0, y0, x1, y1, col)
+			x0, y0 = x1, y1
+		}
+	}
+
+	# for pygame, but generally available
+
+	method enable_game ()
+		pygame ()
+
+	method pygame_blit (data, x, y, w, h, sx, sy, sw, sh, colorkey=None)
+		if (colorkey is None)
+			C.fb_put_image ($fb, data, x, y, sx, sy, w, h, sw, sh)
+		else C.fb_put_image_ckey ($fb, data, x, y, sx, sy, w, h, sw, sh, colorkey)
+
+	method flip_to (xaxis, yaxis)
+	{
+		data = _buffer ($w * $h * $bpp)
+		C.flip ($buffer, $w, $h, $bpp, data, xaxis, yaxis)
+		return FrameBuffer ($w, $h, $bpp, data)
+	}
+
+	method scale2x ()
+	{
+		data = _buffer (4 * $w * $h * $bpp)
+		C.scale2x ($buffer, data, $w, $h, $bpp)
+		return FrameBuffer (2 * $w, 2 * $h, $bpp, data)
+	}
+
+	method recolor (c1, c2)
+	{
+		try C.recolor
+		except pygame ()
+		C.recolor ($buffer, $w*$h, $bpp, c1, c2)
+	}
+
+	method rotate (angle)
+	{
+		from math import sin, cos, fabs
+
+		angle = (angle % 360) * 0.01745329251994329
+		sangle = sin (angle)
+		cangle = cos (angle)
+
+		w = $w
+		h = $h
+		neww = int (max ([fabs (a * cangle * w + b * sangle * h)
+				for (a, b in ((1,1),(1,-1),(-1,1),(-1,-1)))]))
+		newh = int (max ([fabs (a * sangle * w + b * cangle * h)
+				for (a, b in ((1,1),(1,-1),(-1,1),(-1,-1)))]))
+
+		newdata = _buffer (neww * newh * $bpp)
+
+		bg = $colorkey is None ? $get_pixel (0, 0) : $colorkey
+
+		C.rotate ($buffer, w, h, newdata, neww, newh, $bpp, bg, sangle, cangle)
+
+		return FrameBuffer (neww, newh, $bpp, newdata)
+	}
+}
+
+# with clipping. Used in the webbrowser window to scroll the page and then
+# draw the small new area. Not ready for other use cases.
+# At the moment, only `fill_rect`, `put_image` and `render_text` are
+# clipped. Anything else, including `put_pixel` and `draw_line`
+# aren't implemented.
+
+class ClippingFB (**FrameBuffer)
+{
+	base_init = FrameBuffer.__init__
+
+	method __init__ (*args, **kwargs)
+	{
+		$base_init (*args, **kwargs)
+		$clipstack = []
+	}
+
+	method push_clip (xywh)
+	{
+		$clipstack<< $stdclip
+		$stdclip = $intersect (xywh)
+	}
+
+	method pop_clip ()
+		$stdclip = $clipstack.pop ()
+
+	method intersect (xywh)
+		return intersection (xywh, $stdclip)
+
+	method fill_rect (x, y, w, h, c)
+	{
+		x, y, w, h = $intersect ((x, y, w, h))
+		C.fb_fill_rect ($fb, x, y, w, h, c)
+	}
+
+	base_put_image = FrameBuffer.put_image
+
+	method put_image (image, x, y, sx=0, sy=0, sw=None, sh=None)
+	{
+		if (sw is None)
+			sw = image.w - sx
+		if (sh is None)
+			sh = image.h - sy
+		xx, yy, w, h = $intersect ((x, y, sw, sh))
+		$base_put_image (image, xx, yy, sx+(xx-x), sy+(yy-y), w, h)
+	}
+
+	# NOTE: font rendering is already clipped for the standard FrameBuffer
+	# using the `stdclip` member.  fyi, font rendering happens with the
+	# font.render_to_fb() method, using code from rend_template.c.
+}
+
+def intersection ((x0, y0, w0, h0), (x1, y1, w1, h1))
+{
+	xx0 = x0 + w0
+	xx1 = x1 + w1
+	yy0 = y0 + h0
+	yy1 = y1 + h1
+	if (xx0 < x1 or xx1 < x0 or yy0 < y1 or yy1 < y0)
+		return x0, y0, 0, 0
+	x = max (x0, x1)
+	y = max (y0, y1)
+	return x, y, min (xx0, xx1) - x, min (yy0, yy1) - y
+}
+
+#
+# image to framebuffer.  Here due to circular import dependancy
+#
+
+method image.to_framebuffer ()
+{
+	f = FrameBuffer ($w, $h, $bpp, $data)
+	f.colorkey = $colorkey
+	return f
+}
+
+#
+# Enable pygame routines
+#
+
+def pygame ()
+	try C.flip
+	except C.__dict__.update (@DLL.Clib ("vfbg", "-O3 -Wall", pelf=1))
+
+pygame ()
+#
+# Testing
+#
+
+def test_fb (F)
+{
+	c = 0xC81415
+	F.fill_rect (0, 0, 90, 90, c)
+
+	c = 0x0010ff
+	F.lock ()
+	for (x in range (30))
+		for (y in range (30))
+			F.put_pixel (x, y, c)
+	F.unlock ()
+
+	from graphics import ImageFile
+	f = ImageFile ("img")
+	im = image (*f.read_rgb ())
+	F.put_image (im, 10, 10)
+
+	c = 0x6464c8
+	F.draw_line (10, 10, 100, 10, c)
+	F.draw_line (10, 10, 10, 100, c)
+	F.draw_line (10, 10, 50, 50, c)
+	F.draw_line (10, 10, 200, 200, c)
+	F.draw_line (200, 200, 10, 10, c)
+	F.draw_line (120, 10, 10, 120, c)
+	F.draw_line (200, 10, 10, 200, c)
+
+	F.fill_circle (100, 100, 40, c)
+	F.lock ()
+	for (x in range (130))
+		for (y in range (130))
+			F.put_pixel (x, y, F.get_pixel (x, y))
+	F.unlock ()
+}
+
+if (__name__ == '__main__')
+{
+	F = FrameBuffer (200, 200, int (sys.argv [1]))
+
+	if (1) {
+		F = ClippingFB (200, 200, int (sys.argv [1]))
+		F.push_clip ((10, 10, 50, 50))
+	}
+
+	test_fb (F)
+	import gui
+	wm = gui.Wm (200, 200, 'test')
+	I = gui.image ()
+	I.load_fb (F)
+	wm.Start ()
+}

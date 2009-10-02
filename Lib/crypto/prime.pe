@@ -1,0 +1,93 @@
+# prime number generation
+#
+# The Rabin-Miller code was extracted from the 'pycrypto' library
+# by amk (www.amk.ca)
+#
+
+__autosem__
+
+sieve= (
+	2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59,
+        61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127,
+        131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
+        197, 199, 211, 223, 227, 229, 233, 239, 241, 251
+)
+
+# get the nearest prime >= N
+
+def getPrime (N, progress=True)
+{
+	if !(N % 2)
+		N += 1
+	if (progress) {
+		print "Looking for prime ",
+		sys.stdout.flush ()
+	}
+	while (!isPrime (N)) {
+		if (progress) {
+			print ".",
+			sys.stdout.flush ()
+		}
+		N = N + 2
+	}
+	if (progress)
+		print
+	return N
+}
+
+#
+# Detecting whether a 1024 bit number is prime, is rather
+# impossible.  But we do have a test that can tell is if
+# a number is 99.999% not prime.
+#
+def isPrime (N)
+{
+	if (N == 1)
+		return False
+	if (N in sieve)
+		return True
+	for (i in sieve)
+		if ((N % i) == 0)
+			return False
+
+	# Fermat test
+	if (pow (2, N-1, N) != 1)
+		return False
+
+	# Rabin-Miller test
+	# Compute the highest bit that's set in N
+	N1 = N - 1
+	n = Long (1)
+	while (n < N)
+		n = n << 1
+	n = n >> 1
+
+	for (c in sieve [:8]) {
+		a = Long (c)
+		d = Long (1)
+		t = n
+		while (t) { # Iterate over the bits in N1
+			x = (d * d) % N
+			if (x == 1 and d != 1 and d != N1)
+				return False  # Square root of 1 found
+			if (N1 & t)
+				d = (x * a) % N
+			else d = x
+			t = t >> 1
+		}
+		if (d != 1)
+			return False
+	}
+	return True
+}
+
+# to time it
+
+if (__name__ == __main__)
+{
+	from longs import PKCToLong
+	L = PKCToLong (@sha.digest ("xxx") * 4)
+	if !(L % 2)
+		L += 1
+	getPrime (L)
+}

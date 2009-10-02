@@ -1,0 +1,570 @@
+##  Hypertext transfer protocol
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from socket import socket, Timeout
+from re import re
+from misc import tmpfile, dictfilt, fprint
+from socketfile import fileobj
+from time import sleep
+import thread, os
+getsize = os.path.getsize
+
+REPLYe = re (r'HTTP/\d\.\d (\d\d\d)')
+HEXNUMe = re (r'([0123456789abcdefABCDEF]+)')
+DEBUG = 0
+
+class InterruptedTransfer
+	bytes = 0
+class RetryError (Exception) { }
+
+HTTP10 = set ()
+
+class fetcher
+{
+	method __init__ ($server, $port, $timeout, $keep_alive=False, $secure=False)
+		$r = None
+
+	method close ()
+	{
+		try $r.close ()
+		$r = None
+	}
+
+	method connect (timeout)
+	{
+		s = socket ()
+		try s.connect (($server, $port), timeout=timeout)
+		except (thread.Interrupt) raise
+		except # ConnectError
+			return
+		if ($secure)
+			try s.secure_tls ()
+			except return
+		$r = fileobj (s)
+		return True
+	}
+
+	method send_request (req, timeout=None)
+	{
+		if (!$r and !$connect (timeout or $timeout))
+			return 0
+		$r.send (req)
+		return True
+	}
+
+	method do_request (url, Headers, post=None, head=False)
+	{
+		$request = $make_request ($keep_alive, url, Headers, post, head)
+		if (DEBUG or 0) {
+			print "=---------------------------------------------------------="
+			print "SENDING [%s]"% $request
+			print "=---------------------------------------------------------="
+		}
+		return $send_request ($request)
+	}
+
+	method make_request (keep_alive, url, Headers, post, head=False)
+	{
+		Headers ["Connection"] = keep_alive ? "keep-alive" : "close"
+		if ("Host" not in Headers)
+			Headers ["Host"] = $server
+
+		r = ['%s %s HTTP/1.1' %(post ? "POST" : head ? "HEAD" : "GET", url)]
+		for (k, v in Headers.iteritems ())
+			if ("\n" not in v)
+				r.append (k + ": " + v)
+			# a newline in the value is used to fork the value. like multiple (Cookie)
+			else for (v in v.split ("\n"))
+				r.append (k + ": " + v)
+
+		req = "\r\n".join (r) + "\r\n\r\n"
+		if (post)
+			req += post
+		return req
+	}
+
+	method head (timeout=None)
+	{
+		$expected_size = 0
+
+		timeout = timeout or $timeout
+
+		# HTTP status line. There may be an empty line before that
+		# in keep-alive mode.
+		if !(fl = $r.readline (timeout=timeout))
+			return 0
+		if (!fl.strip ())
+			if !(fl = $r.readline (timeout=timeout))
+				return 0
+
+		try $status = status = REPLYe (fl.rstrip ()) [1]
+		except {
+			print "BAD HTTP header [%s]" %fl
+			return 0
+		}
+
+		if (fl.sw ("HTTP/1.0"))
+			HTTP10.add ($server)
+
+		htxt = ""
+		hdr = {}
+		while (x = $r.readline (timeout=timeout).rstrip ()) {
+			k, None, v = x.partition (':')
+			k = k.lower ()
+			v = v.strip ()
+
+			# according to rfc2616 section 4.2 multiple occurences
+			# of a field are joined with commas. for cookies that's
+			# not possible so we join we newlines
+			if (k in hdr and k == "set-cookie") hdr [k] += "\n" + v
+			else hdr [k] = v
+
+			htxt += x + "\n"
+		}
+
+		if (DEBUG) {
+		#	print self, "IN REQUEST FOR [%s]\n" %$request, fl, htxt
+			print "RECEIVED:"
+			print fl + htxt
+			print "---------------------------"
+		}
+
+		$keep_alive = hdr.get ("connection", "close").lower ().
+				split (",")[0].strip () == "keep-alive"
+		
+		$hdr = hdr
+		$htxt = htxt
+		return status, htxt
+	}
+
+	expected_size = 0
+
+	method read1 ()
+	{
+		if ($status in ("304", "204"))
+			return ""
+		hdr, r = $hdr, $r
+		if ('content-length' not in hdr and $status in ("200", "206")) {
+			print "No content-length"
+			return False
+		}
+		want = int (hdr ['content-length'])
+		try return r.read (want, timeout=10)
+		except return False
+	}
+
+	method get ()
+	try {
+		hdr, r = $hdr, $r
+		if ('transfer-encoding' in hdr and hdr ['transfer-encoding'] == 'chunked') {
+			while (1) {
+				l = r.readline (timeout=$timeout)
+				n = int (HEXNUMe (l)[1], 16)
+				if (!n) break
+				$expected_size += n
+				yield r.read (n, timeout=$timeout)
+				r.readline (timeout=$timeout)
+			}
+		} else if ('content-length' in hdr) {
+			cl = hdr ["content-length"]
+			cl = cl.split ()[0]
+			$expected_size = want = int (cl)
+			tot = 0
+			if (want) {
+				try while (xx = r.recv (timeout=$timeout)) {
+					yield xx
+					tot += len (xx)
+					if (tot >= want) break
+				} 
+				# some fscked servers send as content-length the length
+				# of the *uncompressed* data. The simple workaround is
+				# to pretend that the transfer was not interrupted and
+				# let the higher level detect error while decoding.
+				# The complex solution is to paralelly gunzip and test
+				# the length.
+				# The "higher level" must be aware of this simple workaround.
+				if (tot < want and tot and hdr.get ("content-encoding") != "gzip")
+					raise InterruptedTransfer
+				if (tot > want)
+					print "Got more data than Content-Length ?!?!"
+			}
+		} else if ($status in ("304", "204")) {
+			yield ""
+		} else {
+			$keep_alive = False
+			while (xx = r.recv (timeout=$timeout))
+				yield xx
+		}
+		if (!$keep_alive)
+			$close ()
+	} except {
+		$close ()
+		raise
+	}
+
+	method read ()
+	{
+		p = []
+		for (x in $get ())
+			p.append (x)
+		return "".join (p)
+	}
+
+	method saveto (fnm)
+	{
+		f = open (fnm, "w")
+		for (x in $get ())
+			f.write (x)
+	}
+}
+
+# Progress control API.
+# In http we may know the expected total if the request supplied a Content-Length
+# header.  This header may be absent and the transfer complete when the server
+# closes the connection.  Yet another possibility is to have a "chunked" transfer
+# which is a sequence of "size-data, size-data, 0" chunks.
+# So, in the end, "total" may be zero or increasing during the transfer.
+
+class default_progress
+{
+	init = have_bytes = finished = have_head = void
+}
+
+def bytes (b)
+	return b < 1024 ? "%ib"%b : b < (1024*1024) ? "%.1fK" %(b / 1024.0) : "%.2fM" %(b / (1024*1024.0))
+
+class stdout_progress
+{
+	method init ()
+		$have = 0
+	have_head = void
+	method have_bytes (n, $total)
+	{
+		$have += n
+		s = $total ? "%s/%s" %(bytes ($have), bytes ($total)) : bytes ($have)
+		fprint ("\r              \r" + s)
+	}
+	method finished ()
+		fprint ("\n")
+}
+
+def mk_progress (p)
+	return p is None ? default_progress () : p == "stdout" ? stdout_progress () : p
+
+# HTTP Connection.
+# It emulates a keep-alive connection whether the connection
+# is really keep-alive or not.
+# Also takes care of partial content: if we already have an initial part of a file
+#	it tries to make a Range request and either append the extra data or re-create
+#	the file from the start. Both cases return HTTP status 200.
+
+# Connection0 should not be used directly. Use the `Connection` class below
+# which doesn't contain cyclic references and when unreferenced will terminate
+# the getter thread.
+
+class Connection0
+{
+	method __init__ ($server, $port=80, $timeout=None, $expires=5, $keep_alive=True, $secure=False)
+		$cth = $F = None
+
+	method get (path, Headers, filename=None, progress=None,
+		    on_have_headers=void, on_have_bytes=void, post=None, QoS=None,
+		    resume=False, head=False)
+		return $doit ((path, Headers, filename, progress, on_have_headers, on_have_bytes,
+			post, QoS, resume, head))
+
+	method doit (r)
+	{
+		path, Headers, filename, progress, on_have_headers, on_have_bytes, post,
+		QoS, resume, head = r
+		out = None
+
+		$cancel_close ()
+
+		# Filename,
+		#	None		: create tmpfile
+		#	string		: use said as tmpfile to possibly resume
+		#	instance	: use tmpfile API and possibly resume
+		if (!filename) {
+			tmp = tmpfile ()
+			filename = tmp.fnm
+		} else if (filename -> str) {
+			tmp = tmpfile (fnm=filename, cleanup=False)
+			if (resume and os.access (filename))
+				Headers ["Range"] = "bytes=%i-" %getsize (filename)
+		} else {
+			tmp = filename
+			filename = tmp.fnm
+			if (resume and os.access (filename))
+				Headers ["Range"] = "bytes=%i-" %getsize (filename)
+		}
+
+		progress = mk_progress (progress)
+		progress.init ()
+
+		try {
+			for (None in *3) {
+				if (!$F or !$F.keep_alive)
+					$F = fetcher ($server, $port, $timeout, keep_alive=$keep_alive,
+							secure=$secure)
+				F = $F
+
+				if ((x = F.do_request (path, Headers, post, head)) -> int)
+					return x
+
+				# socket closed while trying to get HEAD. maybe keepalive is not
+				# working or something else. retry with new connection
+				if (x = F.head ())
+					break
+
+				$F.close ()
+				$F = None
+			} else return 404
+
+			status, hdr = x
+			progress.have_head (status, hdr)
+			on_have_headers (status, hdr)
+			if (head)
+				return status, F.hdr, None
+
+			lastbytes = bytes = 0
+			out = tmp.open (resume and status == "206" ? "a" : "w")
+
+			try for (data in F.get ()) {
+				out.write (data)
+				bytes += len (data)
+				if (bytes - lastbytes > 20 * 1024)
+					on_have_bytes (filename)
+				progress.have_bytes (len (data), F.expected_size)
+
+				# if `QoS` is a function and it returns true, this means
+				# that this is a lower priority transfer.  I don't know
+				# what's going on, but in linux if you have a socket getting
+				# lots of data and then you attempt to create another socket
+				# and get some data from somewhere else, the second socket
+				# (initially at best) is *extremely* slow.  This makes an
+				# impact on the web browser since if we have background
+				# downloads in progress, then pages take ages to download
+				# (some sites even close the connection, so long it is!)
+				# and the web surfing experience becomes absymal.
+				# This is a simple Quality of Service measure.
+				if (QoS and QoS ())
+					sleep (0.35)
+			} except (InterruptedTransfer) {
+				if (!bytes)
+					raise
+				# return data so-far
+				I = InterruptedTransfer ()
+				I.bytes = bytes
+				I.out = tmp
+				I.hdr = F.hdr
+				raise I
+			}
+
+			progress.finished ()
+			out.close ()
+			if (F.keep_alive)
+				$schedule_close ($expires)
+
+			# partial content and everything OK. Report OK
+			if (status == "206")
+				status = "200"
+
+			return status, F.hdr, tmp
+		} except {
+			progress.finished ()
+			$F.close ()
+			$F = None
+			if (out) out.close ()
+			raise
+		}
+	}
+
+	method can_pipeline ()
+		return $server not in HTTP10
+
+	method get_pipelined (requests)
+	{
+		# Not all servers can manage pipelining. If they don't various things
+		# can happen: close the connection after the first item or even
+		# wait indefinitely without returning anything (sabotage pipelining?)
+		#
+		# If anything goes wrong or nothing is received after a second,
+		# abort the entire thing.
+
+		$cancel_close ()
+		if (!$F) $F = fetcher ($server, $port, $timeout, keep_alive=True, secure=$secure)
+		try return $get_pipelined0 (requests)
+		except {
+			# On any exceptional error close the connection
+			try {
+				$F.close ()
+				$F = None
+			}
+			raise
+		}
+	}
+
+	method get_pipelined0 (requests)
+	{
+		bigreq = ""
+		for (r in requests) {
+			filename, resume = r ["filename"], r ["resume"]
+			Headers = r ["Headers"]
+			if (filename and resume and os.access (filename))
+				Headers ["Range"] = "bytes=%i-" %getsize (filename)
+			bigreq += $F.make_request (True, r ["path"], Headers, r ["post"])
+		}
+		if (!$F.send_request (bigreq, 2))
+			return
+		for (r in requests) {
+			try {
+				if ((x = $F.head (1.7)) -> int)
+					# connection closed. can't pipeline
+					break
+			} except (thread.Interrupt) raise
+			except # some socket error. fail
+				break
+
+			status, hdr = x
+			filename, resume = r ["filename"], r ["resume"]
+			if (!filename) {
+				tmp = tmpfile ()
+				filename = tmp.fnm
+			} else tmp = None
+			if ((data = $F.read1 ()) is False)
+				# Fail
+				break
+			open (filename, (resume and status == "206" ? "a" : "w")).write (data)
+			# partial content and everything OK. Report OK
+			if (status == "206")
+				status = "200"
+			yield len (data), (status, $F.hdr, tmp or
+				 tmpfile (fnm=filename, cleanup=False))
+		} else {
+			if ($F.keep_alive)
+				$schedule_close ($expires)
+			return
+		}
+
+		# if the loop was broken (some connection error) maybe the server does not
+		# do pipelining and the connection is therefore broken. Close it so traditional
+		# fetching will recreate a clean connection
+		$F.close ()
+		$F = None
+	}
+
+	method shutdown ()
+		$interrupt ()
+
+	method interrupt ()
+		try thread.interrupt ($thid, if_running=1)
+
+	# expiration
+
+	method schedule_close (t)
+		$cth = thread.start_new ($close_after, t)
+
+	method cancel_close ()
+	{
+		try thread.interrupt ($cth)
+		$cth = None
+	}
+
+	method close_after (t)
+	try {
+		try sleep (t)
+		except return
+		try if ($cth) {
+			$F.close ()
+			$cth = $F = None
+		}
+	}
+}
+
+class Connection
+{
+	method __init__ (*args, **kwargs)
+	{
+		$C = Connection0 (*args, **kwargs)
+		$get = $C.get
+		$get_pipelined = $C.get_pipelined
+		$interrupt = $C.interrupt
+		$can_pipeline = $C.can_pipeline
+	}
+
+	method __del__ ()
+	{
+		$C.interrupt ()
+		$C.shutdown ()
+	}
+}
+
+# Closed Connection fetch.
+
+def http_get (server, path, Headers=None, port=80, timeout=None, filename=None, progress=None)
+{
+	if (Headers is None)
+		Headers = {}
+	return Connection (server, port, timeout=timeout, keep_alive=False).get
+		 (path, Headers, filename, progress)
+}
+
+#
+# Url parse.  The web browser has its own sophisticated url parsing
+# functions.  This version of urlparse is a simple alternative for
+# code that has to use http (i.e. git-clone) without having to
+# import the entire www.
+#
+
+def urlparse (url, pproto="")
+{
+	if (url.sw ("//")) protocol, rest = pproto, url [2:]
+	else protocol, sep, rest = url.partition ("://")
+	if (!sep) raise Error ("Bad url [%s]"%url)
+
+	netloc, None, path = rest.partition ("/")
+	host, None, port = netloc.rpartition (":")
+
+	if (port) port = int (port) ?? 0
+	else port = 0
+
+	if (!path) {
+		path = dir = "/"
+		file = params = label = ""
+	} else {
+		path = "/" + path
+		rest, None, label = path.partition ("#")
+		rest, None, params = rest.partition ("?")
+		dir, None, file = rest.rpartition ("/")
+		dir += "/"
+		
+	}
+
+	return dictfilt (locals (), ("rest", "sep"))
+}
+
+#
+#
+#
+
+if (__name__ == '__main__')
+{
+#depending on user-agent this fails or not?!
+def f ()
+{
+	C = Connection ("slashdot.org", 80)
+	print C.get ("/index2.pl?fhfilter=baldur", {}, filename="out.tmp")
+}
+f ()
+sleep (0.1)
+#	d = readfile ("out.tmp")
+#	open ("out2.tmp", "w").write (d [:len (d)/2])
+#	print C.get ("/~sxanth/ncc/ncc-2.7.tar.gz", {}, filename="out2.tmp", resume=True)
+}

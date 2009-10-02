@@ -1,0 +1,151 @@
+pyvm includes code from
+=======================
+
+Random number generator:
+   A C-program for MT19937.
+   Coded by Takuji Nishimura and Makoto Matsumoto.
+
+Memory allocator:
+   Doug Lea's malloc
+
+Regular Expressions - PCRE library (from exim):
+   Philip Hazel
+   Copyright (c) 1997-2005 University of Cambridge
+
+MultiMedia eXtensions GCC interface library for IA32
+   1997-99 by H. Dietz and R. Fisher
+
+Modular Exponentiation:
+   Integrated from a patch for RSA in Linux kernel by Tassos Parisinos
+
+MMX image rgb conversions - from ffmpeg/libswscale:
+   Nick Kurshev
+
+zlib:
+   Jean-loup Gailly and Mark Adler
+
+ARC4:
+   Sample implementation of the Arcfour algorithm
+   Copyright (c) April 29, 1997 Kalle Kaukonen.
+
+SHA:
+   SHA-1 in C
+   By Steve Reid <steve@edmweb.com>
+
+MD5:
+   L. Peter Deutsch
+   Copyright (C) 1999, 2000, 2002 Aladdin Enterprises.  All rights reserved.
+
+AES:
+   Optimised ANSI C code for the Rijndael cipher.
+   Vincent Rijmen, Antoon Bosselaers, Paulo Barreto 
+   from the OpenSSL project.
+
+Optimized assembly crypto functions:
+ From the OpenSSL project asm/*.pl
+ x86 assembly for AES and SHA1:
+   Andy Polyakov
+ x86 assembly for MD5:
+   Marc Bevand
+
+LZW Decoder for GIF:
+   Fabrice Bellard
+   from ffmpeg's lzw.c
+
+Image scale2x and rotation (from pygame):
+   Pete Shinners, http://www.pygame.org
+   The Scale2x algorithm further credits the AdvancedMAME team,
+      http://advancemame.sourceforge.net/scale2x.html
+
+RSA key generation (from pycrypto package):
+   Andrew M. Kuchling.
+
+Fast memstr:
+   Based on the fastsearch method contributed by Fredrik Lundh 
+   to Python 2.5
+
+poll() emulation using select:
+   FSF code from libc
+
+Fonts
+=====
+
+Latin Modern fonts:
+   Copyright 2003, 2006 B. Jackowski and J.M. Nowacki (on behalf of TeX users groups).
+   This work is released under the GUST Font Source License
+    --  see http://tug.org/fonts/licenses/GUST-FONT-SOURCE-LICENSE.txt for details.
+
+Bitstream Vera Fonts:
+   Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream
+   Vera is a trademark of Bitstream, Inc.
+
+   See the file var/fonts/COPYRIGHT.TXT
+
+Luxi Font:
+   Luxi fonts copyright (c) 2001 by Bigelow & Holmes Inc. Luxi font instruction
+   code copyright (c) 2001 by URW++ GmbH. All Rights Reserved. Luxi is a
+   registered trademark of Bigelow & Holmes Inc.
+
+   See the file var/fonts/luxiserif_license.txt
+
+URW++ fonts:
+   The commercial quality Type1 fonts. from ghostscript -- contributed by
+   URW++ Design and Development Incorporated, of Hamburg Germany (http://www.urwpp.de).
+
+
+Python
+======
+
+the pyc compiler is derrived from python's 'compiler package'.
+Also some other modules are taken from python's 2.4 standard
+library, modified and included in pyvm's standard library.
+
+We don't know who wrote this code, so many thanks go to
+PSF and the people listed at Doc/ACKS in python.
+
+pyvm may be much faster than python but that doesn't mean
+python isn't good.  The CPython implementation is a great
+program with some very smart optimizations.
+pyvm uses all the wisdom of the CPython vm plus a couple
+of new ideas and that's why it's faster.
+If I had started from the scratch without looking at the
+sources of Python, pyvm wouldn't be even close :)
+
+pyvm is definitelly a "standing on the shoulders of giants"
+example.  Credits for the performance of pyvm should indirectly
+go to Tim Peters, Guido van Rossum, and the other python hackers.
+
+
+ffmpeg
+======
+
+pyvm, like all open source video players and most of the closed source ones
+uses ffmpeg to decode the video.  Many thanks to the ffmpeg hackers and
+Fabrice Bellard.
+
+
+Thanks to
+=========
+
+Julian Seward for the valgrind tool which takes the crashes out of C
+and has boosted forward the entire open source movement. pyvm for
+one would have been impossible without valgrind.
+
+
+Open Source
+===========
+
+In the process of making pyvm, the source code of hundreds of
+open source programs has been consulted and studied with ncc.
+Thanks to all the folks who made their code open source.
+Hopefully, pyvm makes it easy to see how things work so
+people will be able to study its source in the future.
+
+Specifically thanks to:
+
+	Tevor Perrin for http://trevp.net/tlslite
+	Robey Pointer for http://www.lag.net/paramiko/
+	The author of xpdf, http://www.foolabs.com/xpdf/
+	Lee Hetherington for t1utils
+	Tony Lin for TonyJpegDecoder.py
+	http://www.dranger.com/ffmpeg for the sample video player

@@ -1,0 +1,1008 @@
+##  Mail/Newsgroup reader.
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This code is not very pretty. This is what happens to hairy gui applications
+# because thei do not try to solve a well defined algorithm but instead
+# provide a human/machine interface.
+# It'll need a serious rewrite once we're sure about the desired features.
+
+__autosem__
+
+import thread, re, serialize
+from mailnews.mime import Mime, rfc2047, rfc822
+from utfutil       import utf8_len as ulen, utf8_slice as uslice, utf8_slice_e as uslicee
+from wwwlib        import openurl
+from time          import monthof
+from pgp.gpg       import do_verify_mime as verify_pgp
+from mailnews      import usenet, mail, index
+
+@lockfile.exclusive ("newsgroups", "newsread")
+
+DOPGP = @sysconfig.GETCONF ("DoPGPMime")
+
+newsgroup = usenet.newsgroup
+mbox = mail.mbox
+messages = index.messages
+
+method messages.load_rninfo ()
+{
+	$rninfo = serialize.load ($FILE ("rninfo.s")) or {}
+	$rninfo.update2 ({"bookmarks":set (), "watched":set(), "watchedauth":set()})
+}
+
+method messages.ltop ()
+	return $rninfo.get ("ltop", $LastID)
+
+method messages.save_rninfo ()
+{
+	try $rinfo ["ltop"] = $LastID
+	serialize.save ($FILE ("rninfo.s"), $rninfo)
+}
+
+MSG = @mailnews.index.msg
+
+method MSG.isbookmarked ()
+	return $id in current.B
+method MSG.thiswatched ()
+	return $op().id in current.W
+method MSG.authwatched ()
+	return $author () in current.A
+
+h2t = rfc2047.decode
+
+######################### Message window #######################
+HTTPr = re.compile ("(?:https?|ftp)://.*?(?:$|\s)")
+
+def httsplit (l)
+{
+	n, m = HTTPr.splitsep (l)
+	m<< ""
+	p = ""
+	L = []
+	for (n, m in zip (n, m)) {
+		n = p + n
+		if (n) L<< n
+		p = ""
+		if (m) {
+			if (m [-1] in ">.)] ")
+				m, p = m [:-1], m [-1]
+			L<< (m, 0x0000ff, None, (openurl.Open, m))
+		}
+	}
+	return L
+}
+
+FETCHING = False
+
+def fetch (m, r)
+{
+	global FETCHING
+	FETCHING = True
+	try {
+		print "FETCHING..."
+		if (m.data ())
+			wm.async (load, m, r)
+	} finally FETCHING = False
+}
+
+def load (m, replies, raw=False, offset=0, att=False)
+{
+	if (!m.data_ready ()) {
+		if (!FETCHING)
+			thread.start_new (fetch, m, replies)
+		return
+	}
+	m.mark_seen ()
+	lst = make_text (m, replies, raw, att)
+	ED.load (lst, offset)
+	ED.setKeyWidget ()
+	U.Switch (2)
+}
+
+def lwrap (COL, L1, wpad="")
+{
+	w = ED.nx
+	L = []
+	for (i in L1)
+		if !(i -> str) L << i
+		else for (i in httsplit (i)) L<< i
+	L1 = L
+	L2 = []
+	L = []
+	used = 0
+	for (i in L1) {
+		s = i -> str ? i : i [0]
+		while (used + ulen (s) > w) {
+			ss = uslice (s, 0, w-used)
+			s = uslicee (s, w-used)
+			if !(i -> str)
+				ss = [ss] + list (i [1:])
+			L<< ss
+			L2<< (COL, L)
+			L = [wpad]
+			used = len (wpad)
+		}
+		ss = s
+		if !(i -> str)
+			ss = [ss] + list (i [1:])
+		L<< ss
+		used += ulen (s)
+	}
+	L2<< (COL, L)
+	return L2
+}
+
+namespace Mode
+{ }
+
+def cap0 (t)
+	return t [0].upper () + t [1:]
+
+def make_text (m, replies, raw, att)
+{
+	Mode.m = m
+	Mode.replies = replies
+	Mode.raw = raw
+	Mode.att = att
+	def switch_mode1 (d)
+		load (m, d, offset=-1)
+	def go_message (mm)
+		load (mm, replies)
+	def switch_mode2 (d)
+		load (m, replies, raw=d)
+	def switch_mode3 ()
+		load (m, replies, att=1)
+
+	text = m.data ()
+	msg = Mime (text)
+
+	lst = []
+
+	w = ED.nx
+	HC = 0xeeeedd
+	RCOLOR = 0xddddee
+	PINK = 0xeedddd
+
+	top = []
+	if (m.Type == "mail" and m.isdeld ())
+		top<< ("DELETED", 0x112299, "b", None)
+	if (msg.is_signed ())
+		if (DOPGP) {
+			top<< (" DIGITALLY SIGNED(", 0x000063, "b", None)
+			r = verify_pgp (text)
+			PGT = {
+				"error":("ERROR", 0),
+				"nokey":("NO-KEY", 0x0000ff),
+				"fail":("FAIL!", 0xbb0000),
+				"ok":("VERIFIED", 0x00aa00),
+			}
+			t2, tc = PGT [r]
+			top<< (t2, tc, "b", None)
+			top<< (") ", 0x000063, "b", None)
+		} else top<< (" DIGITALLY SIGNED ", 0x000063, "b", None)
+	if (m.isbookmarked ())
+		top<< (" BOOKMARKED ", 0x000033, "b", None)
+	if (m.thiswatched ())
+		top<< (" THREAD WATCHED ", 0x000033, "b", None)
+	if (m.authwatched ())
+		top<< (" AUTHOR WATCHED ", 0x000033, "b", None)
+	if (top)
+		lst<< (PINK, top)
+
+	# headers section
+	if (!raw) {
+		headers = dict (msg.H)
+	
+		for (k in ("from", "subject"))
+			if (k in headers)
+				lst<< (HC, [cap0 (k) + ": ",
+					 (h2t (headers [k]), None, "b", None)])
+		if ("date" in headers)
+			lst<< (HC, ["Date: ", headers ["date"]])
+
+		for (hh in ("to", "cc"))
+			if (hh in headers) {
+				t = [i for (i in rfc822.split (headers [hh], ","))]
+
+				l = ""
+				f = cap0 (hh) + ": "
+				for (t in t) {
+					if (l and ulen (l + t) > w - 4) {
+						lst<< (HC, [f, l])
+						f = "    "
+						l = t + ", "
+					} else l += t + ", "
+				}
+				if (l)
+					lst<< (HC, [f, l [:-2]])
+			}
+		lst<< (HC, ["file: %06x.off" %m.n ()])
+	} else for (k, v in msg.H)
+		lst.extend (lwrap (HC, [(cap0 (k), None, "b", None), ": " + v], ""))
+
+	# body
+	skipped = []
+	if (!msg.multipart) {
+		for (l in msg.decode2utf ().strip ().split ("\n"))
+			lst.extend (lwrap (None, [l.expandtabs ()]))
+	} else {
+		first = True
+		for (n, p in enumerate (msg.flatten ())) {
+			if (!att and !first)
+				if.continue (p.content_type.sw ("text/html") or "\0" in p.decoded ())
+					skipped<< (p.pno, p.content_type)
+			if (att and !first)
+				lst << (None, [("**", None, "b", None)])
+			for (l in p.decode2utf ().strip ().split ("\n"))
+				lst.extend (lwrap (None, [l.expandtabs ()]))
+			first = False
+		}
+	}
+
+	Mode.skipped = skipped
+
+	# attachments
+	if (skipped) {
+		lst<< (PINK, ["Skipped attachments: [", ("show", 0x8888ff, "b", [switch_mode3]), "]"])
+		for (n, ct in skipped) {
+			lst<< (PINK, [" Part %s %s" %(n, ct)])
+		}
+	}
+
+	# replies
+	op = m.op ()
+	byth = replies == "thread"
+	if (op.nallreplies() > 3)
+		if (byth) lst<< (RCOLOR, [" [", ("by date", 0x7777ff, "b", (switch_mode1, "date")), "]"])
+		else lst<< (RCOLOR, [" [", ("by thread", 0x7777ff, "b", (switch_mode1, "thread")), "]"])
+	par = m.parent ()
+	rl = op.allreplies ()
+	if (!byth)
+		rl = [mm for (None, mm in [(mm.date (), mm) for (mm in rl)].sort ())]
+	for (mm in rl) {
+		d = mm.depth ()
+		isthis = m.id == mm.id
+		if (!isthis and mm.is_reply_to (m))
+			c = "^"
+		else if (!isthis and par and mm.is_reply_to (par))
+			c = "-"
+		else if (!byth and par and mm == par)
+			c = "*"
+		else c = " "
+		if (byth)
+			tab = "  " + "  " * d
+		else tab = " "
+		s0 = mm.AuthorName () + " "
+		s1 = mm.Subject ()
+		if (isthis)
+			lst<< (RCOLOR, [tab + " ", (s0, None, "b", None), (s1, None, "b", None)])
+		else {
+			cc = c == " " ? c : (c, 0xdd99aa, "b", None)
+			t = s1, mm.is_seen () ? COLORS.SEEN : 0x2233aa, None, (go_message, mm)
+			lst<< (RCOLOR, [tab, cc, s0, t])
+		}
+	}
+
+	return lst
+}
+
+EI = 0
+
+def messagemenu ()
+{
+	m = Mode.m
+	def export ()
+	{
+		open ("EXPORT%i.msg"%EI, "w").write (m.data ())
+		EI += 1
+	}
+	def rld (f, *args)
+	{
+		def ff ()
+		{
+			f (*args)
+			load (m, Mode.replies)
+		}
+		return ff
+	}
+	def delmsg (dodel=True)
+		if (dodel) m.delete ()
+		else m.undelete ()
+	M = [('Export to "EXPORT%i.msg" in cwd'%EI, 1, export)]
+	if (m.Type == "mail") {
+		if (!m.isdeld ())
+			M<< ("\\Delete (capital D)", 1, rld (delmsg))
+		else M<< ("Undelete", 1, rld (delmsg, False))
+		M<<("\\Next", m.next () and !FETCHING ? 1 : -1, Next)
+		M<<("\\Prev", m.prev () and !FETCHING ? 1 : -1, Prev)
+		M<<None
+	}
+	if (Mode.raw) M<< ("Hide headers", 1, def () load (m, Mode.replies, raw=False))
+	else M<< ("Show headers", 1, def () load (m, Mode.replies, raw=True))
+	if (Mode.att) M<< ("Hide attachments", 1, def () load (m, Mode.replies, att=False))
+	else if (Mode.skipped)
+		M<< ("Show All attachments", 1, def () load (m, Mode.replies, att=True))
+	def bookmark ()    current.B.add (m.id)
+	def unbookmark ()  del current.B [m.id]
+	def watch ()       current.W.add (m.op ().id)
+	def unwatch ()     del current.W [m.op ().id]
+	def watchauth ()   current.A.add (m.author ())
+	def unwatchauth () del current.A [m.author ()]
+	M<< None
+	if (m.isbookmarked ()) M<< ("unbookmark message", 1, rld (unbookmark))
+	else M<< ("Bookmark message", 1, rld (bookmark))
+	if (m.thiswatched ()) M<< ("unwatch thread", 1, rld (unwatch))
+	else M<< ("Watch thread", 1, rld (watch))
+	if (m.authwatched ()) M<< ("unwatch author", 1, rld (unwatchauth))
+	else M<< ("Watch author", 1, rld (watchauth))
+	return M
+}
+
+def Del ()
+{
+	m = Mode.m
+	if (m.Type == "mail" and !m.isdeld ()) {
+		m.delete ()
+		load (m, Mode.replies)
+	}
+}
+
+def Next ()
+	if (m = Mode.m.next ())
+		load (m, Mode.replies)
+def Prev ()
+	if (m = Mode.m.prev ())
+		load (m, Mode.replies)
+############################# Message list ###############################
+
+class Items
+{
+	bg = void
+	method len ()
+		return 0
+}
+
+def dodel (m, und=False)
+{
+	if (und) m.undelete ()
+	else m.delete ()
+	M.Draw()
+}
+
+class FlatItems (Items)
+{
+	method __init__ ($msgs)
+		$ismail = current.G.Type == "mail"
+
+	method bg (i)
+	{
+		if ($ismail and $msgs [i].isdeld ())
+			return 0xa0a0a0
+		day = int ($msgs [i].date () / 86400)
+		return day%2 ?  0xe1e1e4 : 0xdadadc
+	}
+
+	method len ()
+		return len ($msgs)
+
+	method ith (i)
+	{
+		m = $msgs [i]
+		M = []
+		if ($ismail)
+			if (m.isdeld ())
+			M<< text_drawable ("U ", bold=True, color=0x000099, clickf = (dodel, m, 1))
+			else M<< text_drawable ("D ", bold=True, color=0x000099, clickf = (dodel, m))
+		bold = m.n () > current.LT
+		M.extend ([
+			#text_drawable ("%x  "%m.n ()),
+			text_drawable (m.ShortDate (), ww=$dlen, color=0x223344),
+			text_drawable (m.AuthorName (), ww=200, color=0, bold=m.authwatched ()),
+			mfollow (m, m.Subject () or "No Subject", bold=bold)
+		])
+		return M
+	}
+}
+
+class ThreadedItems (Items)
+{
+	method __init__ ($msgs, b=0)
+		if (!b) $bg = $bgmonth
+
+	method bg (i)
+		return $msgs [i].lrdh () < 48 ? 0xe1e1e4 : 0xdadadc
+
+	method bgmonth (i)
+		return monthof ($msgs [i].op ().date ()) % 2 ? 0xe1e1e4 : 0xdadadc
+
+	method len ()
+		return len ($msgs)
+
+	method ith (i)
+	{
+		m = $msgs [i]
+		d = m.depth ()
+		mbold = m.n () > current.LT
+		xm = mfollow (m, m.Subject (), bold=mbold)
+		bold = m.authwatched ()
+		if (d) return [drawable (m.depth () * 20),
+			text_drawable (m.AuthorName (), color=0, bold=bold),
+			text_drawable (" -- "),
+			xm]
+		L = [ mfollow (m, m.Subject (), bold=mbold),
+			 text_drawable (" -- "),
+			 text_drawable (m.AuthorName (), color=0, bold=bold)
+		]
+		if (m.thiswatched ())
+			L<< text_drawable (" ***", color=0x33ff55)
+		return L
+	}
+}
+
+class OPItems (Items)
+{
+	method __init__ ($msgs);
+
+	method bg (i)
+	{
+		day = int ($msgs [i].date () / 86400)
+		return day%2 ?  0xe1e1e4 : 0xd1d1d4
+	}
+
+	method len ()
+		return len ($msgs)
+	method ith (i)
+	{
+		m = $msgs [i]
+
+		ns = m.nallseenreplies ()
+		M = [ text_drawable (m.ShortDate (), $dlen, color=0x550000) ]
+		if (!ns) {
+			M<<text_drawable (" (%i) "%m.nallreplies (), color=0)
+		} else {
+			M<< text_drawable (" (%i,"%m.nallreplies (), color=0)
+			M<< text_drawable ("%i "%m.nallseenreplies (), color=COLORS.SEEN)
+			M<< text_drawable (") ", color=0)
+		}
+		M<<mfollow (m, m.Subject ())
+		M<<text_drawable ("  " + m.AuthorName (), color=0)
+		return M
+	}
+}
+
+namespace COLORS
+{
+	SEEN = 0xdd4444
+	UNSEEN = 0x2233aa
+}
+
+class drawable
+{
+	method __init__ ($w=0);
+
+	method width ()
+		return $w
+	render_to = void
+	on_click = False
+}
+
+class text_drawable (drawable)
+{
+	method __init__ ($t, $ww=None, $color=0x2233cc, $bold=False, clickf=None)
+		if (clickf)
+			def $on_click ()
+				clickf [0] (*clickf [1:])
+
+	method width ()
+		return $ww is None ? ($bold ? $bfont : $font).isizeof ($t) : $ww
+
+	method render_to (fb, x, y)
+	{
+		t = $t
+		f = $bold ? $bfont : $font
+		if ($ww)
+			while (f.isizeof (t) > $ww)
+				t = t [:-1]
+		f.render_to (fb, x, y, t, $color)
+	}
+
+	
+}
+
+class mfollow (text_drawable)
+{
+	method __init__ ($m, *args, **kwargs)
+	{
+		kwargs ["color"] = m.is_seen () ? COLORS.SEEN : COLORS.UNSEEN
+		text_drawable.__init__ (self, *args, **kwargs)
+	}
+
+	method on_click ()
+	{
+		load ($m, "thread")
+#		$m.mark_seen ()
+		$color = COLORS.SEEN
+	}
+}
+
+# a custom widget for the message list. not very good but can be
+# tweaked freely
+
+from graphics.framebuffer import FrameBuffer
+import gui
+
+class MList (gui.widget)
+{
+	BG = 0xcccccf
+	BG = 0xdddddf
+	BG = 0xe1e1e4
+	FG = 0x222255
+	ybar = None
+
+	method Init ($initlist=None, **kw)
+	{
+		$widget_init (**kw)
+		$font = $wm.OpenFont ("sans", 0).as_utf8 ()
+		$bfont = $wm.OpenFont ("sans-b", 0).as_utf8 ()
+		drawable.font = $font
+		drawable.bfont = $bfont
+		Items.dlen = $font.isizeof ("Aug 006")
+		$List = None
+		$offset = 0
+		$dy = $font.maxh
+		$nr = $h / $dy
+	}
+
+	method __setup__ ()
+	{
+		$loadlist ($initlist or Items ())
+		del $initlist
+	}
+
+	method loadlist ($List, offset=None)
+	{
+		$ll = $List.len ()
+		$offset = offset is None ? max ($ll - $nr, 0) : offset
+		$clicks = []
+		$Draw ()
+	}
+
+	method getTVOh ()
+		return $ll, $nr, $offset
+	method setTVOh (d=None, o=None)
+		;
+
+	method _resize_h (dh)
+	{
+		$h += dh
+		$nr = $h / $dy
+	}
+	method _resize_w (dw)
+	{
+		$w += dw
+	}
+
+	method Draw ()
+	{
+		fb = FrameBuffer ($w, $h, $wm.bpp)
+		fb.clear ($BG)
+
+		c = []
+		for (i in *$nr) {
+			n = i + $offset
+			if (n >= $ll)
+				break
+			x = 5
+			y = i * $dy
+
+			if ($List.bg (n) is not None)
+				fb.fill_rect (0, y, $w, $dy, $List.bg (n))
+			for (d in $List.ith (n)) {
+				d.render_to (fb, x, y)
+				if (d.on_click)
+					c<< (x, y, x+d.width(), y+$dy, d.on_click)
+				x += d.width ()
+			}
+		}
+		$show_image (fb.as_image (), 0, 0)
+		$clicks = c
+	}
+
+	method scroll (d)
+	{
+		o = minmax (0, $offset + d, max ($ll - $nr, 0))
+		if (o != $offset) {
+			$offset = o
+			$Draw ()
+		}
+		if ($ybar)
+			$ybar.modTVO()
+	}
+
+	method onClick (x, y)
+		for (x0, y0, x1, y1, cc in $clicks)
+			if (x0 < x < x1 and y0 < y < y1) {
+				cc ()
+				return True
+			}
+
+	method onKey (k)
+	{
+		sk = {
+			"PAGEUP": -$nr,
+			"PAGEDOWN": $nr,
+			"UP":-1,
+			"DOWN":1,
+			"HOME":-$ll,
+			"END":$ll
+		}
+		if (k in sk) {
+			$scroll (sk [k])
+			return True
+		}
+
+		return HotKeys (k)
+	}
+
+	method onWheel (x)
+		$scroll ($wm.key_ctrl ? (x == "up" ? -30 : 30) : (x == "up" ? -3 : 3))
+}
+
+# Message list generators
+
+def swThreaded ()
+	M.loadlist (ThreadedItems ([t for (i in current.G.AllOP ()) for (t in i.allreplies ())]))
+def swThreadedHot ()
+	M.loadlist (ThreadedItems ([t for (i in current.G.AllOP ()) 
+				if (i.nauthors () > 3) for (t in i.allreplies ())]))
+def swThreadedHLRD ()
+{
+	L = [i.lrd (), i for (i in current.G.AllOP ()) if (i.nauthors () > 3)].sort ()
+	M.loadlist (ThreadedItems ([i for (t in L) for (i in t [1].allreplies ())], 1))
+}
+NOW = now ()
+def ago3days (d)
+	return NOW - d < 3 * 86400
+def swThreadedFHLRD ()
+{
+	L = []
+	for (i in current.G.AllOP ())
+		if (i.nauthors () > 3) {
+			d = i.lrd ()
+			if (ago3days (d))
+				L<< (d, i)
+		}
+	M.loadlist (ThreadedItems ([i for (t in L.sort ()) for (i in t [1].allreplies ())], 1))
+}
+def swThreadedCold ()
+	M.loadlist (ThreadedItems ([t for (i in current.G.AllOP ()) 
+				if (1 < i.nauthors () <= 3) for (t in i.allreplies ())]))
+def swThreadedFColdLRD ()
+{
+	L = []
+	for (i in current.G.AllOP ())
+		if (1 < i.nauthors () <= 3) {
+			d = i.lrd ()
+			if (ago3days (d))
+				L<< (d, i)
+		}
+	M.loadlist (ThreadedItems ([i for (t in L.sort ()) for (i in t [1].allreplies ())], 1))
+}
+def swThreadedUnans ()
+{
+	M.loadlist (ThreadedItems ([t for (i in current.G.AllOP ()) 
+				if (1 == i.nauthors ()) for (t in i.allreplies ())]))
+}
+
+def swThreadedW ()
+{
+	L = [t for (i in current.G.AllOP ())
+		if (i.id in current.W)
+			for (t in i.allreplies ())]
+	M.loadlist (ThreadedItems (L, 1))
+}
+
+def swFlat ()
+	M.loadlist (FlatItems (list (current.G.All ())))
+def swFlatSeen ()
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (x.is_seen ())]))
+def swFlatBook ()
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (x.isbookmarked ())]))
+def swFlatAuth (a)
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (x.author () == a)]))
+def swFlatAuthB ()
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (x.authwatched ())]))
+def swOPs ()
+	M.loadlist (OPItems ([i for (i in current.G.AllOP ()) if (i.nreplies ())]))
+
+def HotKeys (k)
+{
+	if (k == "t") swThreaded ()
+	else if (k == "f") swFlat ()
+	else if (k == "s") swFlatSeen ()
+	else if (k == "b") swFlatBook ()
+	else if (k == "h") swThreadedHot ()
+	else if (k == "l") swThreadedHLRD ()
+	else if (k == "r") swThreadedFHLRD ()
+	else if (k == "c") swThreadedCold ()
+	else if (k == "u") swThreadedUnans ()
+	else if (k == "w") swThreadedW ()
+	else return False
+	return True
+}
+
+namespace current
+{
+	G = None
+}
+
+NGs = {g:[newsgroup (g), 0] for (g in usenet.GROUPS)}
+MAs = {a:[mbox (a), 0] for (a in mail.ACCOUNTS)}
+for (v, None in NGs.values ()) v.load_rninfo ()
+for (v, None in MAs.values ()) v.load_rninfo ()
+
+class GL
+{
+	bg = void
+	method __init__ ()
+	{
+		$NNG = len (usenet.GROUPS)
+		$NMA = len (mail.ACCOUNTS)
+	}
+
+	method len ()
+		return $NNG + $NMA + 2
+
+	method ith (i)
+	{
+		c = 0x000033
+		td = text_drawable
+		L = []
+
+		if (i == 0)
+			return [td ("Mail Accounts", bold=1, color=0)]
+		i -= 1
+		if (i < $NMA) {
+			L<< drawable (20)
+			a = mail.ACCOUNTS [i]
+			A = MAs [a][0]
+			L<< (t1 = td ("%s" %a, color=c, ww=100))
+			L<< td ("(%i)" %A.NMSG, color=c, ww=120)
+			newmail = MAs [a][1]
+			L<< td (newmail ? "+%i" % newmail : "", color=0x3333bb, bold=1, ww=40)
+			def t1.on_click ()
+			{
+				if (REFRESHING)
+					return
+				if (current.G)
+					current.G.unload ()
+				ng = current.G = MAs [a][0]
+				current.G.load ()
+				current.LT = ng.ith (-(MAs [a][1]+1)).n ()
+				current.B = ng.rninfo ["bookmarks"]
+				current.W = ng.rninfo ["watched"]
+				current.A = ng.rninfo ["watchedauth"]
+				swFlat ()
+				U.Switch (1)
+				M.setKeyWidget ()
+				NT.setmsg (a)
+			}
+			return L
+		}
+		i -= $NMA
+		if (i == 0)
+			return [td ("News Groups", bold=1, color=0)]
+		i -= 1
+		g = usenet.GROUPS [i]
+		G = NGs [g][0]
+		nmsg, nth = G.metrics ()
+		L<< drawable (20)
+		L<<(t1 = td ("%s" %g, color=c, ww=100))
+		L<< td ("(%i/%i)" %(nth, nmsg), color=c, ww=120)
+		newmail = NGs [g][1]
+		L<< td (newmail ? "+%i" % newmail : "", color=0x3333bb, bold=1, ww=40)
+		L<<(t3 = td (G.group, color=c))
+		def t1.on_click ()
+		{
+			if (REFRESHING)
+				return
+			if (current.G)
+				current.G.unload ()
+#@meminfo.mstat ()
+			ng = current.G = NGs [g][0]
+			current.G.load ()
+			xx = ng.ith (-(NGs [g][1] + 1))
+			current.LT = xx.n ()
+			current.B = ng.rninfo ["bookmarks"]
+			current.W = ng.rninfo ["watched"]
+			current.A = ng.rninfo ["watchedauth"]
+			swThreaded ()
+			U.Switch (1)
+			M.setKeyWidget ()
+			NT.setmsg (g)
+		}
+		t3.on_click = t1.on_click
+		return L
+	}
+}
+
+wm = gui.Wm (0, 0)
+
+REFRESHING = False
+def RefreshBG ()
+{
+	global REFRESHING
+	REFRESHING = True
+	msg = MSTATUS.async_msg
+	# these things can be parallelized per server and that'd be
+	# really good. At least now it's easy to report the progress.
+	msg ("refreshing")
+	mtot = ntot = 0
+	for (m in mail.ACCOUNTS) {
+		msg ("Fetching mail for: " + m)
+		try {
+			newmail = MAs [m][0].fetchmail (PRINT=MSTATUS.async_msg)
+			MAs [m][1] = newmail
+			mtot += newmail
+		} except {
+			print sys.exc_info ()
+			msg ("FAILED")
+		}
+	}
+	for (m in usenet.GROUPS) {
+		msg ("Fetching news for: " + m)
+		N0 = None
+		nn=0
+		try for (n, N in NGs [m][0].catch_up (1)) {
+			nn += 1
+			if (N0 is None) N0 = n-1
+			PROGRESS.Advance2 (n-N0, N-N0)
+		} except {
+			print sys.exc_info ()
+			msg ("FAILED")
+		} else {
+			NGs [m][1] = nn
+			ntot += nn
+		}
+		PROGRESS.Close ()
+	}
+	L = []
+	if (mtot) L<< "%i new mails" %mtot
+	if (ntot) L<< "%i new msgs" %ntot
+	MSTATUS.async_msg ("OK." + " and ".join (L))
+	REFRESHING = False
+	wm.async (G.Draw)
+}
+def Refresh ()
+	if (!REFRESHING)
+		thread.start_new (RefreshBG)
+
+with (U = gui.union ()) {
+	with (gui.vcontainer ()) {
+		with (gui.hcontainer ()) {
+			gui.button ("Refresh", Action=Refresh)
+			MSTATUS = gui.status ()
+		}
+		PROGRESS = gui.progress ()
+		G = MList (GL ())
+	}
+
+	with (gui.vcontainer ()) {
+		with (gui.hcontainer ()) {
+			def Back ()
+				U.Switch (0)
+			def havebooks ()
+				return current.B ? 1 : -1
+			def havewatch ()
+				return current.W ? 1 : -1
+			def haveauth ()
+				return current.A ? 2 : -2
+			def goauth (a)
+				return def () swFlatAuth (a)
+			def Auths ()
+				return [(x, 1, goauth (x)) for (x in current.A)]
+			gui.button ("back", Action=Back)
+			gui.menubar ([
+				["Menu", [
+					["OPs", 1, swOPs],
+					["\\Threaded All", 1, swThreaded],
+					None,
+					["Threaded \\Hot", 1, swThreadedHot],
+					["Threaded Hot \\LRD", 1, swThreadedHLRD],
+					["Threaded \\Cold", 1, swThreadedCold],
+					["\\Unanswered", 1, swThreadedUnans],
+					None,
+					["F\\resh Threaded Hot LRD", 1, swThreadedFHLRD],
+					["Fresh Cold LRD", 1, swThreadedFColdLRD],
+					None,
+					["\\Flat", 1, swFlat],
+					["Flat \\Seen", 1, swFlatSeen],
+					["Flat watched author", 1, swFlatAuthB],
+					None,
+					["\\Bookmarked messages", havebooks, swFlatBook],
+					["Active \\Watched threads", havewatch, swThreadedW],
+					["Authors", haveauth, Auths],
+					None,
+					["Quit", 1, void],
+				]]])
+			NT = gui.status ("-")
+		}
+#		with (gui.hcontainer ()) {
+#			gui.textin ()
+#			gui.button ("Search Author")
+#			gui.button ("Search Title")
+#			gui.button ("Search Messages")
+#		}
+		with (gui.hcontainer ()) {
+			M = MList ()
+			M.ybar = gui.hscrollbar (M)
+		}
+	}
+	with (gui.vcontainer ()) {
+		def Back ()
+		{
+			U.Switch (1)
+			M.Draw ()
+		}
+
+		with (gui.hcontainer ()) {
+			gui.button ("back", Action=Back)
+			gui.menubar ([
+				["Menu", messagemenu]
+			])
+		}
+		ED = gui.rtext (dowheel=True)
+	}
+}
+
+def ED.doclick (c)
+	c [0] (*c [1:])
+def ED.onkey (k)
+{
+	if (k == "D")
+		Del ()
+	else if (k == "n")
+		Next ()
+	else if (k == "p")
+		Prev ()
+	else if (k == "BACKSPACE")
+		Back ()
+	else return False
+	return True
+}
+
+M.setKeyWidget ()
+try {
+	try wm.Start ()
+	except {
+		print sys.exc_info ()
+		raise
+	}
+} finally {
+	for (v, None in NGs.values ())
+		v.save_rninfo ()
+	for (v, None in MAs.values ())
+		v.save_rninfo ()
+	if (current.G)
+		current.G.save_tags ()
+}
+for (v, None in MAs.values ())
+	v.do_deletes ()
+
+# colours:
+#	Seen
+#	New (since last fetch)
+#	Unseen
+
+# SENDER:
+#	write to tmp.txt
+#	edit tmp.txt <yourname@here>
+#	attach files
+
+# Bolden (new since last time)
+
+# Save attachments

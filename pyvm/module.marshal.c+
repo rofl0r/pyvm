@@ -1,0 +1,329 @@
+/*
+ *  Write marshal data
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "config.h"
+#include "dynlib.h"
+
+static class wmarshal
+{
+	const inline virtual;
+virtual	void writedt (const char*, int) { }//= 0;
+
+inline	void w_byte (byte);
+inline	void w_long (long);
+inline	void w_short (unsigned short);
+inline	void w_string (const char*, int);
+inline	void w_int (int);
+	void w_double (double);
+	void w_stringObj (StringObj*);
+	void w_tuple (Tuplen*);
+
+	REFPTR strings;
+	int nR, version;
+    public:
+	wmarshal (__object__*, int);
+	void w_object (__object__*);
+};
+
+/*
+ * marshal dump to file
+ */
+static class wmarshal_file : wmarshal
+{
+	void writedt (const char *v, int l)	{ F.writedt (v, l); }
+   public:
+	FDout &F;
+	wmarshal_file (__object__*, __object__*, int);
+};
+
+wmarshal_file.wmarshal_file (__object__ *o, __object__ *f, int v)
+{
+	dereference F = getFDout (f);
+	wmarshal.ctor (o, v);
+	F.flush ();
+}
+
+/*
+ * marshal dump to string
+ */
+
+#include "cStringIO.h"
+
+static class wmarshal_str : wmarshal
+{
+	void writedt (const char *v, int l)	{ F.strcat (v, l); }
+   public:
+	cStringIO F;
+	wmarshal_str (__object__*, int);
+};
+
+wmarshal_str.wmarshal_str (__object__ *o, int v)
+{
+	F.ctor ();
+	wmarshal.ctor (o, v);
+}
+
+/* */
+
+extern FDout *getFDout (__object__*);
+
+wmarshal.wmarshal (__object__ *o, int v)
+{
+	version = v;
+	strings.ctor (new DictObj __attrdict ());
+	nR = 0;
+	w_object (o);
+}
+
+void wmarshal.w_double (double d)
+{
+	// XXXX: if producing bytecode for 2.4, use the old format!
+	w_byte ('g');
+#if	PYVM_ENDIAN == PYVM_ENDIAN_LITTLE
+	w_string ((char*) &d, 8);
+#else
+	char tmp [8];
+	for (int i = 0; i < 8; i++)
+		tmp [i] = ((char*) &d) [7 - i];
+	w_string (tmp, 8);
+#endif
+}
+
+void wmarshal.w_string (const char *s, int l)
+{
+	writedt (s, l);
+}
+
+void wmarshal.w_byte (byte c)
+{
+	writedt ((char*) &c, sizeof c);
+}
+
+void wmarshal.w_long (long c)
+{
+	/* "long" in marshalled python objects is actually a 32bit in.
+	 * Here we must check if something's more than that in 64bit
+	 * systems and do something else */
+	int i = c;
+	i = htolle (i);
+	writedt ((char*) &i, sizeof i);
+}
+
+void wmarshal.w_short (unsigned short c)
+{
+	c = htosle (c);
+	writedt ((char*) &c, sizeof c);
+}
+
+#include "zlib/zlib.h"
+
+void wmarshal.w_stringObj (StringObj *s)
+{
+	int d128 = s->len < 256 && version >= 2006 ? 128 : 0;
+
+	if (s->len > 700 && version >= 2006) {
+		unsigned char dest [s->len - 100];
+		unsigned long destlen = s->len - 99;
+		if (!compress2 (dest, &destlen, (byte*)s->str, s->len, 9)) {
+			w_byte ('z');
+			w_long (destlen);
+			w_long (s->len);
+			w_string ((char*)dest, destlen);
+			return;
+		}
+	}
+
+	if (is_intern (s)) {
+		__object__ *o = strings.as_dict->xgetitem_str (s);
+		if (o) {
+			if (version >= 2006 && IntObj.cast (o)->i < 256) {
+				w_byte ('R'+128);
+				w_byte (IntObj.cast (o)->i);
+			} else {
+				w_byte ('R');
+				w_long (IntObj.cast (o)->i);
+			}
+			return;
+		}
+		strings.as_dict->xsetitem_str (s, newIntObj (nR++));
+		w_byte ('t' + d128);
+	} else w_byte ('s' + d128);
+	if (d128) w_byte (s->len);
+	else w_long (s->len);
+	w_string (s->str, s->len);
+}
+
+void wmarshal.w_tuple (Tuplen *t)
+{
+	uint len = t->len;
+	REFPTR *data = t->data;
+	if (len < 256 && version >= 256) {
+		w_byte ('(' + 128);
+		w_byte (t->len);
+	} else {
+		w_byte ('(');
+		w_long (t->len);
+	}
+	for (uint i = 0; i < len; i++)
+		w_object (data [i].o);
+}
+
+void wmarshal.w_int (int i)
+{
+	w_byte ('i');
+	w_long (i);
+}
+
+void wmarshal.w_object (__object__ *o)
+{
+	if (StringObj.isinstance (o))
+		w_stringObj (StringObj.cast (o));
+	else if (o == &None)
+		w_byte ('N');
+	else if (IntObj.isinstance (o))
+		w_int (IntObj.cast (o)->i);
+	else if (Tuplen.isinstance (o))
+		w_tuple (Tuplen.cast (o));
+	else if (BoolObj.isinstance (o))
+		w_byte (o == &TrueObj ? 'T' : 'F');
+	else if (FloatObj.isinstance (o))
+		w_double (FloatObj.cast (o)->f);
+	else if (PyCodeObj.typecheck (o)) {
+		PyCodeObj *C = PyCodeObj.cast (o);
+		if (C->nloops != -1)
+			RaiseNotImplemented ("can't marshal code object -- it has been optimized");
+		w_byte ('c');
+		w_long (C->argcount);
+		if (version < 2006)
+			w_long (C->nlocals);
+		w_long (C->stacksize);
+		w_long (C->flags);
+		w_object (C->code.o);
+		if (version >= 2006 && !C->consts.as_tuplen->len)
+			w_object (&None);
+		else w_object (C->consts.o);
+		w_object (C->names.o);
+		w_object (C->varnames.o);
+		if (version >= 2006 && !C->freevars.as_tuplen->len)
+			w_object (&None);
+		else w_object (C->freevars.o);
+		if (version >= 2006 && !C->cellvars.as_tuplen->len)
+			w_object (&None);
+		else w_object (C->cellvars.o);
+		w_object (C->filename.o);
+		if (version >= 2006 && C->name.o != C->iname.o) {
+			REFPTR T = new Tuplen (C->name.o, C->iname.o);
+			w_object (T.o);
+		} else w_object (C->name.o);
+		w_long (C->firstlineno);
+		w_object (C->lnotab.o);
+	} else if (DictObj.isinstance (o))
+		w_dict (DictObj.cast (o));
+	else if (SetObj.isinstance (o))
+		w_set (SetObj.cast (o));
+	else if (iiDictObj_isinstance (o))
+		w_iidict (o);
+	else if (inv_builtins->contains (o)) {
+		/*
+		 * Marshal __builtins__
+		 */
+		w_byte ('B');
+		w_object (inv_builtins->xgetitem (o));
+	} else {
+		pprint (o);
+		RaiseNotImplemented ("marshal: Can't write object");
+	}
+}
+
+static void wmarshal.w_dict (DictObj *d)
+{
+	dictiter I (&d->D);
+	w_byte ('{');
+	while (I.next ()) {
+		w_object (I.k);
+		w_object (I.v);
+	}
+	w_byte ('0');
+}
+
+static void wmarshal.w_set (SetObj *d)
+{
+	dictiter I (&d->D);
+	w_byte ('<');
+	w_long (d->D.used);
+	while (I.next ())
+		w_object (I.k);
+}
+
+static void wmarshal.w_iidict (__object__ *o)
+{
+	unsigned int *a, n, *p;
+	p = a = iidict_to_array (o, &n);
+	w_byte (1);
+	w_long (n);
+	writedt ((char*) a, 2 * n * sizeof (int));
+	__free (a);
+}
+
+static DictObj *inv_builtins;
+
+////// r-marshal
+
+/* entry */
+
+_module __object__ *dump_marshal (REFPTR argv[], int argc)
+{
+	int version;
+	version = (argc == 3) ? argv [2].CheckInt ()->i : 1;
+	check_file (argv [1].o);
+	wmarshal_file (argv [0].o, argv [1].o, version);
+	return &None;
+}
+
+_module __object__ *dumps_marshal (REFPTR argv[], int argc)
+{
+	int version;
+	version = (argc == 2) ? argv [1].CheckInt ()->i : 1;
+	wmarshal_str W (argv [0].o, version);
+	return W.F.getvalue ();
+}
+
+_module __object__ *loads_marshal (REFPTR argv[])
+{
+	/* This should not be used to load modules!
+	 * Just serialized data (tuples + leaf)
+	 */
+	StringObj *s = argv [0].check_string ();
+	return r_marshal ((byte*) s->str, s->len, 0);
+}
+
+/* module */
+
+static const bltinfunc funcs [] = {
+	{ "dump",	SETARGC (2, 3), dump_marshal },
+	{ "dumps",	SETARGC (1, 2), dumps_marshal },
+	{ "load",	SETARGC (1, 1), load_marshal },
+	{ "loads",	SETARGC (1, 1), loads_marshal },
+	BENDITEM
+};
+
+slowcold __object__ *import_marshal ()
+{
+	/* inverse builtins dictionary, to marshal builtins */
+	DictObj *bl = __builtins__.as_ns->__dict__.as_dict;
+	inv_builtins = new DictObj;
+	for (dictEntry *E = 0; (E = bl->__iterfast (E));)
+		if (!(E->val->vf_flags & VF_UNHASHABLE))
+			inv_builtins->xsetitem (E->val.o, E->key.o);
+	inv_builtins->GC_ROOT ();
+
+	return new ModuleObj BltinModule ("marshal", funcs);
+}

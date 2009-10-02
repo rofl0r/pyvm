@@ -1,0 +1,109 @@
+__autosem__
+from widget import widget
+from scrollbarz import hscrollbar
+
+# fixed font text widget which may use a scrollbar
+
+class twidget (widget)
+{
+	method Init ($tw=0, $th=0, $font=None, $bfont=None, dowheel=False, **kw)
+	{
+		for (v in ("minTh", "minTw", "maxTh", "maxTw"))
+			if (v in kw)
+				$(v) = kw.pop (v)
+		if ($font is None)
+			$font = $A.tfont
+		if ($bfont is None)
+			$bfont = $A.bfont
+		$fx, $fy = $font.size ()
+		sw = $A.scroller_width
+		if (tw == 0 and 'w' in kw)
+			tw = $tw = (kw ['w'] - 2 - sw) / $fx
+		else kw ['w'] = tw * $fx + 2 + sw
+		kw ['h'] = th * $fy
+		if (fixed = "fixed" in kw and kw ["fixed"]) {
+			del kw ["fixed"]
+			$minTh = $maxTh = th
+			$maxTw = $minTw = tw
+		}
+		$widget_init (**kw)
+		$ybar = hscrollbar (self, h=$h, p=self)
+		$ybar.x = $w - $ybar.w
+		if (dowheel)
+			$onWheel = $onWheel_
+	}
+
+	method onWheel_ (x)
+		return $ybar.onKey (x == "up" ? "UP" : "DOWN")
+
+	method sReact ()
+		$ybar.modTVO ();
+
+	method draw_text (s, lx, ly, fg, bg, bold=False)
+		$draw_string (s, 1 + lx * $fx, ly * $fy + 1,
+			      fg=fg, bg=bg, font=bold ? $bfont : $font);
+
+	method putScroll (dodraw)
+	{
+		$_resize_w (0);
+		if (dodraw)
+			$Draw ();
+	}
+
+	minTw = minTh = 2;
+	maxTw = maxTh = 300;
+
+	method _resize_w (dw)
+	{
+		dw = $fx * (dw / $fx)
+		if ($minTw <= $tw + dw / $fx <= $maxTw) {
+			if (dw)
+				if ($w + dw >= $fx + $ybar.w)
+					$w += dw;
+			$tw = ($w - $ybar.w) / $fx;
+			$tresize_w ();
+			$ybar.x = $w - $ybar.w;
+		}
+	}
+
+	method _resize_h (dh)
+		if (dh = $fy * (dh / $fy)) {
+			th = ($h + dh) / $fy
+			if ($minTh <= th <= $maxTh) {
+				$th = ($h += dh) / $fy
+				$ybar.resize_h (dh)
+				$tresize_h ()
+				$sReact ()
+			}
+		}
+
+	#
+	method Draw ()
+	{
+		$tDraw ()
+		$ybar.Draw ()
+	}
+
+	method onRedraw (x, y, w, h)
+	{
+		$ybar.Draw ()
+		$tOnRedraw (x, y, w, h)
+	}
+
+	method tx (x)
+		return x / $fx
+
+	method ty (y)
+		return y / $fy
+
+	# partial draw
+
+	method onClick (x, y)
+		if ($ybar.w and $ybar.xy_in (x, y))
+			return $ybar.onClick (x - $ybar.x, y - $ybar.y)
+		else return $tOnClick (x / $fx, y / $fy)
+
+	# defaults
+	tresize_h = tresize_w = widget.ignore;
+	method tOnRedraw (x, y, w, h) $tDraw ()
+}

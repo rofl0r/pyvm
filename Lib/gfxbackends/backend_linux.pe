@@ -1,0 +1,384 @@
+##  Linux framebuffer backend.
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from backend_base import Window as BaseWin, Exit, Shift
+from colornames import lookup as LookupColor
+from graphics.framebuffer import FrameBuffer as FBBase, image
+import thread
+
+#
+# This can be a very good backend, once properly set up.
+# Until it is properly set-up, it can halt the terminal, etc...
+#
+# For the framebuffer backend to be nice, the most important thing
+# to do is to tell to the kernel to use the right video card with
+# the right parameters.  For example, over here I have a custom
+# compiled kernel with sisfb.  The command line option is:  video=sisfb:mode:1280x800x16
+# On the same machine, X11 is very confused and cannot give more than 800x600!
+#
+# After you are happy with the framebuffer and all the devices have the
+# correct permissions (/dev/fb0, /dev/input/mice, /dev/tty0), you can
+# try running this program to see what happens.  Just press about 12 keys
+# for the program to terminate.
+#
+# If things go wrong, this could lock the terminal.
+# If you do not have a network connection to telnet to the machine and
+# kill it, one way to avoid the cold reboot is to go to another vt
+# and as superuser type:
+#	sleep 100 && reboot
+# that will reboot the machine after 100 seconds if not stopped.
+#
+# Fb applications can be killed by pressing CTRL-ALT-BACKSPACE.
+# CTRL-ALT-LEFT and CTRL-ALT-RIGHT can be used to switch to the previous/next VT.
+# Winkeys can also be used to switch VTs.
+#
+# An even better way to kill the framebuffer backend is by clicking the left
+# mouse button many (~20) times.
+#
+# At the moment, this backend does not support any acceleration.
+# We would be very interested in fill_rectangle and blit_image
+# accelerations.  Maybe this can be done with VESA?  Or MMIO?
+# Or just wait until the kernel exposes a simple acceleration ioctl?
+#
+
+import DLL, sysconfig, thread, lockfile
+
+C = DLL.Import ('linuxfb', '-O2 -Wall', pelf=0)
+
+USE_SCROLLWHEEL = int (@sysconfig.GETCONF ("usescrollwheelinfb"))
+
+# enable winkeys to switch vt? their keycodes are not documented in linux/keyboard.h
+# and over here they are 125,126. if this is the std make it a sysconfig option.
+WINKEYS = 1
+
+SCREENSHOT = int (@sysconfig.GETCONF ("escscreenshot"))
+
+class linuxfb (**FBBase)
+{
+	terminated = True
+	draw_line2 = draw_line
+	fill_rect2 = fill_rect
+	put_image2 = put_image
+	put_pixel2 = put_pixel
+	blit_data2 = blit_data
+
+	method __init__ ()
+	{
+		vt = C.getvt ()
+		if (vt == -1)
+			raise Error ("Can't start linuxfb. Not on the console!")
+		if (!lockfile.get ("linuxfb%i" %vt))
+			raise Error ("Can't start linuxfb. fb aleady owned.")
+		$vtn = vt
+
+		v = array ('i', 7)
+		do_accel = sysconfig.GETCONF ("LinuxFBAcceleration")
+		# (xxx: if the stderr is a tty then redirect to file)
+		if (err = C.init (v, do_accel, USE_SCROLLWHEEL, __killvm__, WINKEYS, SCREENSHOT)) {
+			if (err == 5)
+				print "Don't have permissions to open /dev/tty0 in 'rw' mode"
+			if (err == 8)
+				print "Don't have permissions to open /dev/input/mice in 'rw' mode"
+			raise Error ("Linux-framebuffer Failed (err=%i)"%err)
+		}
+
+		w, h, bpp, ptr, roff, goff, boff = v
+		if (bpp == 1) {
+			print "\nERROR!"
+			print "Linuxfb: your framebuffer at 8bpp (256 colors)"
+			print " pyvm has no support for running applications in 8bpp graphics."
+			print " Adjust your kernel (use the command line boot option 'vga=ask') to choose a mode with 16 or 32 bpp"
+			print " (16bpp is preferred)"
+			C.terminate ()
+			exit ()
+		}
+
+		$terminated = False
+
+		print "linuxfb %ix%ix%i" %(w, h, bpp)
+		$LOCK = thread.xlock ()
+
+		# try to avoid fatal lockups
+		sys.register_atexit (C.terminate)
+		# try to restore even on SEGV
+		sys.set_on_segv (C.termfunc)
+
+		print "RGB offsets", roff, goff, boff
+		FBBase.__init__ (self, w, h, bpp, ptr)
+		$Q = []
+		$enabled = True
+	}
+
+	method put_pixel (*args)
+		$Q.append (($put_pixel2, args))
+	method draw_line (*args)
+		$Q.append (($draw_line2, args))
+	method fill_rect (*args)
+		$Q.append (($fill_rect2, args))
+	method blit_data (*args)
+		$Q.append (($blit_data2, args))
+	method put_image (img, x, y, sx=0, sy=0, sw=3200, sh=3200)
+	{
+		if (img.bpp != $bpp)
+			img.convert_bpp ($bpp)
+		$Q.append (($put_image2, (img, x, y, sx, sy, sw, sh)))
+	}
+
+	method lock ()   if (C.lock (0, 0, $w, $h) == -1) raise Error ("FB terminated")
+	method unlock () C.unlock ()
+
+	method flush (minx, miny, maxx, maxy)
+	with ($LOCK) {
+		if ($enabled and $Q) {
+			if (C.lock (minx, miny, maxx, maxy) == -1) {
+				C.unlock ()
+				$enabled = False
+				raise Error ("FB terminated")
+			}
+			for (f, args in $Q)
+				try f (*args)
+			C.unlock ()
+		}
+		$Q = []
+	}
+
+	method shutdown ()
+		if (!$terminated) {
+			lockfile.leave ("linuxfb%i" %$vtn)
+			$terminated = True
+			C.terminate ()
+		}
+
+	__del__ = shutdown
+}
+
+Translate =
+{
+	256:"SHIFT",
+	258:"CTRL",
+	257:"ALT",
+	302:"UP",
+	259:"DOWN",
+	301:"RIGHT",
+	300:"LEFT",
+	304:"HOME",
+	305:"END",
+	306:"PAGEUP",
+	307:"PAGEDOWN",
+	309:"CAPS-LOCK",
+	303:"INSERT",
+	27:"ESC",
+	8:"BACKSPACE",
+	127:"DEL",
+}
+
+###################################################################
+#	Not a real framebuffer.
+###################################################################
+
+class Window (**BaseWin)
+{
+	method __init__ (w=0, h=0)
+	{
+		try $fb = linuxfb ()
+		except {
+			C.terminate ()
+			raise
+		}
+		$width = $fb.w
+		$height = $fb.h
+		$bpp = $fb.bpp
+		$std_fonts ()
+		$fb.clear (0)
+		$have_vt = 3
+	}
+
+	method draw_line (x1, y1, x2, y2, c) $fb.draw_line (x1, y1, x2, y2, c)
+	method fill_rect (x, y, w, h, c) $fb.fill_rect (x, y, w, h, c)
+	method show_image (i, x, y, sx=0, sy=0, sw=3200, sh=3200)
+		$fb.put_image (i, x, y, sx, sy, sw, sh)
+	method flush (area=None)
+	{
+		if (!area)
+			area = 0, 0, $width, $height
+		$fb.flush (*area)
+	}
+
+
+	method where ()
+	{
+		xy = array ('i', 2)
+		C.where (xy)
+		return tuple (xy)
+	}
+
+	method move_mouse (x, y)
+		C.move_mouse (x, y)
+
+	method block_until_event ()
+		if (C.block_until_event () == -1) raise Error ("Backend shutdown")
+
+	CAPS = SHIFT = False
+
+	method get_event ()
+	{
+		if (!$have_vt)
+			return
+
+		if ($have_vt == 2) {
+			$have_vt = 3
+			return "FOCUS",
+		}
+		if ($have_vt == 1) {
+			$have_vt = 2
+			return "REDRAW", 0, 0, $width, $height
+		}
+
+		ee = array ('i', 4)
+		if (!C.get_event (ee))
+			return
+
+		et = ee [0]
+
+		if (et == 0) {
+			n = ee [1]
+			if (n in Translate) n = Translate [n]
+			else try n = chr (n)
+				except { print "SKIP:", n; return None; }
+
+			if (n == "CAPS-LOCK") {
+				# (linuxfb.c should set the LED?)
+				$CAPS = not $CAPS
+				return
+			}
+			if ($CAPS and len (n) == 1) n = n.upper ()
+			if (n == "SHIFT") $SHIFT = True
+			else if ($SHIFT and len (n) == 1) n = Shift (n)
+			return "PRESS", n
+		}
+
+		if (et == 1) {
+			ee = Translate [ee [1]]
+			if (ee == "SHIFT") $SHIFT = False
+			return "RELEASE", ee
+		}
+
+		if (et in (2, 3)) {
+			ee, bt, xx, yy = ee
+			if (bt == 4)
+				return "WHEEL", "down"
+			if (bt == 5)
+				return "WHEEL", "up"
+			return {2:"CLICK", 3:"UNCLICK"}[ee], bt, xx, yy;
+		}
+
+		if (et == 4) {
+			thread.start_new ($switch_vt)
+			return
+		}
+
+		if (et == 5) {
+			$fb.enabled = False
+			raise Exit
+		}
+
+		if (et == 6) {
+			$fb.save_as_ppm ("SCREENSHOT.ppm")
+			return
+		}
+	}
+
+	method switch_vt ()
+	{
+		print "Disable drawing"
+		$have_vt = 0
+		$fb.enabled = False
+		C.switch_vt ()
+		$fb.enabled = True
+		$have_vt = 1
+	}
+
+	method shutdown ()
+		$fb.shutdown ()
+}
+
+#
+# Testing. 
+# 
+if (__name__ == '__main__') try {
+	v = array ('i', 7)
+	if (err = C.init (v, 1, 0, 0, 0, 0))
+		raise "failedi (err=%i)"%err
+
+	WW, HH, BPP, PTR, roff, boff, goff = v
+	print "Linux framebuffer: %ix%ix%i RGB=%i:%i:%i" %(WW, HH, BPP, roff, boff, goff)
+	from graphics.framebuffer import FrameBuffer, image
+	F = FrameBuffer (WW, HH, BPP, PTR)
+
+	c = 0xc81415
+	F.fill_rect (0, 0, 900, 490, c)
+
+	# Benchmark accelerated fillrect vs. software fillrect
+	if ("testaccel" in sys.argv) {
+		BW = 900
+		BH = 500 
+		NN = 100
+		t0 = now ()
+		for (i in xrange (NN))
+			F.fill_rect (0, 0, BW, BH, c)
+		t0 = now () - t0
+		c = 0x1514c8
+		t1 = now ()
+		for (i in xrange (NN))
+			C.accel_fill_rect (0, 0, BW, BH, c);
+		t1 = now () - t1
+
+		print "Software: %.3f, Accel:%.3f, Faster x%.2f" %(t0, t1, t0/t1)
+	}
+
+	c = 0x647971
+	for (x in range (30))
+		for (y in range (30))
+			F.put_pixel (x, y, c)
+
+	from graphics import ImageFile
+	try {
+		# If a file `IMG` exists in the cwd, display it
+		f = ImageFile ('IMG')
+		im = image (*f.read_rgb ())
+		F.put_image (im, 500, 30)
+		C.accel_put_image (im.data, 450, 30, 0, 0, im.w, im.h, im.w, im.h)
+	}
+
+	c = (0xc8c8c8)
+	F.draw_line (10, 10, 100, 10, c)
+	F.draw_line (10, 10, 10, 100, c)
+	F.draw_line (10, 10, 50, 50, c)
+	F.draw_line (10, 10, 200, 200, c)
+	F.draw_line (200, 200, 10, 10, c)
+	F.draw_line (120, 10, 10, 120, c)
+	F.draw_line (200, 10, 10, 200, c)
+
+	F.fill_circle (100, 100, 40, c)
+	for (x in range (130))
+		for (y in range (130))
+			F.put_pixel (x, y, F.get_pixel (x, y))
+	i = 0
+	C.get_event (v)
+	C.get_event (v)
+	while (i < 10)
+	{
+		if (C.get_event (v)) {
+			print "GOT:", v[0], v[1]
+			i += 1
+		}
+		sleep (0.0001)
+	}
+	print "DONE"
+} finally
+	C.terminate ()

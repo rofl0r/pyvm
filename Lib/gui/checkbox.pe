@@ -1,0 +1,121 @@
+__autosem__
+
+from button import button
+
+class checkbox (button)
+{
+	DH = 5;
+
+	method Init (t, $state=False, **kw)
+	{
+		try f = kw ['font'];
+		except f = kw ['font'] = $A.buttonfont;
+		if ('w' not in kw)
+			kw ['w'] = f.isizeof ($DH * ' ' + t);
+		button.Init (self, t, **kw);
+#		$h -= $DH;
+	}
+
+	checkbox_init = Init
+
+	method settext (t)
+	{
+		button.settext (self, t);
+		$tx = $w - $font.isizeof (t);
+	}
+
+	method _setstate (s)
+		if (s != $state) {
+			$state = s;
+			$DrawCheck ();
+		}
+
+	method setstate (s)
+		if (bool (s) != $state) {
+			$state = bool (s);
+			$onToggle (s);
+		}
+
+	method toggle ()
+	{
+		$state = not $state;
+		$DrawCheck ();
+		$onToggle ($state);
+	}
+
+	cb_size = 10, 10;
+
+	method DrawTick (cy0, cx, cy)
+	{
+		$draw_line (3, cy0 + cy/2 - 1, 3 + cx/2, cy0 + cy-1, $A.color_dblue);
+		$draw_line (3, cy0 + cy/2 - 2, 3 + cx/2, cy0 + cy-2, $A.color_dblue);
+		$draw_line (2 + cx, cy0, 3 + cx/2, cy0 + cy-1, $A.color_dblue);
+		$draw_line (2 + cx, cy0-1, 2 + cx/2, cy0 + cy-2, $A.color_dblue);
+	}
+
+	method DrawCheck ()
+	{
+		cx, cy = $cb_size;
+		cy0 = ($h - cy) / 2;
+
+		$fill_rect (3, cy0, cx, cy, !$state ? $A.color_white : $A.color_blue);
+		$draw_rect (3, cy0, cx, cy, $A.color_shaded);
+
+		if ($state)
+			$DrawTick (cy0, cx, cy);
+	}
+
+	method Draw ()
+	{
+		$draw_blank ();
+		button.DrawText (self);
+		$DrawCheck ();
+	}
+
+	method onClick (x, y)
+		if ($enabled)
+			$toggle ();
+
+	method onToggle (state)
+		return;
+}
+
+#class togglebutton (checkbox)
+#{
+#	DH = 0;
+#
+#	method DrawCheck ()
+#		$outline ($state ? 'sunken' : 'raised');
+#
+#	method iToggle ($state)
+#		$DrawCheck ();
+#}
+
+class togglebutton (checkbox)
+{
+	DH = 0;
+
+	method Init (*arg, **kw)
+	{
+		if ('onToggle' in kw) $onToggle = kw.pop ('onToggle');
+		checkbox.Init (self, *arg, **kw);
+	}
+
+	method DrawCheck ()
+		$Draw ();
+
+	method Draw ()
+	{
+		$draw_blank ($A.color_shaded);
+		t = $t;
+		while ($font.sizeof (t) > $w and t)
+			t = t [:-1];
+		fg = $enabled ? $A.color_txt : $A.color_shaded;
+		bg = !$state ? $A.color_button_bg : $A.color_button_bg_pressed;
+		$draw_ulstring (t, $tx, $ty, fg=fg, bg=bg, font=$font);
+		$outline ($state ? 'sunken' : 'raised');
+	}
+
+	method iToggle ($state)
+		$DrawCheck ();
+}

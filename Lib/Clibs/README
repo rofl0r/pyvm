@@ -1,0 +1,99 @@
+This directory has all the mini C libraries that are
+compiled at runtime and linked back to the pyvm executable,
+preferrably as simple object files (with pelf), when/if needed.
+
+The pelf linker definitelly works for the code that does
+not use any external symbols from other libraries.
+It can do some minimal linking, but dfb for example segfaults
+and it doesn't link global variables, etc.
+
+The functions of each C library are exported with the special
+C declaration:
+
+	const char ABI [] =
+		"return-type function-name[!][=] argument-types\n"
+		"return-type function-name[!][=] argument-types\n"
+		"type variable-name \n"
+	;
+
+At the moment, exported variables should be read-only.  Modifying
+a variable does not affect the C loaded library.
+
+The return type/argument types are per DLL module.
+If argument-types is '-' there are none.
+The optional character '!' after the function name
+declared the function blocking, which means that the GIL
+is released during this function. This can also be used to
+parallelize stuff.
+
+The optional character '=' after the function name means that if the
+function is called `init_object` then there is a constant integer
+exported by the object file named `sizeof_object`.  The DLL module
+will allocate a buffer of this size, pass it as the first argument
+to the function and return it, as the return value of the function.
+
+The object files are placed in ../objdir/
+
+Recompilation is done by the `DLL` module if the .c file is newer than
+the object file.  The declaration
+
+	const char __DEPENDS__ [] = "list of files"
+
+is relevant.
+=============================================================
+
+Using valgrind
+--------------
+
+If some Clib segfaults you'd want to run pyvm with valgrind in order
+to debug this quickly.
+
+When a Clib is compiled with pelf as simple object file, it does not
+contain debugging information and you can't get a traceback.  In order
+to use valgrind, the C file must be compiled as a shared library and
+linked with dlopen().  In short, if 'cfile.c' crashes the line
+
+	@DLL.Import ("cfile", "-O3 -Wall" pelf=1)
+
+must be changed to
+
+	@DLL.Import ("cfile", "-O3 -Wall -g", pelf=0)
+
+and then re-run with 'valgrind pyvm ...'
+
+Note that pyvm's "segmented memory allocator" may use uninitialized
+memory (just like python's allocator), so valgrind will need some
+suppression rules.
+
+Place the lines below in /usr/local/lib/valgrind/default.supp
+==================================================================
+{
+   pyvm/seg_malloc
+   Memcheck:Cond
+   fun:seg_realloc
+}
+{
+   pyvm/seg_malloc
+   Memcheck:Cond
+   fun:__in_segment
+}
+{
+   pyvm/seg_malloc
+   Memcheck:Value4
+   fun:verifier
+}
+{
+   pyvm/seg_malloc
+   Memcheck:Value4
+   fun:seg_realloc
+}
+{
+   pyvm/seg_malloc
+   Memcheck:Cond
+   fun:seg_free_OvErlOaD_Pv1
+}
+{
+   pyvm/seg_malloc
+   Memcheck:Value4
+   fun:seg_free_OvErlOaD_Pv1
+}

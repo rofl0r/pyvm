@@ -1,0 +1,13 @@
+There are two things in fonts:
+
+1) Load font files (ttf, pfb, etc) and raster glyphs to grayscale
+bitmaps for the requested px-size.
+
+We can use freetype for that, or one of the builtin rasterizers
+or if all else fails, go for PSF fonts.
+
+2) Cache the bitmaps and render sentences on an RGB framebuffer (or
+create glyph icons)
+
+The renderer is based on PDF rederer (it's the same device) and
+text looks pretty nice everywhere.

@@ -1,0 +1,165 @@
+##  Wrapper for the FreeType rasterizer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+ftlib = @DLL.Import ('ft2', '-O2 -lz', libs=['freetype', 'm', 'z'], pelf=0)
+
+if (ftlib.init ())
+	raise Error ("### Can't use True Type fonts")
+
+def make_gamma_table (gamma)
+	return "".join ([chr (int (256 * pow (i / 256.0, gamma))) for (i in *256)])
+
+# An ft face.  A file or memory area loaded as a Freetype Face.
+
+class FTFace
+{
+	method __init__ ($face);
+	method __del__ ()
+		ftlib.unload ($face)
+}
+
+Faces = {}
+__weakrefs__.append (Faces)
+
+def open_face (filename, data)
+{
+	if (filename) {
+		try return Faces [filename]
+
+		face = ftlib.open_font (filename, "", 0)
+		if (!face)
+			raise Error ("loading font [%s]" %filename)
+		return Faces [filename] = FTFace (face)
+	}
+	face = ftlib.open_font ("", data, len (data))
+	if (!face)
+		raise Error ("loading memory font")
+	return FTFace (face)
+}
+
+# An FTRasterizer is a face + ptsize and can render glyphs for the specific
+# size or return their metrics, etc.
+
+class FTRasterizer
+{
+	# basically, the python part is used just to cache the bitmaps.
+	bltin_descent = 1
+
+	method __init__ ($ptsize, $filename, $mem, $Encoding, gamma, $ffixed)
+	{
+		if (!Encoding) {
+			from encodings import standardEncoding
+			$Encoding = standardEncoding
+		}
+
+		$FTOBJ = _buffer (ftlib.SIZEOF_FONTOBJ, 0)
+		A = array ('i', 10, 0)
+
+		if (gamma == 1.0)
+			gamma = 0
+		else $keep = gamma = make_gamma_table (gamma)
+
+		$FTFace = open_face (filename, $mem)
+
+		if (ffixed) {
+			pt = 8.0
+			g = None
+			while (1) {
+				if (ftlib.load ($FTFace.face, pt, A, $FTOBJ, gamma))
+					raise Error ("Error loading face instance")
+				g = g or $gid ("x")
+				if.break (ftlib.glyph_advance ($FTOBJ, pt, g) / 64.0 > ffixed)
+					pt -= 0.1
+				pt += 0.1
+			}
+			$ptsize = ptsize = pt
+		}
+
+		if (ftlib.load ($FTFace.face, ptsize, A, $FTOBJ, gamma))
+			raise Error ("Error loading face instance")
+
+		$glyphs = {}
+		maxw = A [5]
+		maxh = A [1]
+		$ascent = A [1]
+
+		# artificial fixup from trial-and-error. Seems good for MS fonts
+		if (filename and filename.sw (HOME + "Lib/FontFiles/ms"))
+			$ascent = int ($ascent * 0.9)
+		else if (filename and filename.sw (HOME + "Lib/FontFiles/lm"))
+			$ascent = int ($ascent * 0.85)
+
+		$descent = $baseline = A [2]
+		$lineskip = A [4]
+		$BUF = _buffer (20 * maxw * maxh + 30)
+		$advance = $dadvance
+		if (ffixed)
+			$width = ffixed
+		else $width = maxw
+		$height = maxh
+
+		n = ftlib.count_glyphs ($FTOBJ)
+		a = array ("i", 2 * n)
+		ftlib.all_glyphs ($FTOBJ, a)
+
+		ucs = iidict ()
+		for (k, v in a.topairs ())
+			ucs [k] = v
+		$ucs = ucs
+	}
+
+	method gid (c)
+		if (c -> int) return c
+		else {
+			id = 0
+			if ($Encoding)
+				id = ftlib.id_from_name ($FTOBJ, $Encoding [ord (c)])
+			return id or ftlib.id_from_idx ($FTOBJ, ord (c))
+		}
+	
+	method compute_glyph (c)
+	{
+		p = ftlib.make_glyph ($FTOBJ, $ptsize, $gid (c), $BUF, c == " ", $ffixed)
+		if (p) return $BUF [:p]
+		# (xxx: insert a special "splash" glyph)
+		print "Missing glyph:", c
+	}
+
+	method unicode_glyph (c)
+	{
+		try uc = $ucs [c]
+		except {
+			print "Missing glyph unicode:", c
+			return 0
+		}
+		p = ftlib.make_glyph ($FTOBJ, $ptsize, uc, $BUF, c == 32, $ffixed)
+		if (p) return $BUF [:p]
+		# (xxx: insert a special "splash" glyph)
+	}
+
+	method dadvance (c)
+		return ftlib.glyph_advance ($FTOBJ, $ptsize, $gid (c))
+
+	method iadvance (c)
+		return int (ftlib.glyph_advance ($FTOBJ, $ptsize, $gid (c)))
+
+	method uadvance (c)
+		return ftlib.glyph_advance ($FTOBJ, $ptsize, $ucs [c])
+}
+
+if (__name__ == __main__)
+{
+	f = FTRasterizer (16, sys.argp.filename_ex (), "", 0, 1.0, 0)
+	print len (f.ucs), "glyphs"
+	xx = []
+	for (k in f.ucs)
+		xx << (k, f.ucs [k], f.uadvance (k))
+	for (a, b, c in xx.sort ())
+		print a, b, c
+}

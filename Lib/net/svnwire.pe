@@ -1,0 +1,122 @@
+##  SVN remote-access serialization
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Yet another way to pass python data through a socket
+
+__autosem__
+
+DEBUG = False
+
+class TEXT method __init__ ($t);
+
+def wstr (v)
+{
+	if (v -> int)
+		return "%i "%v
+	if (v -> str)
+		return "%s "%v
+	if (v -> list)
+		return "( " + "".join ([wstr (i) for (i in v)]) + ") "
+	if (v => TEXT)
+		return "%i:%s " %(len (v.t), v.t)
+}
+
+class svnwire
+{
+	method __init__ ($sock)
+	{
+		$p = 0
+		$b = ""
+	}
+
+	method recv ()
+	{
+		x = $sock.recv ()
+		return x
+	}
+
+	method getchar ()
+	{
+		if ($p == len ($b)) {
+			$b = $recv ()
+			$p = 0
+		}
+
+		c = $b [$p]
+		$p += 1
+		return c
+	}
+
+	method getto (stop)
+	{
+		s = ""
+		while ((c = $getchar ()) not in stop)
+			s += c
+		return s, c
+	}
+
+	method getnn (n)
+	{
+		while (len ($b) - $p < n)
+			$b += $recv ()
+		p0 = $p
+		$p += n
+		return $b [p0:$p]
+	}
+
+	method rtok ()
+	{
+		while ((c = $getchar ()) in " \n")
+			{ }
+		if (c in "()")
+			return c
+		if (c not in "0123456789")
+			return c + $getto (" \n")[0]
+
+		n, d = $getto (" \n:")
+		n = int (c + n)
+		if (d != ":")
+			return n
+		return $getnn (n)
+	}
+
+	method robj ()
+	{
+		t = $rtok ()
+		if (t != "(")
+			return t
+
+		L = []
+		while (1) {
+			t = $robj ()
+			if (t == ")") break
+			L.append (t)
+		}
+		return L
+	}
+
+	method rok ()
+	{
+		o = $robj ()
+		if (DEBUG)
+			print "Got Obj:", o
+		if (o [0] != "success")
+			raise Error ("No success: %s" %o [0])
+		return o [1:]
+	}
+
+	method rok2 ()
+	{
+		$rok ()
+		return $rok ()
+	}
+
+	# suitable for sending commands to the svn server.
+	# not suitable for an svn server!
+	method wobj (o)
+		$sock.send (wstr (o))
+}

@@ -1,0 +1,233 @@
+##  Innovative mailbox
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+#
+# New Mailbox Format 2000
+#
+
+__autosem__
+
+import os, md5, re, stat, misc, serialize
+from mailnews.mime import Mime
+from time import datestr_to_secs as date2secs
+
+HDRRe = re.re (r'([^:]*):\s(.*)')
+
+read_index_file = @mailnews.index.read_index_file
+
+def PRINT (x)
+	print x
+def PROGR (i)
+	misc.fprint ("\r%i" %i)
+
+class mbox (*@mailnews.index.messages)
+{
+	Type = "mail"
+
+	method __init__ (dir)
+	{
+		$base_init ()
+		$DIR = ewslash (MailDir + dir)
+		if (!os.path.isdir ($DIR))
+			raise "[%s] not a directory" %$DIR
+		$INDEX = $DIR + "INDEX"
+
+		$config = misc.parse_config ($DIR + "config")
+
+		# Deleted files are just skipped while reading the index
+		# file but they do still exist both in there and as *msg
+		# files. There should be a command "prune deleted" to
+		# cleanup permanetly (all except the last one so that
+		# ids will continue incrementaly)
+
+		# really deleted
+		$DELETED = serialize.load ($DIR + "DELETED", set ())
+		# marked as deleted, will become part of DELETED
+		$DELd = set ()
+
+		$load_index ()
+	}
+
+	method do_deletes ()
+	{
+		$DELETED.update ($DELd)
+		serialize.save ($DIR + "DELETED", $DELETED)
+	}
+
+	method read_index_file ()
+	{
+		DELETED = $DELETED
+		for (i in read_index_file ($INDEX))
+			if (i [3] not in DELETED)
+				yield i
+	}
+
+	method load ()
+		$load_tags ()
+	unload = void
+
+	method read (f)
+		return $open (f).read ()
+
+	method rename (o, n)
+		os.rename ($DIR + o, $DIR + n)
+
+	method rename_ext (i, e)
+		os.rename ($DIR + i, $DIR + i.partition ('.')[0] + e)
+
+	method remove (f)
+		os.remove ($DIR + f)
+
+	method getmtime (f)
+		return os.path.getmtime ($DIR + f)
+
+	method getsize (f)
+		return os.path.getsize ($DIR + f)
+
+	method path (f)
+		return $DIR + f
+
+	method get_article (n)
+		return readfile ($DIR + $F (n))
+
+	method have_data (n)
+		return True
+
+	# test or set the W permission of USER (or read-only for windows)
+	# this bit can be used to mark a message read or not
+	method owbit (f, v=None)
+	{
+		mode = os.stat ($DIR + f).st_mode
+		if (v is None) return mode & stat.S_IWUSR
+		os.chmod ($DIR + f, v ? (mode | stat.S_IWUSR) : (mode & ~stat.S_IWUSR))
+	}
+
+	method start_delivery ()
+		$IL = []
+
+	method deliver (ID, data)
+	{
+		$open ("%x.msg" %ID, 'w').write (data)
+		M = Mime (data)
+		def gh (k, d="")
+			return M.HD.get (k, d).replace ("\t", " ")
+		try date = date2secs (gh ("date"))
+		except {
+			print "Bad date [%s]" %gh ("date", "")
+			date = int (now ())
+		}
+		$IL<< "\t".join (("%x"%ID, gh ("message-id", "%x%i"%(ID, ID)),
+		      gh ("subject", "No subject"),
+		      gh ("from", ""),
+		      "%x" %date,
+		      gh ("in-reply-to", "")))
+	}
+
+	method load_uidls ()
+		return serialize.load ($DIR + "UIDLS", set ())
+
+	method save_uidls (uidls)
+		serialize.save ($DIR + "UIDLS", uidls)
+
+	method fetchmail (PRINT=PRINT, PROGR=PROGR)
+	{
+		newmail = 0
+		t = $config.get ("type")
+		if (t not in ("POP", "POPSSL"))
+			exit ("Bad type in config")
+	 	try host, user, pass, los = $config ["host"], $config ["username"],
+					    $config ["password"], $config ["leave_on_server"]
+		except exit ("Bad config file")
+		los = {"True":True,"False":False} [los]
+		from mailnews import pop
+		PRINT ("Connecting to %s..." %host)
+		c = pop.(t == "POP" ? "ConnectPOP" : "ConnectPOPSSL") (host, user, pass)
+		if (!c) {
+			PRINT ("Connection failed")
+			return 0
+		}
+		PRINT ("OK")
+		PRINT ("%i messages on server" %(N = c.nmsg))
+		if (!N) return 0
+		ID = $LastID + 1
+		$IL = []
+		if (los) {
+			PRINT ("checking for new messages...")
+			uidls = $load_uidls ()
+			uid = {}
+
+			# scan from newest to oldest looking for a seen UIDL
+			for (i in *N)
+				if.break ((u = c.UIDL (N - i)) in uidls)
+					i = 1 + N - i
+				else uid [N - i] = u
+			else.for i = 1
+			new = len (uid)
+			if (new <= 0) {
+				PRINT ("No new messages on server")
+				return 0
+			}
+			PRINT ("%i new messages" %new)
+			newmail = new
+			for (n in *new) {
+				$deliver (ID, c.RETR (i + n))
+				ID += 1
+				uidls.add (uid [i + n])
+				PROGR (i+n)
+			}
+			PRINT ("")
+			$save_uidls (uidls)
+		} else {
+			if (!N) {
+				PRINT ("No new messages")
+				return 0
+			}
+			for (i in *N) {
+				$deliver (ID, c.RETR (i + 1))
+				ID += 1
+				PROGR (i+1)
+			}
+			newmail = N
+			PRINT ("\ndeleting from server")
+			for (i in *N) {
+				c.DELE (i + 1)
+				PROGR (i+1)
+			}
+			PRINT ("")
+		}
+		c.QUIT ()
+		$open ("INDEX", "a").write ("\n".join ($IL) + "\n")
+		$load_index ()
+		return newmail
+	}
+}
+
+##
+##
+##
+
+MailDir = @sysconfig.GETCONF ("maildir")
+ACCOUNTS = []
+for (i in os.listdir_fullpath (MailDir))
+	if (os.path.isdir (i)) {
+		try d = misc.parse_config (i + "/config")
+		except continue
+		ACCOUNTS.append (i.rpartition ("/")[2])
+	}
+
+USAGE = "mail -fetch <account>"
+
+if (__name__ == __main__)
+{
+	fe, acc = sys.argp.nargs (2)
+	if (fe != "-fetch")
+		sys.argp.help ()
+	if (acc not in ACCOUNTS)
+		exit ("No such account")
+	M = mbox (acc)
+	M.fetchmail ()
+}

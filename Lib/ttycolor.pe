@@ -1,0 +1,19 @@
+__autosem__
+
+def attr (text, n)
+	return "\033[01;%im"% n + text + "\033[0m";
+
+def color (text, c="w")
+	return attr (text, {'w':37,'b':34,'r':31,'g':32}[c])
+
+
+def transcolor (p)
+{
+	p = p [0]
+	return color (p [3:-1], p [1])
+}
+
+coltext = @re.replace (r"c[wbr]\(.*?\)", transcolor)
+
+if (__name__ == __main__)
+	print coltext ("With the special syntax we can cw(do) cb(some) cr(colors)")

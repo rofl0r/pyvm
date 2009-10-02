@@ -1,0 +1,157 @@
+__autosem__
+from widget import widget
+from graphics import ImageFile
+
+# The image widget eventually uses a "rawimage" instance.  Such a rawimage
+# can be obtained either through
+#	ImageFile.read_image ()
+#	Framebuffer.to_image ()
+# or by some other method that creates a rawimage, like the
+#	avplay video player which makes an image from the buffer
+#	filled by ffmpeg.
+#
+# Either way, when the image eventually reaches the "put_image()" method of
+# the gfx backend it will be converted to the screen bpp *in-place* if its
+# bpp does not match the screen.  (the original buffer is not modified, the
+# instance simply points to a new buffer and changes its $bpp value)
+#
+# This usually does the right thing but there may be a case of ping-ponging
+# the bpps if not careful.
+
+class image (widget)
+{
+	elastic = True
+	ClickAction = void
+
+	method Init (fnm=None, **kw)
+	{
+		$BG = "BG" in kw ? kw.pop ("BG") : $wm.color_bg
+
+		$ialign = kw.pop ("ialign", "l")
+		$img = None
+		if (fnm is not None) {
+			try img = ImageFile (fnm).read_image ()
+			except {
+				print sys.exc_info ()
+				raise "Can't load image [%s]" %fnm
+			}
+			$iw = $w = kw ['w'] = img.w
+			$ih = $h = kw ['h'] = img.h
+			$setImage (img)
+		} else try {
+			$iw = $w = kw ['w']
+			$ih = $h = kw ['h']
+			if ('w' in kw and 'h' in kw)
+				$elastic = False
+		} except {
+			if ("fb" in kw) {
+				$fb = kw.pop ("fb")
+				$w = $iw = $fb.w
+				$h = $ih = $fb.h
+			} else $iw = $ih = 0
+		}
+
+		if ("ClickAction" in kw)
+			$ClickAction = kw.pop ("ClickAction")
+
+		$widget_init (**kw)
+	}
+
+	method flip_fb ()
+	{
+		$load_fb ($fb)
+		$Draw ()
+	}
+
+	method setImage (img, dim=None)
+	{
+		if (dim is not None)
+			$iw, $ih = dim;
+		else $iw, $ih = img.w, img.h
+		$img = img
+		$xoff = $yoff = 0;
+		$ax = $ialign == "l" ? 0 : max ($w - $iw, 0);
+	}
+
+	method clear (x=None)
+		$draw_blank (x)
+
+	method load (fnm, fit=False, background=True, expand=False)
+		try {
+			# We use the function read_image_bpp to read in custom bpp.
+			# We could use just read_image and let the backend convert it
+			# when it has too (speed is not an issue here), but this is a
+			# good chance to test custom-bpp image decoders throught the
+			# `display` program.
+			f = ImageFile (fnm, background=background)
+			img = f.read_image_bpp ($wm.bpp, fit ? ($w, $h, expand ? "expand" : "high") : None)
+			$setImage (img, (img.w, img.h))
+		} except print "Couldn't load [%s]" %fnm, sys.exc_info ();
+
+	method load_fb (fb)
+		$load_image (fb.to_image ())
+
+	method load_image (img)
+	{
+		if (img.colorkey is not None and $BG is not None)
+			img = img.bg_transparent ($BG)
+		$setImage (img, (img.w, img.h))
+	}
+
+	method no_image ()
+	{
+		$img = None
+		$Draw ()
+	}
+
+	method Draw ()
+		if ($img)
+			$show_image ($img, $ax, 0, $xoff, $yoff, min ($w, $iw), min ($h, $ih));
+		else $draw_blank ()
+
+	method onRedraw (x, y, w, h)
+		if ($img)
+			$show_image ($img, x+$ax, y, x + $xoff, y + $yoff, w, h);
+
+	method onClick (x, y)
+	{
+		if (!$ClickAction () and $mouse_pressed ()) {
+			# scroll around the image if bigger than window
+			if ($h >= $ih and $w >= $iw)
+				return True
+			x0, y0 = x, y
+			xoff0, yoff0 = $xoff, $yoff
+			for (x, y in $A.followMouse ()) {
+
+				if ($w < $iw)
+					if (x < x0) {
+						df = min ((x0 - x) / float (x0), 1.0)
+						$xoff = int (xoff0 + df * ($iw - $w - xoff0))
+					} else {
+						df = 1.0 - min ((x - x0) / float ($w - x0), 1.0)
+						$xoff = int (xoff0 * df)
+					}
+				if ($h < $ih)
+					if (y < y0) {
+						df = min ((y0 - y) / float (y0), 1.0)
+						$yoff = int (yoff0 + df * ($ih - $h - yoff0))
+					} else {
+						df = 1.0 - min ((y - y0) / float ($h - y0), 1.0)
+						$yoff = int (yoff0 * df)
+					}
+
+				$Draw ()
+			}
+		}
+		return True
+	}
+
+	#
+
+	method getTVO ()
+		return $ih, $h, $yoff;
+	method setTVO ($yoff)
+		$Draw ();
+
+	# onKey: scroll?
+}

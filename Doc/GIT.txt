@@ -1,0 +1,205 @@
+Using pyvm's git to self-host pyvm
+----------------------------------
+
+For those who are already familiar with "git", the official git can be
+used for managing the patchwork, branches, etc. This document describes
+how to use pyvm's git implementation for hacking the project.  The core
+of pyvm's git is compatible with standard git although it lacks many
+features; the porcelain is much simpler.
+
+
+1. Make the project git-aware
+-----------------------------
+
+It is possible to just create a repository with 'git init-db', add all the
+files with 'git files update' and then check it in with 'git checkin'.
+However, since it is more useful to be able to collaborate with other people,
+below is the procedure to initialize the git repository by pulling from
+the upstream repo at ceid.upatras.gr.  In any case, although the "new" stuff
+is fetched, nothing will be written to the current working directory unless
+the command 'git switch upstream' is used. So, you won't run any new code
+without knowing it.
+
+
+1) Clone the upstream repository.
+
+  from the toplevel pyvm direcory, run:
+
+	pyvm git init-db
+	pyvm git pull http://students.ceid.upatras.gr/~sxanth/pyvm.git master upstream
+
+ This will create a repository, populate it with the files of the remote
+ repository and make a new branch "upstream" that points to it.
+ (see the section about pulling PGP signed tags at the end of this file
+  for a secure pull)
+
+2) Your branch.
+
+  from the toplevel pyvm direcory, run:
+
+	cat commit > .git/refs/heads/master 
+
+  and that's just about it.  If you have modified any files since the tarball,
+  they can be explored with 'pyvm git diff'
+
+The upstream changes can be explored with:
+
+	pyvm gitex
+
+from anywhere in the pyvm tree.
+
+
+2. Just getting updates without any hacking
+-------------------------------------------
+
+So, if you did everything mentioned above and you're not interested in doing
+any hacking but just using the latest goodies, type:
+
+	pyvm git switch upstream
+
+This command will write the new files in the working directory. After that
+you'll have to recompile pyvm because at the moment there is no intelligent
+script to determine what should be recompiled selectively.
+
+Go to pyvm/ and type:
+	make cclean; make o3
+Go to Lib/ and type:
+	make rebuild
+
+You can fetch more updates (if there are any) with:
+	pyvm git pull http://students.ceid.upatras.gr/~sxanth/pyvm.git master upstream
+
+That's it. If you want to start hacking the project, revisit this
+tutorial for more info.
+
+
+3. Using git
+------------
+
+OK, so there is this project and you are thinking about modifying something.
+The good thing about VCS is that you don't have to remember what you modify,
+just go ahead and do it!  At any time you can run:
+
+	pyvm git diff
+
+which will show all the modifications.  If you are happy with the changes
+and you think that they should be part of the project henceforth, run:
+
+	pyvm git checkin
+
+to commit the changes. The next 'git diff' will start from this point.
+If you don't like the changes, un-edit them.
+
+	git files
+
+will show if you've added or removed any files and they can be
+added with:
+
+	git files update
+
+So before a checkin its a good idea to test the output of 'git files'.
+
+
+4. Branches
+-----------
+
+Initially, there should be two branches: 'master' and 'upstream'. To
+see which one you're in, run:
+
+	pyvm git which
+
+You can switch between branches with:
+
+	pyvm git switch upstream
+
+but this can happen only if there are no un-commited changes (iow,
+the output of 'git diff' is empty).  Switching branches exports
+files in the pyvm tree, so some things will need recompilation, etc.
+
+It is also possible to run:
+
+	pyvm git diff master upstream
+
+to see what code is different between your branch and the upstream
+branch.
+
+New branches can be created with:
+
+	pyvm git fork hacks
+
+to, make a branch "hacks" which is initially the same as the current
+branch.
+
+
+5. Distributed
+--------------
+
+In order to generate a patch that contains the above changes and can be
+applied to an upstream branch, the changes must, somehow be combined with
+other people's changes.  This is the job of "merging".  Currently pyvm's
+git cannot do merges so you'll have to either prepare the patch manually
+or use the official git tool.
+
+If you're on branch master, you can type:
+
+	git merge upstream
+
+to do it's magic.  Usually, `git merge` manages to combine everything
+automatically; there is the possibility that there will be "conflicts"
+and some files will have to be edited to resolve them.
+After that run:
+
+	pyvm git diff master upstream > PATCH.txt
+
+send the PATCH to some people and the next time you pull
+from upstream, the patch should be in there.
+
+If you have multiple patches in your branch, the thing to do is "rebase to
+upstream" and then use some other magic git command to generate a bunch of
+rebased patches, as e-mails. [[This section will be updated with more info]]
+
+"Rebasing" is necessary for having a linear history which is preferred
+for pyvm since it has a small project space and makes reviewing the updates
+by random people much easier.  OTOH, the linear history makes cherry picking
+commits from forks more difficult.
+
+Finally, just note that the upstream repository is constantly advancing.
+The commands:
+
+	pyvm git pull ... master upstream
+	# from branch `master`
+	git merge upstream
+	pyvm git diff master upstream > PATCH.txt
+	... send e-mail with [PATCH] ...
+
+should be done quickly in a bunch in order to ensure that the PATCH is
+really against the current upstream branch.
+
+
+6. Digitally signed pulls
+-------------------------
+
+Instead of the command:
+	pyvm git pull http://students.ceid.upatras.gr/~sxanth/pyvm.git master upstream
+
+you can try:
+	pyvm git pullpgp http://students.ceid.upatras.gr/~sxanth/pyvm.git E1A88C45 master upstream
+or:
+	pyvm git pullpgp http://students.ceid.upatras.gr/~sxanth/pyvm.git \
+		D9E8B0CB77DF0305C39F6008F7F9744BE1A88C45 master upstream
+
+This will verify that the remote branch is digitally signed with PGP with the
+key that is distributed within the pyvm source tree in Lib/pyvm-pubkey.pgp, and
+if that's true, then do the pull.
+
+A consequence is that, the pyvm-pubkey.pgp file cannot be overriden unless the
+overriding commit is also signed by it.
+
+Before this kind of pull works, the command:
+
+	pyvm gpg import PYVM-TOPDIR/Lib/pyvm-pubkey.pgp
+
+must be run.
+
+The official git tool does not support the above feature (git has signed tags but
+one has to know the tag name. This feature implements some kind of signed *branches*)

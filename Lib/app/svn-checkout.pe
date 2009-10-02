@@ -1,0 +1,148 @@
+## SVN checkout script.  Because some projects distribute their source only
+## through svn.  Usage:
+##
+##	pyvm svn-checkout svn://svn.mplayerhq.hu/ffmpeg/trunk /usr/src/ffmpeg
+##
+## For existing files we fetch and overwrite unless their checksum matches
+## the remote file.  So this script serves as "update" as well.
+
+__autosem__
+
+from net.svnwire import TEXT, svnwire
+from os   import mkdir, chmod, access, stat
+from misc import fprint
+from md5  import digest as MD5
+
+class checkout
+{
+	method __init__ (url, dest)
+	{
+		if (dest [-1] != "/")
+			dest += "/"
+		$SAVE_ROOT = dest
+
+		if (!url.sw ("svn://"))
+			raise Error ("bad url")
+
+		server = url [6:].partition ("/")[0]
+		if (":" in server) {
+			server, None, port = url.partition (":")
+			port = int (port)
+		} else port = 3690
+
+		s = @socket.Connect (server, port)
+
+		$R = R = svnwire (s)
+
+		R.rok ()
+
+		R.wobj ([2, ["edit-pipeline"], TEXT (url)])
+		R.rok ()
+
+		R.wobj (["ANONYMOUS", [TEXT ("")]])
+		R.rok2 ()
+
+		R.wobj (["get-latest-rev", []])
+		r = R.rok2 ()
+		$rev = r [0][0]
+		print "Latest revision:", $rev
+
+		R.wobj (["reparent", [TEXT (url)]])
+		print R.rok2 ()
+
+		R.wobj (["check-path", [TEXT (""), [$rev]]])
+		print R.rok2 ()
+		$getdir ("")
+	}
+
+	method getdir (d, sp="")
+	{
+		try mkdir ($SAVE_ROOT + d)
+		$R.wobj (["get-dir", [TEXT (d), [$rev], "true", "true"]])
+		r = $R.rok2 ()[0]
+		filelist = r [2]
+		proplist = r [1]
+
+		for (k, v in proplist)
+			if (k == "svn:externals")
+				for (e in v.split ("\n")[:-1])
+					try {
+						dest, url = e.split ()
+						REPOS.append ((url, $SAVE_ROOT + d + dest + "/"))
+						print "Added external item:", dest, url
+					}
+
+		for (filename, type, size, boo, crev, date, author in filelist) {
+			print sp + filename,
+			if (type == "dir") {
+				print "/\n"
+				$getdir (d + filename + "/", sp + " ")
+			} else if (type == "file") {
+				$getfile (d + filename, size)
+			} else print "DUH:", type;
+		}
+	}
+
+	method getfile (p, expsiz)
+	{
+		target = $SAVE_ROOT + p
+		if (access (target)) {
+			$R.wobj (["get-file", [TEXT (p), [$rev], "false", "false"]])
+			h = $R.rok2 ()[0][0][0].lower ()
+			try {
+				h2 = MD5 (readfile (target)).hexlify ().lower ()
+				if (h2 == h) {
+					print "OK"
+					return
+				}
+			}
+except {
+@os.remove (target)
+}
+		}
+
+		$R.wobj (["get-file", [TEXT (p), [$rev], "true", "true"]])
+		props = $R.rok2 ()
+		propd = {k:v for (k, v in props [0][2])}
+
+		S = []
+		print "%ikB" %(expsiz / 1024),
+		while (1) {
+			o = $R.robj ()
+			if (!o) break
+			fprint (".")
+			S.append (o)
+		}
+		print
+		data = "".join (S)
+		$R.rok ()
+		if (len (data) != expsiz)
+			raise Error ("Bad size")
+		open (target, "w").write (data)
+		if ("svn:executable" in propd)
+			set_executable (target)
+		UPDATED.append (target [len ($SAVE_ROOT):])
+	}
+}
+
+def set_executable (filename)
+{
+	# only set u+x
+	perms = stat (filename)[0]
+	chmod (filename, perms | 0100)
+}
+
+UPDATED = []
+USAGE = "usage: svn-checkout svn://svn.mplayerhq.hu/ffmpeg/trunk /usr/src/ffmpeg"
+a1, a2 = sys.argp.nargs (2)
+destdir = a2
+REPOS = [(a1, a2)]
+first=1
+while (REPOS) {
+	url, dest = REPOS.pop (0)
+	if (first) first=0
+	else print "\nExternal item:", url, dest
+	checkout (url, dest)
+}
+
+open (destdir + "/__UPDATED__", "w").write ("\n".join (UPDATED) + "\n")

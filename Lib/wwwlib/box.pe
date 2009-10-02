@@ -1,0 +1,1905 @@
+##  CSS layout
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from time import wTimer
+import profile
+
+from wwwlib.basic	import FETCHED_CSS
+from wwwlib.box_obj	import Image
+from wwwlib.cascade_dom	import cascade_document, css_image_db
+
+DUMP=0
+WRAP=0
+BFL=0
+
+# recursion alert
+
+__bind__ = ["nodewidth", "sidebox"]
+
+# # # # # # # # # Do Gen Box Layout # # # # # # # #
+
+def box_layout (dom, url, wfb, wrap)
+{
+	from wwwlib.genbox import GenLayout
+
+	global WRAP
+	WRAP = wrap
+
+	dom.common.css_image_db = css_image_db (dom)
+
+	##dom.dump ()
+	dom.bx = None
+
+	## *** cascade css ***
+	with (wTimer ("# cascade: "))
+		cascade_document (dom)
+
+	## *** generate boxes ***
+	with (wTimer ("# gen_box: "))
+		layout = GenLayout (dom.charset != "ascii", dom, wfb, url)
+
+	toplev = ToplevelFlow (layout.root)
+	del layout.root
+
+	# set the min-height of the body tag to viewport height
+	dom.body.css = dict (dom.body.css)
+	dom.body.css ["h"] = wfb.h, None, None
+
+	## *** wrap accordingly ***
+	with (wTimer ("# fitwrap: "))
+		toplev.flow (wfb)
+
+	# return a "view" that can render parts of the layout
+	dom.bx = View (dom, url, wfb, toplev, layout.image_list, layout.images)
+
+	if (DUMP)
+		toplev.dump ()
+}
+
+# Combination of all the positioned boxes
+class ToplevelFlow
+{
+	method __init__ ($root_box) { }
+
+	method flow (wfb)
+	{
+		outofflow = {}
+		root_box = $root_box
+		flow = NewFlow (root_box, wfb.w, outofflow=outofflow)
+		$vboxes = vboxes = flow.aboxes
+		del flow.aboxes, flow.outofflow
+		$height = max ([top + bx.xywh [3] for (None, top, bx in vboxes)])
+		$outofflow = outofflow
+		$vwidth = max ([bx.xywh [0] + bx.vwidth () for (None, None, bx in vboxes)])
+		return $height
+	}
+
+	method render_to (x, y, d)
+	{
+		d.outofflow = $outofflow
+		for (bx, by, b in $vboxes) {
+			# test on-screen
+			#bxx, byy = b.xywh [:2]
+			b.render_to (bx+x, by+y, d)
+		}
+		del d.outofflow
+	}
+
+	method locate (n)
+		for (bx, by, b in $vboxes) {
+			bxx, byy = b.xywh [:2]
+			if ((y = b.locate (n)) -> int)
+				return by+byy+y
+		}
+
+	method dump ()
+		$vboxes [0][2].dump ()
+}
+
+def fixed_position (vboxes, box)
+{
+	for (vx, vy, vbox in vboxes)
+		if (r = locate_box (vbox, box))
+			return r [0]+vx, r [1]+vy
+}
+
+def locate_box (parent, box)
+{
+	if (parent is box)
+		return parent.xywh [:2]
+	if (parent => block_box) {
+		x, y = parent.xywh [:2]
+		for (b in parent.boxes) {
+			if (r = locate_box (b, box))
+				return r [0] + x, r [1] + y
+		}
+	}
+}
+
+def ddump (b, lvl)
+	if (b->str)
+		print " "*lvl, "{%s}"%b
+	else b.dump (lvl)
+
+class block_box
+{
+	__slots__ = "node", "boxes", "css", "xywh"
+	content = False
+	block = True
+	method __init__ ($node, $css, $boxes) { }
+
+	method dump (lvl=0)
+	{
+		print " "*lvl, lvl, "BlockBox:", $node.tag, $xywh
+		for (b in $boxes)
+			ddump (b, lvl+1)
+	}
+}
+
+class block_boxi
+{
+	__slots__ = "node", "lines", "css", "wlines", "xywh"
+	content = False
+	block = True
+	method __init__ ($node, $css, boxes)
+	{
+		$lines = lines = []
+		for (x in br_lines (boxes))
+			if (len (x) == 1 and x [0] => inline_box)
+				lines<< x [0]
+			else lines<< inline_box (None, x, css)
+	}
+
+	method dump (lvl=0)
+	{
+		print " "*lvl, lvl, "BlockInlinesBox:", ($node ? $node.tag : "anonymous"), $xywh
+		for (line in $lines) {
+			print " "*lvl, "LINE"
+			ddump (line, lvl+1)
+		}
+	}
+}
+
+class inline_box
+{
+	__slots__ = "boxes", "css", "node", "xy"
+	content = False
+	block = False
+	method __init__ ($node, $boxes, $css);
+
+	method dump (lvl)
+	{
+		print " "*lvl, "inline box:", $node ? $node.tag : "=anonymous="
+		for (b in $boxes)
+			ddump (b, lvl+1)
+	}
+
+	method width ()
+	{
+		w = 0
+		sizeof = None
+		for (b in $boxes)
+			if (b -> str)
+				w += (sizeof or (sizeof = $css ["sizeof"])) (b)
+			else w += b.width ()
+		return w
+	}
+
+	method height ()
+	{
+		if (len ($boxes) == 1)  {
+			h = $boxes [0]
+			if (h -> str)
+				return $css ["maxh"]
+			if (h.content)
+				return h.height
+			return h.height ()
+		}
+		fh = $css ["maxh"]
+		h = 0
+		for (b in $boxes)
+			if (b -> str)
+				h = max (h, fh)
+			else if (b.content)
+				h = max (h, b.height)
+			else h = max (h, b.height ())
+		return h
+	}
+}
+
+def shrink_to_fit (box, avail_width)
+{
+	maxw = box.max_width ()
+	return maxw < avail_width ? maxw : max (box.min_width (0), avail_width)
+}
+
+## Flow
+
+class Flow
+{
+	havepoz = False
+
+	method __init__ (topbox, $screen_width, $outer=None, $outofflow=None)
+	{
+		$floats = []
+		$fflow = [[], []]
+		$add_line = $add_line
+		$compute_margins = $compute_margins
+		$x = $y = 0
+		$s = []
+		$pop = $s.pop
+		$cwidth = screen_width
+		$vmn = $vm = 0
+		$clr = $clr
+
+		# layout boxes
+		topbox.fit (self)
+
+		# collected floats in this flow. They are bound to the flow with the
+		# use of the "outofflow" dict. This is a "formatting context".
+		if ($floats) {
+			# floats affect the height of their containing box.
+			topbox.xywh = list (topbox.xywh)
+			mx  = max ([fy+fh for (ff in $fflow) for (None, fy, fh in ff)])
+#			if (topbox.node and "h" in topbox.node.css)
+#				mx = specified_height (topbox, $s, topbox.xywh [3])
+			if (mx > topbox.xywh [3])
+				topbox.xywh [3] = int (mx)
+			#
+			f = self
+			while (f.outer)
+				f = f.outer
+			f.outofflow [topbox] = $floats
+		}
+
+		# Positioned boxes. After everything has been laid out, there is a second
+		# pass that walks the tree and calculates the absolute coords (relative to
+		# the viewport, in other words) of the absolute positioned boxes. The thing is
+		# that a positioned box may be very far away from its containing box so
+		# the only way to know that it has to be drawn for a given View of the
+		# tree is to keep all positioned boxes with their absolute coords known from
+		# the toplevel object. This second pass is performed with the function
+		# `scanpoz`.
+		if (!$outer) {
+			$aboxes = [(0, 0, topbox)]
+			if ($havepoz) {
+				print "Scanning for pozitioneds:"
+				# placeholder for discovered positionals
+				outofflow [0] = []
+				topbox.scanpoz (0, 0, (0, 0, topbox), outofflow)
+			#	print "All in all, found:"
+			#	for (i in outofflow [0])
+			#		print " ", i
+				$aboxes.extend (outofflow [0])
+			}
+			#print "THE aboxes:"
+			#for (i in $aboxes)
+			#	print "/ ", i
+		}
+	}
+
+	method root_flow ()
+		return $outer ? $outer.root_flow () : self
+
+	method compute_margins (m, fpx)
+		# int: px, None: inherit, float: em, string: percent, True: auto
+		return [m->int ? m : m->float ? int (fpx*m) : m is None ? 0 :
+			m->str ? ord_signed(m)*$cwidth/100 : 0 for (m in m)]
+
+	method centered ()
+		for (node in reversed ($s)) {
+			tag = (node = node [0].node).tag
+			if (tag is "table") return False
+			if (tag is "center") return True
+			if (tag is "div" and node.getattr ("align") == "center")
+				return True
+		}
+
+	method open_box (b)
+	{
+		m = None
+		width = None
+		if (b.node) {
+			m = b.node.css ["m"]
+			if ("width" in b.node.css and b.node.tag not in ("td", "th")) {
+				# compute the 'width' property. (for table cells,
+				# this is ignored as these are *hints* for the layout
+				# algorithm and have nothing to do with the computed widths)
+				width = b.node.css ["width"]
+				if (width -> float)
+					if(width > 0) width = int ($cwidth * width)
+					else width = -int (b.css ["font-size"] * width)
+				else if (width -> str) {
+					print "string width 'inherit'"
+					width = None
+				}
+				if (width is not None) {
+					if ($centered ()) {
+						if (!m) m = [0]*12
+						else m = list (m)
+						m [2] = m [3] = True
+					}
+					if (m and True in m)
+						# "auto" margins
+						m = set_auto_margins (m, width, $cwidth,
+							 $compute_margins (m, b.css ["font-size"]))
+				}
+			}
+			if(m) m = $compute_margins (m, b.css ["font-size"])
+		}
+
+		$s<< [b, $x, $y, m, $cwidth, True]
+
+		if (m) {
+			# (xxx: this does take time for POH huge)
+			if (m [0])
+				if (m [0] > 0)
+					$vm = max ($vm, m [0])
+				else $vmn = min ($vmn, m [0])
+			if ($y = m[4]+m[8])
+				$clr ()
+			if(width) $cwidth = width
+			else $cwidth -= m[2]+m[3]+m[6]+m[7]+m[10]+m[11]
+
+			$x = m[6]+m[10]
+		} else {
+			$y = $x = 0
+			if(width) $cwidth = width
+		}
+	}
+
+	method add_line (l)
+	{
+		l.xy = $x, $y, $cwidth
+		$y += l.height ()
+	}
+
+	method addy (h)
+		$y += h
+
+	method clr ()
+	{
+		# no uncleared box. $vm remains for next time
+		if (!$s [-1][-1])
+			return
+		itr = iter ($s)
+		itr.next ()
+		for (s in itr)
+			if (s [-1]) {
+				# outermost uncleared. move down by $vm
+				if ($vm) {
+					s [2] += $vm
+					$vm = 0
+				}
+				if ($vmn) {
+					s [2] += $vmn
+					$vmn = 0
+				}
+				# clear all open boxes
+				s [-1] = False
+				for (s in itr)
+					s [-1] = False
+				return
+			}
+	}
+
+	method close_box ()
+	{
+		m = $s [-1][3]
+		if(m) $y += m[5]+m[9]
+		if($y) $clr ()
+
+		xx = $x
+		bw = $cwidth
+		b, $x, y, None, $cwidth, None = $pop ()
+		if (b.node and "h" in b.node.css) {	# (sans padding-top)
+			if ($y)
+				$y = specified_height (b, $s, $y)
+			else if ($y = specified_height (b, $s, 0))
+					if ($s) $clr()
+			##if (m) $y += m [5]+m[9]+m[4]+m[8]
+		}
+		if (m) {
+			x = m [2]
+			bw += m[6]+m[7]+m[10]+m[11]
+			if (m [1])
+				if (m [1] > 0)
+					$vm = max ($vm, m [1])
+				else $vmn = min ($vmn, m [1])
+		} else x = 0
+		b.xywh = $x + x, y, bw, $y
+		$y += y
+	}
+
+	method currentxy ()
+	{
+		# return the current x, y position relative to the outmost boxe's
+		# top-left position (iow, without counting the top-left margins)
+		x, y = 0, $y
+		for (s in $s) {
+			m = s [3]
+			x += m ? m[2]+m[6]+m[10] : 0
+			y += s [2]
+		}
+		y -= $s [0][2]
+		if ($s [0][3])
+			x -= $s [0][3][2]
+		return x, y
+	}
+}
+
+NewFlow = Flow
+
+def specified_height (b, s, content_height)
+{
+	# if we're not doing floats & positioning, ignore the height
+	# as it can be less than the actual height and result in overflows
+	sph = int (specified_height2 (b, s, content_height))
+	if (sph < content_height)
+		print "PSH", sph, content_height, b.node.css ["h"]
+	return max (sph, content_height)
+}
+
+def specified_height2 (b, s, content_height=None)
+{
+	node = b.node
+	if ("h" not in node.css)
+		return content_height
+	hh = []
+	for (h in node.css ["h"]) {
+		if.continue (h -> int or h is None) # px or auto/default
+			hh<< h
+		if !(h -> float) {	# inherit?
+			print "Bad height:", h
+			return content_height
+		}
+		if.continue (h < 0)	# em
+			hh<< -int (b.css ["font-size"] * h)
+			# percentage. must have outer specified (not fully working)
+		if (!s) {
+			print "hard time finding parent height"
+			return content_height
+		}
+		ph = specified_height2 (s [-1][0], s [:-1], None)
+		if.continue (ph is not None)
+			hh<< int (ph * h)
+		print "undefined height"
+		return content_height
+	}
+	if (hh [1] is not None)
+		return hh [1]
+#	print "Height contstraint:", hh, content_height
+	if (hh [2] is not None)
+		content_height = min (content_height, hh [2])
+	if (hh [0] is not None)
+		content_height = max (content_height, hh [0])
+	return content_height
+}
+
+def set_auto_margins (m, w, cw, cm)
+{
+	autol = m [2] is True ? 1 : 0
+	autor = m [3] is True ? 1 : 0
+	dw = cw - (sum (cm) + w)
+	if (dw > 0) {
+		if (autol and autor)
+			cm [2] = cm [3] = dw / 2
+		else if (autol)
+			cm [2] = dw
+		else cm [3] = dw
+	}
+	return cm
+}
+
+# floats
+
+def flow_margin_at (y, fflow, clx, crx)
+{
+	# find the available width (reduced by floats) for the given y-offset.
+	xx = None
+	for (flx, fly, flh in fflow [0])
+		if (fly <= y < fly + flh)
+			if (xx is None or flx > xx) {
+				xx = flx
+				hh = flh - (y - fly)
+			}
+	if (xx is None) flx = None
+	else flx, flh = xx, hh
+	xx = None
+	for (frx, fry, frh in fflow [1])
+		if (fry <= y < fry + frh)
+			if (xx is None or frx < xx) {
+				xx = frx
+				hh = frh - (y - fry)
+			}
+	if (xx is None) frx = None
+	else frx, frh = xx, hh
+	if (flx is frx is None)
+		return
+	if (flx is not None)
+		clx = max (clx, flx)
+	if (frx is not None)
+		crx = min (crx, frx)
+	hh = frx is None ? flh : flx is None ? frh : min (flh, frh)
+	return clx, crx, crx - clx, hh
+}
+
+method Flow.clear (node)
+{
+	if !(c = node.css.get ("clear"))
+		return
+	if (c == "inherit")
+		return node.parent ? $clear (node.parent) : None
+	None, cy = $currentxy ()
+	hh = 0
+	for (i in (1, 2))
+		if (c & i and $fflow [i - 1])
+			hh = max (hh, max ([y+h for (None, y, h in $fflow [i-1])]) - cy)
+	$addy (hh)
+}
+
+method Flow.find_area (rw, rh, right=False)
+{
+	# we want to place a box of size [rw,rh] in a flow with floats. find suitable place
+	cx, cy = $currentxy ()
+cy += $vm
+	while (xxwwhh = flow_margin_at (cy, $fflow, cx, cx+$cwidth)) {
+		sxx, exx, ww, hh = xxwwhh
+		if (ww >= rw) {
+			if (hh >= rh)
+				break
+
+			ok = True
+			cyy = cy+hh
+			hhh = rh - hh
+			while (xxwwhh = flow_margin_at (cyy, $fflow, cx, cx+$cwidth)) {
+				sx, ex, wx, hx = xxwwhh
+				if.break ((right ? ex < exx : sx > sxx) or wx < rw)
+					ok = False
+				cyy += hx
+				hhh -= hx
+				if (hhh <= 0)
+					break
+			}
+			if (ok)
+				break
+		}
+		cy += hh
+	} else {
+		sxx = cx
+		exx = cx + $cwidth
+	}
+	return sxx, exx, cy
+}
+
+method Flow.do_float (b)
+{
+	node = b.node
+#print "DOFLOAT", node, node.getattr ("id"), node.getattr ("class")
+#for (k, v in node.css.items ())
+#	print " ", k, v
+
+if (b.node.css.get ("overflow", "visible") != "visible") {
+		print "OVERFLOW FLOAT", b.node.css ["overflow"]
+}
+
+	# flow the box
+	# (xxx: shrink-to-fit. If the float contains more floats inside it
+	#  then shrink-to-fit returns $cwidth)
+	width = "width" in node.css ? $cwidth : shrink_to_fit (b, $cwidth)
+	flow = NewFlow (b, width, self)
+
+	# margins
+	cssm = node.css ["m"]
+	fpx = b.css ["font-size"]
+	if (cssm)
+		m = [m->int ? m : m->float ? int (fpx*m) : m is None ? 0 :
+			m->str ? ord_signed(m)*$cwidth/100 : 0 for (m in cssm [:4])]
+	else m = [0]*4
+
+	# position: shift left or right until, blah, blah, ...
+	lr = node.css ["float"]
+	bw, bh = b.xywh [2:]
+	ocw = bw+m[2]+m[3]
+	och = bh+m[0]+m[1]
+
+	if (lr == "left") {
+		fx, None, cy = $find_area (ocw, och)
+		fx += m [2]
+		$fflow[0]<< (fx+bw+m[3], cy, och)
+	} else {
+		None, fx, cy = $find_area (ocw, och, 1)
+		fx -= bw + m[3]
+		$fflow[1]<< (fx-m[2], cy, och)
+	}
+
+	# shift if relative (but flow-wise the previous coords apply)
+	if (b.node.css.get ("position") == "relative") {
+		cbw = $cwidth
+		top, left, bottom, right = [x -> int ? (cbw*x)/100 : x -> float ? int (fpx * x) :
+				x is None or x == "auto" ? None : int (x) for (x in [node.css.get (x)
+						for (x in ("top", "left", "bottom", "right"))])]
+#		print "relative float", top, left, bottom, right
+		if(right is not None and left is None) left = -right
+		if(left) fx += left
+		if(top is None and bottom is not None) top = -bottom
+		if(top) cy += top
+	}
+
+	$floats<< (fx, cy+m[0], bw, bh, b)
+
+	b.xywh = list (b.xywh)
+	b.xywh [0] = 0
+	b.xywh [1] = 0
+
+	return b
+}
+
+method Flow.find_containing ()
+{
+	# find the containing box for a positioned box: innermost positioned or initial
+	# returns:	box, current offset in it, box's content width
+	x, y = $x, $y
+	w = $cwidth
+	for (b, xx, yy, None, ww, None in reversed ($s)) {
+		if (b.node and b.node.css.get ("position") in ("relative", "absolute"))
+			return x, y, w, b
+		x += xx
+		y += yy
+		w = ww
+	}
+	if (!$outer)
+		return x, y, w, b
+	xx, yy, w, b = $outer.find_containing ()
+	return x+xx, y+yy, w, b
+}
+
+method Flow.do_positioned (b)
+{
+	if (!b.node.css.get ("position") and 0) {
+		$clr ()
+		aflow = NewFlow (b, $cwidth, self)
+		b.xywh = list (b.xywh)
+		b.xywh [1] = $y
+		$addy (b.xywh [-1])
+#		print "OVERFLOW", b.xywh
+#		b.fit (self)
+		return
+	}
+
+#print "POSITIONEDBOX:", b.node.attributes, b.node.tag, b.node.css.get ("position")
+	$root_flow ().havepoz = True
+
+	cbx, cby, cbw, cbox = $find_containing ()
+	node = b.node
+	fpx = b.css ["font-size"]
+
+	if (b.node.css.get ("position") == "absolute") {
+		# 10.3.7 (calculating widths and margins for absolutely positioned elements)
+		# specified width
+		width = node.css.get ("width")
+		if (width == "auto")
+			width = None
+		else if (width -> float)
+			if(width > 0) width = int (cbw * width)
+			else width = -int (fpx * width)
+
+		# left&right
+		top, left, bottom, right = [x -> int ? (cbw*x)/100 : x -> float ? int (fpx * x) :
+				x is None or x == "auto" or x == "inherit" ? None :
+					 int (x) for (x in [node.css.get (x)
+						for (x in ("top", "left", "bottom", "right"))])]
+
+		# margins/paddings
+		cssm = node.css ["m"]
+		if (cssm)
+			m = [m->int ? m : m->float ? int (fpx*m) : m is None ? 0 :
+				m->str ? ord_signed(m)*cbw/100 : m for (m in node.css ["m"])]
+		else m = [0]*12
+		m0 = list (m)
+
+#print 'lalabala:', top, left, bottom, right, m0, width
+		# solve equation
+		if (width is not None) {
+			fitwidth = cbw
+			if (left is not None and right is not None) {
+				if (m [2] is m [3] is True)
+					m [2] = m [3] = (cbw - (width + m[6]+m[7]+m[10]+m[11]))/2
+				else if (m [2] is True)
+					m [2] = cbw - (width + m[6]+m[7]+m[10]+m[11])
+				else if (m [3] is True)
+					m [3] = cbw - (width + m[6]+m[7]+m[10]+m[11])
+			} else {
+				if (m [2] is True) m [2] = 0
+				if (m [3] is True) m [3] = 0
+				if (right is not None)
+					left = cbw - (width + m[2]+m[3]+m[6]+m[7]+m[10]+m[11])
+			}
+		} else if (left is not None and right is not None) {
+			fitwidth = cbw - (left+right)
+		} else {
+			ffw = cbw
+			if (left is not None) ffw -= left
+			if (right is not None) ffw -= right
+			fitwidth = shrink_to_fit (b, ffw)
+			if (left is None and right is not None)
+				left = cbw - right - fitwidth
+		}
+
+		if (m != m0) {
+			node.css = dict (node.css)
+			node.css ["m"] = m
+		}
+
+		aflow = NewFlow (b, fitwidth, self)
+b.xywh = list (b.xywh)
+mx, my = b.xywh [:2]
+b.xywh [0] = $x
+b.xywh [1] = $y
+		if (top is None and bottom is not None) {
+			top = [bottom]	# list means calc later when containing height known
+		}
+
+		node.css = dict (node.css)
+		node.css ["tl"] = top, left, mx, my
+	} else {
+		top, left, bottom, right = [x -> int ? (cbw*x)/100 : x -> float ? int (fpx * x) :
+				x is None or x == "auto" ? None : int (x) for (x in [node.css.get (x)
+						for (x in ("top", "left", "bottom", "right"))])]
+
+		dx = 0
+		if (right is not None)
+			print "RIGHT relative N/I"
+		else if (left) dx = left
+		if (top is not None or bottom is not None)
+			print "relative top/bottom not implemented"
+#		print '############## relative:', node.getattr ("class"), top, left, bottom, right
+		$clr ()
+		if (b.node.css.get ("overflow") != "visible" and 0) {
+			aflow = NewFlow (b, $cwidth, self)
+			b.xywh = list (b.xywh)
+			b.xywh [0] += dx
+			b.xywh [1] = $y
+			$addy (b.xywh [-1])
+#			print "relativeOVERFLOW", b.xywh [-1]
+		} else {
+			b.fit (self)
+			b.xywh = list (b.xywh)
+			b.xywh [0] += dx
+		}
+	}
+}
+
+# wrap/layout
+
+method block_box.fit (flow)
+{
+	if (flow.floats and "clear" in $node.css)
+		flow.clear ($node)
+	flow.open_box (self)
+	for (b in $boxes)
+		if (b.node and "special" in b.node.css and b.node.common.FULLCSS)
+			if("float" in b.node.css) flow.do_float (b)
+			else flow.do_positioned (b) 
+		else b.fit (flow)
+	flow.close_box ()
+}
+
+method block_boxi.fit (flow)
+{
+	if (flow.floats and $node and "clear" in $node.css)
+		flow.clear ($node)
+
+	flow.open_box (self)
+
+	$wlines = wl = []
+	if (flow.floats)
+		$fit_on_floats (flow)
+	else for (l in $lines) {
+		if.continue (l.width () > flow.cwidth)
+			wl.extend (wrap_inlines (l, flow))
+		flow.add_line (l)
+		wl<< l
+	}
+
+	flow.close_box ()
+}
+
+method block_boxi.fit_on_floats (flow)
+{
+	# inline flow modified by the presence of floats
+	if ($lines)
+		flow.clr ()
+	wl = $wlines
+	for (l in $lines)
+		while (1) {
+			cx, cy = flow.currentxy ()
+			if (xxwwhh = flow_margin_at (cy, flow.fflow, cx, cx + flow.cwidth)) {
+				xx, None, ww, hh = xxwwhh
+				xx = flow.x + xx - cx
+			} else {
+				# xxx: flag
+				ww = flow.cwidth
+				xx = flow.x
+				hh = None
+			}
+
+			if (l.width () <= ww) {
+				l1, l2 = l, None
+			} else if !(wrp = wrap_inline (l, ww)) {
+				l1, l2 = l, None
+			} else {
+				pos, offset = wrp
+				if (offset -> bool)
+					l1, l2 = split_boxi2 (l, pos, int (offset))
+				else l1, l2 = split_boxi (l, pos, offset)
+			}
+
+			if.continue (hh and (l1.width () > ww or l1.height () > 3*hh))
+				flow.addy (hh)
+
+			l1.xy = xx, flow.y, ww
+			flow.addy (l1.height ())
+			wl<< l1
+			if (!l2) break
+			l = l2
+		}
+}
+
+method inline_box.can_wrap ()
+{
+	ws = $css ["white-space"] not in (1, 2)
+	for (b in $boxes)
+		if (b -> str) {
+			if (ws and " " in b)
+				return True
+		} else if (!b.content) {
+			if (b.can_wrap ())
+				return True
+		}
+	return False
+}
+
+## Wrap lines at spaces
+
+def flatten_inlines (l)
+	for (n, i in enumerate (l.boxes))
+		if (i => inline_box) {
+			for (i, b, pos in flatten_inlines (i)) {
+				pos.append (n)
+				yield i, b, pos
+			}
+		} else yield i, l, [n]
+
+def wrap_inline (l, avail)
+{
+	# apparently, lines can be wrapped before/after images even if there is no
+	# whitespace between them (in non-pre mode though)
+	have = 0
+	lastgood = None
+	for (c, bx, pos in flatten_inlines (l))
+		if (c -> str) {
+			css = bx.css
+			w = css ["sizeof"] (c)
+			pre = css ["white-space"] in (1, 2)
+			if.continue (have + w < avail) {
+				if (!pre and " " in c)
+					lastgood = pos, c
+				have += w
+			}
+			if (!pre)
+				bp = css ["font"].ibreak (c, max (avail-have, 0))
+			else {
+				if (WRAP)
+					bp = css ["font"].hbreak (c, max (avail-have, 0))
+				else {
+					have += w
+					continue
+				}
+			}
+
+			if (bp -> int)
+				return pos, bp
+
+			if (lastgood) {
+				pos, c = lastgood
+				if (c -> bool)
+					return lastgood
+				return pos, c.rindex (" ")
+			}
+
+			if (" " in c)
+				return pos, c.index (" ")
+			have += w
+		} else {
+			w = c.width ()
+			wrap = bx.css ["white-space"] not in (1, 2) and c => Image
+			if (have + w > avail) {
+				if (wrap and have)
+					return pos, False
+ 				if (lastgood) {
+					pos, c = lastgood
+					if (c -> bool)
+						return lastgood
+					return pos, c.rindex (" ")
+				}
+			}
+			if (wrap)
+				lastgood = pos, True
+			have += w
+		}
+
+	if (lastgood) {
+		pos, c = lastgood
+		if (c -> bool)
+			return lastgood
+		return pos, c.rindex (" ")
+	}
+}
+
+def split_boxi (i, pos, offset)
+{
+	if (len (pos) == 1) {
+		pos = pos [0]
+		l = i.boxes [:pos]
+		s = i.boxes [pos]
+		l<< s [:offset] + "\0"	# \0 signals a wrapped line, for text-justify
+		r = i.boxes [pos+1:]
+		if (s0 = offset < len (s) and s [offset] == " " ? s [offset+1:] : s [offset:])
+			r.insert (0, s0)
+		l = inline_box (i.node, l, i.css)
+		r = inline_box (i.node, r, i.css)
+		return l, r
+	}
+
+	p = pos [-1]
+	l = i.boxes [:p]
+	r = i.boxes [p+1:]
+	ll, rr = split_boxi (i.boxes [p], pos [:-1], offset)
+	l<< ll
+	r.insert (0, rr)
+	l = inline_box (i.node, l, i.css)
+	r = inline_box (i.node, r, i.css)
+	return l, r
+}
+
+def split_boxi2 (i, pos, inc)
+{
+	if (len (pos) == 1) {
+		pos = pos [0]
+		l = inline_box (i.node, i.boxes [:pos+inc], i.css)
+		r = inline_box (i.node, i.boxes [pos+inc:], i.css)
+		return l, r
+	}
+
+	p = pos [-1]
+	l = i.boxes [:p]
+	r = i.boxes [p+1:]
+	ll, rr = split_boxi2 (i.boxes [p], pos [:-1], inc)
+	l<< ll
+	r.insert (0, rr)
+	l = inline_box (i.node, l, i.css)
+	r = inline_box (i.node, r, i.css)
+	return l, r
+}
+
+def wrap_inlines (l, flow)
+{
+	wl = []
+	while (1) {
+		if.break !(wrp = wrap_inline (l, flow.cwidth)) {
+			flow.add_line (l)
+			wl<< l
+		}
+		pos, offset = wrp
+		if (offset -> bool)
+			l0, l = split_boxi2 (l, pos, int (offset))
+		else l0, l = split_boxi (l, pos, offset)
+		flow.add_line (l0)
+		wl<< l0
+		if.break (l.width () < flow.cwidth) {
+			flow.add_line (l)
+			wl<< l
+		}
+	}
+	return wl
+}
+
+## Line breaks
+
+def br_box0 (bi)
+{
+	left = []
+	itr = iter (bi.boxes)
+	for (i in itr)
+		if (i -> str) {
+			if.continue ("\n" not in i)
+				left<< i
+			l, None, r = i.partition ("\n")
+			if (l or !left)
+				left<< l
+			right = r ? [r] : []
+			for (i in itr)
+				right<< i
+			return left, right
+		} else if (i.content) {
+			left<< i
+		} else {
+			l, r = br_box (i)
+			left<< l
+			if (r) {
+				right = [r]
+				for (i in itr)
+					right<< i
+				return left, right
+			}
+		}
+	return bi, None
+}
+
+def br_box (bi)
+{
+	l, r = br_box0 (bi)
+	if (r is None)
+		return l, r
+	l = inline_box (bi.node, l, bi.css)
+	r = inline_box (bi.node, r, bi.css)
+	return l, r
+}
+
+def need_breaking (boxes)
+	for (b in boxes)
+		if (b -> str) {
+			if ("\n" in b)
+				return True
+		} else if (!b.content and need_breaking (b.boxes))
+			return True
+
+def br_lines (boxes)
+{
+	if (!need_breaking (boxes))
+		return (boxes,)
+
+	lines = []
+	line = []
+	for (b in boxes)
+		if (b -> str) {
+			if.continue ("\n" not in b)
+				line<< b
+			l = b.split ("\n")
+			if (l [0] or !line)
+				line<< l [0]
+			lines<< line
+			for (line in l [1:-1])
+				lines<< [line]
+			line = []
+			if (l [-1])
+				line<< l [-1]
+		} else if (b.content) {
+			line<< b
+		} else {
+			while (1) {
+				l, r = br_box (b)
+				line<<l
+				if(!r) break
+				lines<< line
+				line = []
+				b = r
+			}
+		}
+	lines<<line
+	return _list2tuple (lines)
+}
+
+## Layout view / page renderer
+
+class View
+{
+	favicon = None
+	width = None
+
+	method __init__ ($dom, $base_url, $wfb, $flow, $imagelist, $images)
+	{
+		$height  = flow.height
+		$width   = flow.vwidth
+		$Title   = dom.title or $base_url.url
+		$Refresh = dom.refresh
+		$base_url.HTMLTitle = $Title
+	}
+
+	method image_list ()
+		return $imagelist
+
+	method have_images (ilist)
+	{
+		resize = False
+		sizeok = []
+		for (url in ilist) {
+			tok = url.original ().layout_token
+			if (tok in $images)
+				for (i in $images [tok])
+					if (i.set_file (url)) {
+						resize = True
+						$base_url.add_size_hint (url, (i.width (), i.height))
+					} else sizeok<< i
+			else.if FETCHED_CSS.add (url.original ().uid)
+		}
+		# on resize the entire layout is recalculated. We could reduce this but:
+		# 1) this is rather complex (imagine the same image existing 100s of times)
+		# 2) we may still have to recalculate everyting esp. when the flow has floats
+		# so this avoids a great deal of complexity. The bad news is that for dynamic
+		# page effects and javascript, we'll have to do the partial recalculation.
+		if (resize) {
+			with (wTimer ("# fitwrap: ")) {
+				$flow.flow ($wfb)
+				$height = $flow.height
+				$width  = $flow.vwidth
+			}
+			return True
+		}
+		for (i in sizeok)
+			if ($wfb.is_on_screen (i))
+				return True
+	}
+
+	method ViewAt ($yoffs, $xoffs, scroll=None)
+	{
+		doscroll = scroll -> int and abs (scroll) < 50
+
+		if (doscroll)
+			$wfb.scroll (scroll)
+
+		$H = $wfb.virtualH
+		$wfb.set_background (0xffffff)
+		$wfb.clear ($height, yoffs, $width, xoffs)
+		$wfb.style = styler ()
+		try {
+			#with (wTimer ("# ttr: "))
+				$flow.render_to (-xoffs, -yoffs, $wfb)
+		} finally {
+			del $wfb.style
+			$wfb.done ()
+			if (doscroll)
+				$wfb.done_scroll ()
+		}
+	}
+
+	method Goto (label)
+	{
+		if !(n = $dom.find_label (label)) {
+			print "label not found in dom: [%s]"% label
+			return
+		}
+		# find the dom node in the box tree. Not all nodes
+		# do have a corresponding box (although we should
+		# probably emit an invisible zero box for nodes
+		# that may define a label). Right now, walk all nodes
+		# after this one looking for the nearest with a box.
+		for (n in n.walk_after ())
+			if ((y = $flow.locate (n)) is not None)
+				return min (y, max ($height - $wfb.h, 0))
+		print "Dom node not found in boxes (label was [%s])"%label
+	}
+
+	goto_nth_node = void
+	get_node_offset = void
+	method shutdown ()
+	{
+		# this is done before the gc.collect () call. The box structure is
+		# not cyclic and can be destroyed from the reference counting at this
+		# point. Then, gc.collect() has to traverse smaller space.
+		del $flow.outofflow, $flow.vboxes
+		del $dom.bx, $flow, $dom
+	}
+}
+
+class styler
+{
+	method __init__ ()
+	{
+		stack = [None]
+		stcache = { None: (0, None, "left", None) }
+
+		$push = stack.append
+		$pop = stack.pop
+
+		def getstyle (node)
+		{
+			if (node in stcache)
+				return stcache [node]
+			pst = getstyle (node.parent)
+			if ((fg = node.css.get ("color", "inherit")) == "inherit")
+				fg = pst [0]
+			if ((deco = node.css.get ("text-decoration", "inherit")) == "inherit")
+				deco = pst [1]
+			if ((tali = node.css.get ("text-align", "inherit")) == "inherit")
+				tali = pst [2]
+			if !(node.tag == "a" and (href = node.getattr ("href")))
+				href = pst [3]
+			return stcache [node] = fg, deco, tali, href
+		}
+
+		def $node_style ()
+			return getstyle (stack [-1])
+		def $color ()
+			return getstyle (stack [-1])[0]
+		def $decoration ()
+			return getstyle (stack [-1])[1]
+		def $align ()
+			return getstyle (stack [-1])[2]
+	}
+}
+
+def get_border (node, pn, color)
+{
+	# xxx fixme
+	return (value = node.css.get (pn, "inherit")) == "inherit" ? color : value
+}
+
+def get_borders (node, bx, color)
+{
+	if (0 and node.css.get ("float"))
+		return [[1, 0x22ff22], [1, 0x22ff22], [1, 0x22ff22], [1, 0x22ff22]]
+	b = node.css ["m"]
+	if(!b) return None
+	b = b [-4:]
+	if (b == (0, 0, 0, 0))
+		return None
+	return [b ? (b -> int ? b : int (b * bx ["font-size"]), get_border (node, n, color)) : (0, 0)
+		for (b, n in zip (b [-4:], ("border-top-color", "border-bottom-color",
+					    "border-left-color", "border-right-color")))]
+}
+
+def render_box_decoration (b, x, y, d)
+{
+	bw, bh = b.xywh [2:]
+	if !(node = b.node)
+		return
+
+	if (0) {
+		if (node.css.get ("float"))
+			d.add_bgrect (x, y, bw, bh, 0xdd2222)
+		else if (node.css.get ("position") == "absolute")
+			d.add_bgrect (x, y, bw, bh, 0xff6600)
+		else if (node.css.get ("position") == "relative")
+			d.add_bgrect (x, y, bw, bh, 0x66ff77)
+	}
+
+	if ((bg = node.css.get ("background-color")) -> int and !BFL)
+		d.add_bgrect (x, y, bw, bh, bg)
+
+	if (bi = node.css.get ("background-image")) {
+		# if the image has been downloaded, then `load_cached()` will return true
+		if (img = node.common.css_image_db.open (bi)) {
+			repeat = node.css.get ("background-repeat", "repeat")
+			position = node.css.get ("background-position", (0, 0))
+			fpx = b.css ["font-size"]
+			d.add_bg_image (img, x, y, bw, bh, position, repeat, fpx)
+		}
+	}
+	if (bb = get_borders (node, b.css, d.style.color ()))
+		for (n, (bbw, bbc) in enumerate (bb))
+			if (bbw and bbc is not False)
+				if (n == 0) d.add_bgrect (x, y, bw, bbw, bbc)
+				else if (n == 1) d.add_bgrect (x, y+bh-bbw, bw, bbw, bbc)
+				else if (n == 2) d.add_bgrect (x, y, bbw, bh, bbc)
+				else d.add_bgrect (x+bw-bbw, y, bbw, bh, bbc)
+	if (node.tag is "a" and node.getattr ("href"))
+		d.add_clickarea (x, y, bw, bh, node.getattr ("href"))
+}
+
+method block_box.render_to (x, y, d)
+{
+	if ($node.common.FULLCSS and $node.css.get ("visibility") == "hidden")
+		return
+
+	render_box_decoration (self, x, y, d)
+
+	d.style.push ($node)
+	H = d.virtualH
+	for (b in $boxes) {
+		if (b.node and "float" in b.node.css and b.node.common.FULLCSS)
+			continue
+		if (b.node and b.node.css.get ("position") == "absolute" and b.node.common.FULLCSS)
+			continue
+		bx, by, bw, bh = b.xywh
+		yo = y + by
+		if (yo < H and bh + yo > 0)
+			b.render_to (bx+x, yo, d)
+	}
+
+	if (self in d.outofflow)	# a container of floats
+		for (bx, by, None, None, b in d.outofflow [self]) {
+			yo = y+by+b.xywh [1]
+			if (yo < H and b.xywh [3] + yo > 0)
+				b.render_to (bx+x+b.xywh [0], yo, d)
+		}
+	d.style.pop ()
+}
+
+method block_box.scanpoz (x, y, cxyb, outofflow)
+{
+	# x, y: the current absolute position in the viewport
+	# cxyb: the absolute position of the "containing box" (innermost positioned or initial)
+	# outofflow: dual purpose. check whether this box has floats and use key `0` as placeholder
+	#	for discovered positionals.
+	for (b in $boxes) {
+		if (b.node and "float" in b.node.css)
+			continue
+		if (b.node and b.node.css.get ("position") == "absolute") {
+			top, left, mx, my = b.node.css ["tl"]
+			xx = x + b.xywh [0]
+			yy = y + b.xywh [1]
+		##	print " TL:", top, left
+			if (top is None) top = yy
+			else if (top -> list)
+				top = cxyb [1] + (cxyb [2].xywh [3] - (top [0] + b.xywh [3]))
+			else top = cxyb [1] + top
+			left = left is None ? xx : cxyb [0] + left
+			top += my
+			left += mx
+			outofflow [0]<< (left, top, b)
+			if !(b => block_boxi)
+				b.scanpoz (left, top, (left, top, b), outofflow)
+		##	print " Absolute found. Iam at:", xx, yy, cxyb
+		##	print " This box goes at:", left, top
+			continue
+		}
+		bx, by = b.xywh [:2]
+		if (b.node and b.node.css.get ("position") == "relative") {
+			rx, ry = bx+x, by+y
+			if !(b => block_boxi)
+				b.scanpoz (rx, ry, (rx, ry, b), outofflow)
+			continue
+		}
+		if (b => block_boxi)
+			continue
+		b.scanpoz (bx+x, by+y, cxyb, outofflow)
+	}
+	if (self in outofflow)
+		for (bx, by, None, None, b in outofflow [self]) {
+			xx = bx+x+b.xywh [0]
+			yy = by+y+b.xywh [1]
+			if (b.node.css.get ("position") == "relative") {
+				if !(b => block_boxi)
+					b.scanpoz (xx, yy, (xx, yy, b), outofflow)
+			} else if !(b => block_boxi)
+				b.scanpoz (xx, yy, cxyb, outofflow)
+		}
+}
+
+method block_boxi.render_to (x, y, d)
+{
+	if ($node and $node.css.get ("visibility") == "hidden")
+		return
+
+	render_box_decoration (self, x, y, d)
+	if ($node)
+		d.style.push ($node)
+
+	ws = $css ["white-space"] == 0
+	ym = -y
+	yM = d.virtualH - y
+	# skip quickly x*40 lines
+	i = 0
+	wl = $wlines
+	lwl = len (wl) - 40
+	while (i < lwl and wl [i + 40].xy [1] + wl [i+40].height () < ym) 
+		i += 40
+	lwl += 40
+	center = d.style.align ()
+	while (i < lwl) {
+		l = wl [i]
+		lx, ly, bw = l.xy
+		if (ly > yM)
+			break
+		if (ly + l.height () >= ym)
+			render_line (l, lx + x, ly + y, d, ws, bw, center)
+		i += 1
+	}
+
+	if ($node)
+		d.style.pop ()
+}
+
+def flatten_boxes (l, x, y, d)
+{
+	if (l.node) d.style.push (l.node)
+	f = []
+
+	if (l.node and (bg = l.node.css.get ("background-color")) -> int)
+		d.add_bgrect (x, y, l.width (), l.height (), bg)
+
+	fg, decoration, textalign, href = d.style.node_style ()
+	for (b in l.boxes)
+		if (b => inline_box) {
+			f2, x = flatten_boxes (b, x, y, d)
+			f.extend (f2)
+		} else {
+			f<< (b, l, (fg, decoration, textalign), href)
+			if (b -> str)
+				x += l.css ["sizeof"](b)
+			else x += b.width ()
+		}
+	if (l.node) d.style.pop ()
+	return f, x
+}
+
+def render_line (l, x, y, d, justify, bw, center)
+{
+	# by default the text is "justified", i.e. word spacing is expanded so that
+	# all lines have the same width. The effect is more pleasant and definitely
+	# worth it.  In the future this can become a real typesetter, with TeX glue
+	# and proportional word/character spacing, ligatures and kerning...
+	lw = l.width ()
+	if (center == "center")
+		x += max ((bw - lw) / 2, 0)
+	else if (center == "right")
+		x += max (bw - lw, 0)
+
+	flb, None = flatten_boxes (l, x, y, d)
+	if (!flb)
+		return
+	maxh = 0
+	for (c, n, None, None in flb)
+		if (c -> str)
+			maxh = max (maxh, n.css ["maxh"])
+
+	line_end = True
+	if (flb [-1][0] -> str)
+		if (flb [-1][0].ew ("\0"))
+			line_end = False
+
+	sp = 0
+	if (center not in ("center", "right") and justify and !line_end)
+		if (bw / l.css["font"].maxw > 20)
+			if (nsp = sum ([c.count (" ") for (c, None, None, None in flb) if (c->str)])) {
+				sp = float (bw - lw - 1) / nsp
+				sp = min (sp, 2.1*l.css ["sizeof"](" "))
+			}
+
+	for (c, n, (color, decoration, None), href in flb)
+		if (c -> str) {
+			d.add_text (c, x, y + maxh - n.css ["maxh"], n.css ["font"],
+				    color, href, sp, decoration)
+			x += n.css ["font"].isizeofsp (c, sp)
+		} else {
+			if (c => Image)
+				c.render_to (x, y, d, href or c.onclick)
+			else c.render_to (x, y, d)
+			x += c.width ()
+		}
+}
+
+## - - - - Tables - - - - -
+
+class table_box
+{
+	content = False
+	block = True
+	method __init__ ($node, $css, $rows)
+	{
+		$xywh = None
+		ncols = 0
+		$multirow = False
+		pspans = {}
+		lp = None
+
+		for (r in rows) {
+			ncols = max (ncols, r.arrange (pspans))
+			if (pspans)
+				$multirow = True
+			if (r.positions == lp)
+				r.positions = lp
+			else lp = r.positions
+		}
+		$ncols = ncols
+	}
+
+	method dump (lvl=0)
+	{
+		print " "*lvl, lvl, "TableBox:(%ix%i)"%($ncols, len ($rows)), $node.tag, $xywh
+		for (b in $rows)
+			b.dump (lvl+1)
+	}
+
+	# ----------------------------
+
+	method fit (flow)
+	{
+		xsp, $ysp = $node.css ["border-spacing"]
+		xsp = int (xsp)
+
+		avail_width = flow.cwidth
+		x = flow.x
+		if (flow.floats) {
+			# This is very hairy. It seems that in the precense of floats a table
+			# with width=100% is affected by left floats but not by right ?!
+			cx, cy = flow.currentxy ()
+			xxwwhh = flow_margin_at (cy, flow.fflow, cx, cx+flow.cwidth)
+			if (xxwwhh) {
+				x, None, avail_width, None = xxwwhh
+				x = flow.x + x - cx
+			}
+		}
+		widths = $compute_widths (avail_width, xsp)
+
+		h = 0
+		pspans = {}
+		for (b in $rows)
+			h += b.fit (widths, pspans, flow, xsp)
+		if ($multirow) {
+			heights = [r.h for (r in $rows)]
+			for (n, r in enumerate ($rows))
+				r.adjust_multirow (heights, n)
+		}
+
+		# more-or-less what open_box/close_box would do, but the table has
+		# new flows for each cell and is taken as a whole.
+		flow.y += flow.vm
+		flow.vm = 0
+		width = sum (widths) + ($ncols + 1) * xsp
+
+		if (flow.centered () or $node.getattr ("align") == "center")
+			x += max ((avail_width - width) / 2, 0)
+
+		h = int (h + $ysp * (len ($rows) + 1))
+		$xywh = x, flow.y, int (width), h
+		flow.addy (h)
+	}
+
+	method render_to (x, y, d)
+	{
+		render_box_decoration (self, x, y, d)
+		d.style.push ($node)
+		y += $ysp
+		H = d.virtualH
+		for (b in $rows) {
+			bh = b.vheight
+			if (y < H and bh + y > 0)
+				b.render_to (x, y, d)
+			y += b.h + $ysp
+		}
+		d.style.pop ()
+	}
+
+	method scanpoz (x, y, cxyb, outofflow)
+	{
+		y += $ysp
+		for (b in $rows) {
+			b.scanpoz (x, y, cxyb, outofflow)
+			y += b.h + $ysp
+		}
+	}
+
+	from wwwlib.tablefit import compute_widths, width_hints, col_maxes, col_mins, prep_minmaxes
+}
+
+class table_row_box
+{
+	__slots__ = "cells", "node", "css", "h", "vheight", "positions"
+
+	method __init__ ($cells, $node, $css)
+		$h = None
+
+	method arrange (pspans)
+	{
+		sp = []
+		if (pspans)
+			for (k, v in pspans.items ()) {
+				v -= 1
+				sp<< k
+				if(v) pspans [k] = v
+				else del pspans [k]
+			}
+		positions = []
+		x = 0
+		for (c in $cells) {
+			while (x in sp)
+				x += 1
+			colspan = c.node.iattr ("colspan", 1)
+			if ((rowspan = c.node.iattr ("rowspan", 1)) > 1)
+				for (i in *colspan)
+					pspans [x + i] = rowspan - 1
+			positions<< (x, colspan, rowspan)
+			x += colspan
+		}
+		$positions = positions
+		return x	# number of cols spanned by this row
+	}
+
+	method cell_mins (d)
+		for ((x, cs, None), c in zip ($positions, $cells)) {
+			if (cs != 1)
+				x = x, cs
+			if (x in d)
+				d [x] = max (d [x], c.min_width (d [x]))
+			else d [x] = c.min_width (0)
+		}
+
+	method cell_maxes (d)
+		for ((x, cs, None), c in zip ($positions, $cells)) {
+			if (cs != 1)
+				x = x, cs
+			if (x in d)
+				d [x] = max (d [x], c.max_width ())
+			else d [x] = c.max_width ()
+		}
+
+	method fit (widths, pspans, outer_flow, xspacing)
+	{
+		eh = []
+		if (pspans)
+			for (k, v in pspans.items ())
+				if (v [0] == 1) {
+					eh<< v [1]
+					del pspans [k]
+				} else v [0] -= 1
+
+		mh = 0
+		td = []
+		for ((x, cs, rs), c in zip ($positions, $cells)) {
+			NewFlow (c, sum (widths [x:x+cs]), outer_flow)
+			xp = x ? sum (widths [:x]) : 0
+			xp += (x + 1) * xspacing
+			None, None, w, h = c.xywh
+			c.xywh = xp, 0, w, h
+			mh = max (mh, h)
+			if (rs == 1) {
+				eh<< h
+				td<< c
+			} else for (i in *cs)
+				pspans [x+i] = [rs-1, h]
+		}
+
+		if(eh) $h = max (eh)
+		else {
+			print "BADROW:"
+			$h = 10
+		}
+
+		for (c in td)
+			if (c.xywh [-1] < $h) {
+				x, y, w, h = c.xywh
+				c.xywh = x, y, w, $h
+			}
+
+		if (pspans)
+			for (k, v in pspans.items ())
+				pspans [k][1] = max (pspans [k][1] - $h, 0)
+
+		$vheight = mh
+		return $h
+	}
+
+	method adjust_multirow (heights, n)
+		for ((None, None, rs), c in zip ($positions, $cells))
+			if (rs > 1) {
+				x, y, w, None = c.xywh
+				c.xywh = x, y, w, sum (heights [n:n+rs])
+			}
+
+	method render_to (x, y, d)
+	{
+		if ((bg = $node.css.get ("background-color")) -> int) {
+			bw = sum ([i.xywh [2] for (i in $cells)])
+			d.add_bgrect (x, y, bw, $h, bg)
+		}
+		d.style.push ($node)
+		for (b in $cells) {
+			bx, by, bw, bh = b.xywh
+			b.render_to (bx+x, y + by, d)
+		}
+		d.style.pop ()
+	}
+
+	method scanpoz (x, y, cxyb, outofflow)
+		for (b in $cells) {
+			bx, by, bw, bh = b.xywh
+			if !(b => block_boxi)
+				b.scanpoz (bx+x, by+y, cxyb, outofflow)
+		}
+
+	method dump (lvl=0)
+	{
+		print " "*lvl, lvl, "TableRowBox:(%i)"%len ($cells), $node.tag
+		for (b in $cells)
+			b.dump (lvl+1)
+	}
+}
+
+## min/max content width
+## (floats and positioned elements are ignored)
+
+def nodewidth (node)
+	if ("width" in node.css) {
+		if (node.tag in ("td", "th"))
+			return
+		w = node.css ["width"]
+		if (w -> int)
+			return w
+		if (w -> float and w < 0)
+			return -int (node.css2 ["font-size"] * w)
+	}
+
+def sidebox (b)
+{
+	# extra width for margin/padding/border in min/max content width calculation
+	if !(m = b.node.css ["m"])
+		return 0
+	fsz = b.css ["font-size"]
+	bl, br = m [10], m [11]
+	if (bl -> float) bl = int (bl * fsz)
+	if (br -> float) br = int (br * fsz)
+	sb = bl + br
+
+	for (x in (m [2], m [3], m [6], m [7]))
+		if (x)
+			if (x -> int) sb += x
+			else if (x -> float and x > 0) sb += int (x * fsz)
+			else if (x -> float) print "undf", x, b.node	# undefined
+
+	return sb
+}
+
+method block_box.max_width ()
+{
+	sb = sidebox (self)
+	if ((w = nodewidth ($node)) -> int)
+		return w + sb
+
+	return ($boxes ? max ([b.max_width () for (b in $boxes)]) : 0) + sb
+}
+
+method block_box.min_width (minw)
+{
+	sb = sidebox (self)
+	if ((w = nodewidth ($node)) -> int)
+		return w + sb
+
+	minw -= sb
+	for (b in $boxes)
+		minw = max (minw, b.min_width (minw))
+	return minw + sb
+}
+
+class MinFlow
+{
+	method __init__ ($cwidth);
+	method add_line (l)
+		$cwidth = max ($cwidth, l.width ())
+}
+
+method block_boxi.max_width ()
+{
+	if ($node) {
+		sb = sidebox (self)
+		if ((w = nodewidth ($node)) -> int)
+			return w + sb
+	} else sb = 0
+
+	maxw = 0
+	for (l in $lines)
+		maxw = max (maxw, l.width ())
+	return maxw + sb
+}
+
+method block_boxi.min_width (minw)
+{
+	if ($node) {
+		sb = sidebox (self)
+		if ((w = nodewidth ($node)) -> int)
+			return w + sb
+		minw -= sb
+	} else sb = 0
+
+	mf = MinFlow (minw)
+	for (l in $lines) {
+		w = l.width ()
+		if.continue (!l.can_wrap ())
+			minw = max (minw, w)
+		wrap_inlines (l, mf)
+	}
+
+	return max (minw, mf.cwidth) + sb
+}
+
+# for tables their "width" may be violated if the cells minimum widths exceed it apparently
+method table_box.max_width ()
+{
+	if ((w = nodewidth ($node)) -> int)
+		return max (sum ($col_mins ()), w)
+
+	return sum ($col_maxes ())
+}
+
+method table_box.min_width (minw)
+{
+	minw = sum ($col_mins ())
+	if ((w = nodewidth ($node)) -> int)
+		return max (w, minw)
+	return minw
+}
+
+# node finders - given dom node, return y-offset
+
+method block_box.locate (n)
+{
+	if ($node is n)
+		return 0
+	for (b in $boxes)
+		if ((r = b.locate (n)) -> int)
+			return b.xywh [1] + r
+}
+
+method block_boxi.locate (n)
+{
+	if ($node is n)
+		return 0
+	for (b in $wlines)
+		if (b => inline_box and b.locate (n))
+			return b.xy
+}
+
+method inline_box.locate (n)
+{
+	if (n is $node)
+		return True
+	for (k in $boxes)
+		if (k => inline_box and k.locate (n))
+			return True
+}
+
+method table_box.locate (n)
+{
+	if ($node is n)
+		return 0
+	y = 0
+	for (b in $rows) {
+		if ((r = b.locate (n)) -> int)
+			return y + r
+		y += b.h
+	}
+}
+
+method table_row_box.locate (n)
+	for (c in $cells)
+		if ((r = c.locate (n)) -> int)
+			return r
+
+# visible page width calculation
+method block_box.vwidth ()
+	return max ($boxes ? max ([b.xywh [0] + b.vwidth () for (b in $boxes)]) : 0, $xywh [2])
+
+method block_boxi.vwidth ()
+	return max ($xywh [2], $wlines ? max ([l.xy [0] + l.width () for (l in $wlines)]) : 0)
+
+method table_box.vwidth ()
+	return $xywh [2]
+
+# TAB: w |= 0x7; w++
+# real display in other_display():abs
+
+# Floats:
+#	use them in minmaxwidth
+# WRAP: from global to else
+#  Content -> str
+#  optimize l.xy into positions
+#  partial css
+#  whitespace fixspeed
+#  optimize render_to block selection O(log)
+#  optimize tables with many inlines
+#
+# remove TopLevel.. and absolute_box ... -150
+# check size
+# z-indexes correctly
+# relative
+#	drags floats & sub relatives
+#	(relative can be inline)
+#	wikipedia: inilne with borders

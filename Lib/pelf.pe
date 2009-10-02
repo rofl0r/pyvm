@@ -1,0 +1,663 @@
+##  Dynamic ELF object file linker
+## 
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+##############################################################################
+# WARNING: This is x86 32-bit Little Endian ONLY. There is no idea about
+# other systems.
+##############################################################################
+'''
+ The operating system's dynamic loader is designed for a case where:
+
+	MANY applications _share_ FEW but BIG libraries 
+
+ (imagine that every running program uses libc).
+ In a JIT situation where we use the external compiler to compile
+ little routines just in time, the requirements are much different:
+
+	ONE application uses MANY and SMALL libraries
+
+ so the libdl library is inapropriate for this case (because
+ probably it loads the code of libraries in their own mmap'd
+ space, which is marked MAP_SHARED, has pages, etc).
+
+ This is an alternative dynamic linker. It works by linking
+ *object* files (not shared pic libraries).  It loads the
+ required sections (.text, .data, .rodata, .bss, etc) and
+ then it relocates their addresses relative to the base
+ address of the array object which contains them.
+
+ All this eventually works because "arrays" in pyvm have a
+ special member function cptr() which returns the memory
+ address of the start of the array.  From this and given
+ offsets we can get real addresses which are used as
+ pointers to functions by the runtime, to call the "linked"
+ code.
+
+ Some notes:
+ - Debugging info is not linked/used.  Valgrind and gdb cannot
+   be used to trace bugs in linked modules (use shared linking
+   temporarily to track bugs)
+ - There are still some piece missing. ffmpeg does not link
+   with pelf.  Wrong data or something...
+ - All sections (read-only, data, code) are merged into one
+   array which is in the data segment of the pyvm.  So read-only
+   is not read-only and we hope the security modules of the OS
+   will permit execution of code from data segment.
+''';
+
+__autosem__
+
+from struct import unpack, sizeof as Sizeof
+
+import _JIT
+
+# Addresses of symbols exported by the pyvm runtime
+# (functions from libc/libm)
+
+clibc = _JIT.libc
+dlibc = _JIT.libc_sym
+
+def libc_sym (s)
+{
+	try return clibc [s]
+	return clibc [s] = dlibc (s)
+}
+
+# ELF parser
+
+namespace ELFC __constant__
+{
+	SHT_RELOC    = 9	# RELA or REL ?? 9 or 4
+	ET_REL       = 1
+	ST_LOCAL     = 0
+	ST_GLOBAL    = 1
+	STB_GLOBAL   = 1
+	STT_OBJECT   = 1
+	STT_FUNC     = 2
+	STT_SECTION  = 3
+	SHT_PROGBITS = 1
+	SHN_COMMON   = 65522
+	R_386_32     = 1
+	R_386_PC32   = 2
+}
+
+class elfstruct
+{
+	def new (cls, s)
+		return cls (*unpack (cls.struct, s))
+	new = classmethod (new)
+	def ith (cls, s, i)
+		return cls (*unpack (cls.struct, s [cls.sizeof * i : cls.sizeof * (i + 1)]))
+	ith = classmethod (ith)
+	method __str__ ()
+		return str ($__dict__)
+}
+
+class elfhdr(*elfstruct)
+{
+	# Elf32_Ehdr
+	struct = 'HHiiiiiHHHHHH'
+	sizeof = Sizeof (struct)
+
+	method __init__ ($e_type, $e_machine, $e_version, $e_entry, $e_phoff, $e_shoff, $e_flags,
+		      $e_ehsize, $e_phentsize, $e_phnum, $e_shentsize, $e_shnum, $e_shstrndx) ;
+}
+
+class elfshdr(*elfstruct)
+{
+	# Elf32_Shdr
+	struct = 'iiiiiiiiii'
+	sizeof = Sizeof (struct)
+
+	method __init__ ($sh_name, $sh_type, $sh_flags, $sh_addr, $sh_offset, $sh_size,
+		     $sh_link, $sh_info, $sh_addralign, $sh_entsize);
+}
+
+class elfsym(*elfstruct)
+{
+	# Elf32_Sym
+	struct = 'iiibbH'
+	sizeof = Sizeof (struct)
+
+	method __init__ ($st_name, $st_value, $st_size, $st_info, $st_other, $st_shndx);
+	method ST_TYPE ()
+		return $st_info & 0xf
+	method ST_BIND ()
+		return $st_info >> 4
+}
+
+gen iterdata (cls, data)
+{
+	s = cls.sizeof
+	if (len (data) % s) {
+		print "len=", len(data), s
+		raise "Error"
+	}
+	n = len (data) / s
+	for (i in *n)
+		yield cls.new (data [i*s:i*s+s])
+}
+
+class elfrel
+{
+	# Elf32_Rel
+	#struct = 'ii'
+
+	method __init__ ($r_offset, $r_info);
+	method ELF32_R_TYPE ()
+		return $r_info & 0xff
+	method ELF32_R_SYM ()
+		return $r_info >> 8
+}
+
+gen iterrelocs (data)
+{
+	# This is a specialization of iterdata (elfrel)
+	# It yields the fields `r_offset`, `elf32_r_sym` and `elf32_r_type`
+	# of an elfrel, without going through creating the object
+	offs = None
+	for (e in array ("i", data))
+		if (offs is None) offs = e
+		else {
+			yield offs, e >> 8, e & 0xff
+			offs = None
+		}
+}
+
+class Error(Exception)
+{ }
+
+# dlopened shared libraries needed to resolve external symbols in our
+# object files.
+
+class solib
+{
+	method __init__ (name)
+	{
+		$lib = _JIT.dllopen ('lib%s.so' %name)
+		$cache = {}
+	}
+
+	method sym (x)
+	{
+		try return $cache [x]
+		return $cache [x] = $lib.sym (x)
+	}
+}
+
+libcache = {}
+__weakrefs__.append (libcache)
+
+def openlib (l)
+{
+	try return libcache [l]
+	return libcache [l] = solib (l)
+}
+
+# An ELF relocatable object file.
+# Upon construction, the dictionary $exports is filled which contains
+#  addresses of the symbols exported by the object file.
+# The method relocate() will relocate the $code and make it ready
+#  for use.
+
+class ELFobj
+{
+	method read (fr, sz)
+		return $data [$offset+fr:$offset+fr+sz]
+
+	method __init__ ($filename, $data, $offset=0, $exports=None)
+	{
+		# ELF header
+		$ehdr = elfhdr.new ($read (16, elfhdr.sizeof))
+		if ($ehdr.e_type != ELFC.ET_REL)
+			raise Error ("Not an object file")
+#print $ehdr.__dict__
+
+		$librefs = []
+		$symcache = {}
+
+		# Load section headers and shstr (which allows us
+		# to lookup sections by name)
+		sizeof_shdr = $ehdr.e_shnum * elfshdr.sizeof
+		$shdr = $read ($ehdr.e_shoff, sizeof_shdr)
+		shstrndx_hdr = $get_section_hdr ($ehdr.e_shstrndx)
+		$shstr = $read (shstrndx_hdr.sh_offset, shstrndx_hdr.sh_size)
+
+		# Load all interesting program sections
+		sections = []
+		for (i in *$ehdr.e_shnum) {
+			sec = $get_section_hdr (i)
+			if (sec.sh_type != ELFC.SHT_PROGBITS)
+				continue
+			shname = $section_name (sec)
+			# Skip debug sections (lots of rels) and .bss,
+			# (should skip all SHT_ALLOC...)
+			if (!shname.sw (".debug") and shname != ".bss") {
+#			if (shname != ".bss") {
+				# (xxx: avoid loading .comment and .note.GNU-stack)
+				no = $find_elf_section (shname)
+				A = $load_section (no)
+				sections.append ((no, A, shname, sec.sh_addralign))
+			}
+		}
+
+		# Create `.bss` section (initialized with zero)
+		bss_no = $find_elf_section ('.bss')
+		bss_hdr = $get_section_hdr (bss_no)
+		sections.append ((bss_no, "\0" * bss_hdr.sh_size, ".bss", bss_hdr.sh_addralign))
+
+		# join all sections properly aligned into one array
+		offset = 0
+		blocks = []
+		$Sections = []
+		for (no, ar, shname, align in sections) {
+			if (align > 1 and offset % align) {
+				l = align - (offset % align)
+				blocks << "\0"*l
+				offset += l
+			}
+			$Sections << [no, offset, offset]
+			if (shname == ".text")
+				text_base = offset
+			blocks << ar
+			offset += len (ar)
+		}
+		blocks << _buffer (32, 0)
+
+		$code = array ("c", "".join ([x for (x in blocks)]))
+		$librefs.append ($code)
+		cptr = $code.cptr ()
+
+		# We want the array be be aligned at 32 bytes so that all the
+		# intermediate alignments are valid. this is done by shifting
+		# the values of the array to a 32-byte boundary.
+
+		# TODO
+		# XXX: this puts the code in data segment and will fail in
+		# XXX: NX or security modules that don't permit execution from
+		# XXX: dataseg. We should pass the contents of the array to
+		# XXX: a builtin function that does mmap(ANONYMOUS, EXEC|READ|WRITE)
+		# XXX: moreover, the mmap result should be already properly
+		# XXX: aligned at page boundary so the code below won't be needed.
+		
+		if (ca = cptr % 32) {
+			da = 32 - ca
+			$code.movevals (da, 0, len ($code) - da)
+			cptr += da
+		} else da = 0
+
+		for (s in $Sections) {
+			s [1] += cptr
+			s [2] += da
+		}
+
+		# load `.symtab` for our own use
+		$symtabndx = $find_elf_section (".symtab")
+		$symtab = $load_section ($symtabndx)
+		strtabndx = $get_section_hdr ($symtabndx).sh_link
+		$strtab = $load_section (strtabndx)
+
+		# Load offsets of global functions and data
+		# These are what is exported by the object file, but it can
+		# also be used for global relocations.
+		if ($exports is None)
+			$exports = {}
+
+		secaddr = {snum:saddr for (snum, saddr, None in $Sections)}
+		exports = $exports
+		isym = $isym_name
+		text_addr = cptr
+		for (i in iterdata (elfsym, $symtab))
+			if (i.ST_BIND () == ELFC.STB_GLOBAL)
+				if (i.ST_TYPE () == ELFC.STT_FUNC)
+					exports [isym (i)] = i.st_value + text_addr
+				else if (i.ST_TYPE () == ELFC.STT_OBJECT) {
+					try {
+						exports [isym (i)] = secaddr [i.st_shndx] + i.st_value
+					} except {
+						if (i.st_shndx == ELFC.SHN_COMMON) {
+							s = isym (i)
+							if (s not in exports) {
+								a = array ("c", i.st_size, 0)
+								exports [s] = a.cptr ()
+								$librefs.append (a)
+							}
+						} else {
+							print "pelf: Can't link [%s]" %$sym_name (i)
+							print i.st_shndx
+							$pr_sections ()
+						}
+					}
+				}
+	}
+
+	method relocate (libs=(), externs={})
+	{
+		cptr = $code.cptr ()
+		putaddint = $code.putaddint
+		getint = $code.getint
+
+		# external libraries loaded with the dl linker
+		externlibs = [openlib (x) for (x in libs)]
+		$librefs.append (externlibs)
+
+		# link symbols from other pelf object files
+		libc = dict (clibc).update (externs).update ($exports)
+
+		section_addresses = {snum:saddr for (snum, saddr, None in $Sections)}
+
+		for (no, None, offs in $Sections) {
+			rel = $find_reloc (no)
+			if (!rel) continue
+
+#print $filename, no, "%x-%i" %($code.cptr(), $code.cptr () + len ($code)), len ($code)
+			for (r_offset, r_sym, rel_type in iterrelocs ($load_section (rel))) {
+				s = $get_sym (r_sym)
+				st_bind = s.ST_BIND ()
+				if (rel_type not in (ELFC.R_386_32, ELFC.R_386_PC32))
+					raise Error ("ELF: unknown relocation type")
+
+				if (st_bind == ELFC.ST_LOCAL) {
+					try offset = section_addresses [s.st_shndx]
+					except {
+						$pr_sections ()
+						raise Error ("relocation from other section [%i]"
+									 %s.st_shndx)
+					}
+					ro = r_offset + offs
+					if (rel_type == ELFC.R_386_PC32)
+						offset = offset - (cptr + ro + 4)
+					putaddint (ro, offset)
+#print "patch local %x=%x" %(cptr+ro, offset), s.ST_TYPE (), rel_type, "REZ=%x" %getint(ro), offset
+				} else if (st_bind == ELFC.ST_GLOBAL) {
+					sn = $sym_name (s)
+					ro = r_offset + offs
+					if (sn in libc) {
+						offset = libc [sn]
+					} else {
+						offset = libc_sym (sn)
+						if (!offset)
+						for (l in externlibs) {
+							try {
+								offset = l.sym (sn)
+								break
+							}
+						} else raise Error ("Library needs external symbol [%s]"
+										 %sn)
+					}
+					if (rel_type == ELFC.R_386_PC32)
+						offset = offset - (cptr + ro)
+					putaddint (ro, offset)
+#print "patch global (%s) %x=%x" %(sn, cptr+ro, offset), s.ST_TYPE (), rel_type, "REZ=%x" %getint (ro)
+				} else raise Error ("Relocation from other section")
+			}
+
+			$symcache = {}
+		}
+
+		# xxxx: possibly we have more relocations for data
+		# xxxx: will crash and it sure won't be easy to debug!
+	}
+
+	method get_sym (i)
+	{
+		try return $symcache [i]
+		return $symcache [i] = elfsym.ith ($symtab, i)
+	}
+
+	method get_section_hdr (i)
+		return elfshdr.ith ($shdr, i)
+
+
+	method load_section (i)
+	{
+		i = $get_section_hdr (i)
+		return $read (i.sh_offset, i.sh_size)
+	}
+
+	method find_elf_section (n)
+		for (i in *$ehdr.e_shnum) {
+			sh_n = $get_section_hdr (i).sh_name
+			if ($shstr [sh_n:].partition ("\0")[0] == n)
+				return i
+		}
+
+	method sym_name (s)
+	{
+		sh_n = s.st_name
+		if (sh_n -> str) return sh_n
+		return s.st_name = $strtab [sh_n : $strtab.find ("\0", sh_n)]
+	}
+
+	method isym_name (s)
+		return intern ($sym_name (s))
+
+	method pr_sections ()
+		for (i in *$ehdr.e_shnum) {
+			sec = $get_section_hdr (i)
+			sh_n = sec.sh_name
+			j = $shstr [sh_n:].find (chr (0))
+			print 'section', i, $shstr [sh_n:sh_n+j], sec.sh_type, sec.sh_info, sec.sh_size
+		}
+
+	method section_name (sec)
+	{
+		sh_n = sec.sh_name
+		return $shstr [sh_n:].partition ("\0")[0]
+	}
+
+	method find_reloc (n)
+		for (i in *$ehdr.e_shnum) {
+			sec = $get_section_hdr (i)
+			if (sec.sh_type == ELFC.SHT_RELOC and sec.sh_info == n)
+				return i
+		}
+}
+
+# An archive library: libfoo.a
+
+class ELFarch
+{
+	method __init__ ($filename, data, $exports=None)
+	{
+		if ($exports is None)
+			exports = $exports = {}
+
+		pos = 8
+		E = []
+		$E = E
+
+		while (1) {
+			hdr = data [pos:pos+60]
+			if (!hdr) break
+			pos += 60
+			name = hdr [:16].strip ()
+			size = int (hdr [46:-2])
+			if (data [pos:pos+4] == "\x7fELF")
+				E.append (ELFobj (name, data, offset=pos, exports=exports))
+			pos += size
+		}
+	}
+
+	method relocate (libs=(), externs={})
+	{
+		$librefs = []
+		for (e in $E) {
+			e.relocate (libs, externs)
+			$librefs.extend (e.librefs)
+		}
+	}
+}
+
+def ELF (filename="", data="", exports=None)
+{
+	data = data or readfile (filename)
+
+	if (data.sw ("\x7fELF")) f = ELFobj
+	else if (data.sw ("!<arch>\n")) f = ELFarch
+	else raise Error ("Not an ELF")
+
+	return f (filename, data, exports=exports)
+}
+
+#
+# This dllobj has the same API as the _JIT.dllObj
+#
+
+class dllobj
+{
+	import _JIT
+
+	method __init__ ($D, $stuff);
+
+	method link (t, blocking=False)
+	{
+		r, n, a = t
+		# attach stuff (the segments) to the callable
+		return $_JIT.fptr_wrapper (r, $D [n], a, blocking, $stuff, n)
+	}
+
+	method sym (n)
+		return $D [n]
+}
+
+# ------- main public function of this module --------
+
+def dllopen (fnm, libs=(), externs={})
+{
+	if (fnm -> str) {
+		e = ELF (filename=fnm)
+		e.relocate (libs, externs)
+		return dllobj (e.exports, e.librefs)
+	}
+
+	exports = {}
+	E = []
+	for (f in fnm)
+		E.append (ELF (filename=f, exports=exports))
+	R = []
+	for (e in E) {
+		e.relocate (libs, externs)
+		R.extend (e.librefs)
+	}
+
+	return dllobj (exports, R)
+}
+
+#############################################################################
+# testing
+#############################################################################
+
+def test ()
+{
+	from os import system
+	import DLL
+
+	save_status = '-test' in sys.argv
+	if (save_status) open ("PELFTEST", "w").write ("FAIL")
+	def pr (x)
+		if (!save_status) print x
+
+	# find the address of 'puts'
+	try {
+		# in GNU/linux, somebody thought that /usr/lib/libc.so
+		# being a linker script, would be cool. We load libc.so.6
+		LIBC = DLL.dllopen ('libc.so.6')
+		puts_address = LIBC.sym ('puts')
+	} except puts_address = 0
+
+	PROG = r"""
+#if 1
+		/* .bss variable */
+		static int x;
+		/* .data variable */
+		static int y = 1133;
+		/* .rodata variable */
+		static const int c = 100000;
+
+		int f ()
+		{
+			return x++ + (y-=2) + c;
+		}
+		int foo (int a)
+		{
+			return a + f ();
+		}
+		/* SHN_COMMON this one */
+		int baz [100];
+
+		void bar ()
+		{
+			foo (1);
+			x = y = 0;
+		}
+		/* global relocation */
+		int woot (int a)
+		{
+			baz [1] += 10;
+			return (int) baz;
+		}
+
+		int datarel [] = { (int) &f };
+		const int rodatarel [] = { (int) &f };
+		static const int rodatarel2 [] = { (int) &f };
+
+		/* Test C-level linking. May not work
+		 * if we haven't managed to get the address
+		 * of puts
+		 */
+		void doputs (char *msg)
+		{
+			typedef void (*pF)(const char*);
+			pF putsf = (pF) 0x%x;
+			if (putsf)
+				putsf (msg);
+		}
+#else
+#endif
+	""" % puts_address + '\n'
+	open ('objfile.c', 'w').write (PROG)
+	# -O0 because we don't want inlining in order to check
+	# relocations.
+	system ('gcc -O0 -c objfile.c')
+	E = ELF (filename='objfile.o')
+	E.relocate ()
+	D = dllobj (E.exports, E.librefs)
+
+	foo = D.link (('i', 'foo', 'i'))
+	pr (foo (1))
+	pr (foo (1))
+	pr (foo (1))
+	bar = D.link (('', 'bar', ''))
+	bar ()
+	pr (foo (1))
+	pr (foo (1))
+	woot = D.link (('i', 'woot', 'i'))
+	pr (woot (1))
+	doputs = D.link (('', 'doputs', 's'))
+	if (!save_status) doputs ("hello world!")
+
+	# test linking to libm
+	PROG = "double COS (double x) { return cos (x); }\n"
+	open ('objfile.c', 'w').write (PROG)
+	system ('gcc -O0 -c objfile.c')
+	E = ELF (filename='objfile.o')
+	E.relocate (libs=["m"])
+	D = dllobj (E.exports, E.librefs)
+	COS = D.link (('d', 'COS', 'd'))
+	pr (COS (3.1415))
+	pr (COS (3.1415/2))
+	pr (COS (3.1415/4))
+
+	from os import remove
+	remove ('objfile.c')
+	remove ('objfile.o')
+	if (save_status) open ("PELFTEST", "w").write ("OK")
+}
+
+if (__name__ == __main__)
+	test ()

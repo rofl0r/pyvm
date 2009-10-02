@@ -1,0 +1,106 @@
+#
+# This module can count, for example, how many tuples
+# are allocated in the VM.
+# Useful for studing various algorithms during development.
+#
+__autosem__
+
+from builtins import everything, count_everything
+import gc
+
+def counts ()
+{
+	L = everything ()
+	D = {}
+	for (i in L)
+		D.count_inc (type (i))
+	L = None
+	return D
+}
+
+def count_dicts ()
+{
+	n = 0
+	for (i in everything ())
+		if (i -> dict)
+			n += 1
+	return n
+}
+
+def lens (t)
+{
+	n = 0
+	for (i in everything ())
+		if (i -> t)
+			n += len (i)
+	return n
+}
+
+def count_tuples ()
+{
+	n = 0
+	for (i in everything ())
+		if (i -> tuple)
+			n += 1
+	return n
+}
+
+def objs (*args)
+{
+	L = everything ()
+	D = {}
+	for (i in args) D [i] = []
+	for (i in L)
+		try D [type (i)].append (i)
+	L = None
+	return D
+}
+
+def instances (no=0, sloted=False)
+{
+	from types import InstanceType
+	if (!sloted)
+		t = InstanceType
+	else {
+		class A {
+			__slots__ = "x",
+		}
+		t = type (A ())
+	}
+	I = objs (t).pop (t)
+	D = {}
+	for (i in I) {
+		i = i.__class__.__module__ + '.' + i.__class__.__name__
+		D.count_inc (i)
+	}
+	return [i for (i in D.items ()) if (i [1] > no)]
+}
+
+def pretty_stats ()
+{
+	gc.collect ()
+	D = counts ().items ().sort ()
+	for (k, v in D)
+		print k, v
+	print "total:", sum ([x [1] for (x in D)])
+	D = None
+
+	# count bytes spent in strings -- increases the number of integers!
+	ns = 0
+	nb = 0
+	O = objs (list, tuple, set, dict)
+	CC = set ()
+	for (i in O.values ())
+		for (j in i) if (j -> str and id(j) not in CC) { ns += 1; nb += len (j); CC.add (id(j)); }
+	for (i in O [dict])
+		for (j in i.itervalues ())
+			 if (j -> str and id (j) not in CC) { ns += 1; nb += len (j); CC.add (id (j)); }
+	CC = None
+	print '%i strings (%i Kbytes)' %(ns, nb/1024)
+}
+
+if (__name__ == '__main__') {
+	import gc
+	gc.collect ()
+	print counts ()
+}

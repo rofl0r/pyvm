@@ -1,0 +1,63 @@
+__autosem__
+
+# Bookmarks are saved in a plaintext file that can be easilly
+# editted by hand, can be opened in the browser, etc.
+
+BKFILE = HOME + "user/wcache/bookmarks.txt"
+
+Bookmarks = {}
+
+def load ()
+{
+	d = Bookmarks
+	if (!havefile (BKFILE))
+		return
+	cl = []
+	for (l in open (BKFILE))
+		if (l [0] == " ") {
+			url, None, title = l [1:-1].partition (" ")
+			cl<<(url, title)
+		} else d [l [:-1]] = cl = []
+}
+
+def save ()
+{
+	t = []
+	for (k, v in Bookmarks.items ()) {
+		t<< k
+		for (url, title in v)
+			t<< " " + url + " " + title
+	}
+	text = "\n".join (t) + "\n"
+	open (BKFILE, "w").write (text)
+}
+
+def add (cat, url)
+{
+	try title = url.Title ()
+	except title = url.url
+	title = title.replace ("\n", " ")
+	url = url.url
+	if (" " in url) {
+		print "BAD! url contains space [%s]" %url
+		return
+	}
+	if (cat not in Bookmarks)
+		Bookmarks [cat] = []
+	Bookmarks [cat].append ((url, title))
+	save ()
+}
+
+def categories ()
+	return Bookmarks.keys ().sort ()
+
+def nbooked (cat)
+	return len (Bookmarks [cat]) ?? 0
+
+def cat (cat)
+	return Bookmarks [cat]
+
+def unbookmark (cat, n)
+	del Bookmarks [cat][n]
+
+load ()

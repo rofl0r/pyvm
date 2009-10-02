@@ -1,0 +1,1076 @@
+##  Document Object Model
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from wwwlib.lex import lex, OEMPTY
+from wwwlib.wvisitor import AllVisitor
+from wwwlib.forms import Form
+from fonts import unicode
+from builtins import faryield, far_yield_acceptor
+
+# Abstarct base classes
+
+class NodeFast
+{
+	# An HTML tree can have a LOT of nodes. values like 100K nodes are
+	# not uncommon.  We are using slots by default (unless a derrived class
+	# needs more attributes).
+
+	# The `attributes` attribute holds the HTML tag's attributes.
+	# This is a flat list with 2*N elements where elements 0, 2, 4, ... are keys
+	# and 1, 3, 5, ... are values.  Using builtin functions tupdict_[get|has]item
+	# to access it.  Normally it should be a list of tuples but this saves quite
+	# some memory for huge trees (5%).
+
+	__slots__ = "tag", "attributes", "parent", "kids", "css", "css2"
+
+	method __init__ ($tag, $attributes, $parent)
+		$kids = []
+
+	eval_tag = None
+
+	method getattr (a)
+		return tupdict_getitem ($attributes, a)
+
+	method getprop (x)
+	{
+		v = $css [x]
+		if (v is "inherit")
+			return $parent.getprop (x)
+		return v
+	}
+}
+
+class NodeFastLeaf (**NodeFast)
+	method __init__ ($tag, $attributes, $parent)
+		$kids = ()
+
+class NodeSlow
+{
+	method pinit (args)
+	{
+		$tag, $attributes, $parent = args
+		$kids = []
+	}
+
+	method einit (args)
+	{
+		$tag, $attributes, $parent = args
+		$kids = ()
+	}
+
+	method zinit (args)
+		$tag, $attributes, $parent = args
+
+	method dump (level=0)
+	{
+		print " "*level, "<%s>"%$tag ## +'['+ ",".join ($attributes)+']'
+		for (c in $kids)
+			try c.dump (level + 1)
+		print " "*level, "</%s>"%$tag
+	}
+
+	method attr_pairs ()
+	{
+		a = []
+		p = None
+		for (x in $attributes)
+			if (p) {
+				a << (p, x)
+				p = None
+			} else p = x
+		return a
+	}
+
+	method free ()
+	{
+		# break circular references so the document won't need gc to free itself.
+		for (c in $kids)
+			c.free ()
+		del $kids
+	}
+
+	freebase = free
+
+	method root ()
+	{
+		p = self
+		while (p.parent) p = p.parent
+		return p
+	}
+
+	method dom_nth ()
+	{
+		x = 0
+		for (n in $root ().iterall ())
+			if (n is self) return x
+			else x += 1
+	}
+
+	method find_nth (nn)
+	{
+		x = 0
+		for (n in $root ().iterall ())
+			if (x == nn) return n
+			else x += 1
+	}
+
+	method iterall ()
+		for (n in far_yield_acceptor ($fiter))
+			yield n
+
+	method to_parent (tag)
+		for (p in $parents ())
+			if (p.tag == tag)
+				return p
+
+	method put_before (node)
+	{
+		node.parent = p = $parent
+		p.kids.insert (p.kids.index (self), node)
+	}
+
+	method put_after (node)
+	{
+		node.parent = p = $parent
+		p.kids.insert (p.kids.index (self) + 1, node)
+	}
+
+	method move_after (node)
+	{
+		$parent.kids.pop ($parent.kids.index (self))
+		node.put_after (self)
+	}
+
+	method parents ()
+	{
+		p = $parent
+		while (p) {
+			yield p
+			p = p.parent
+		}
+	}
+
+	method xparents ()
+	{
+		yield self
+		for (p in $parents ())
+			yield p
+	}
+
+	method find_parent (tag)
+		for (n in $parents ())
+			if (n.tag == tag)
+				return n
+
+	# --- attr ---
+
+	method lattr (name, default="")
+		if (a = tupdict_getitem ($attributes, name))
+			return a.lower ()
+		else return default
+
+	method iattr (name, default=0)
+	{
+		if (a = tupdict_getitem ($attributes, name))
+			try return int (a)
+		return default
+	}
+
+	method dattr (name, default="")
+		if (a = tupdict_getitem ($attributes, name))
+			return a
+		else return default
+
+	method hasattr (name)
+		return tupdict_hasitem ($attributes, name)
+
+	# ----
+
+	method removekids (k)
+		remove_sublist ($kids, k)
+
+	method fiter ()
+	{
+		faryield (self)
+		for (c in $kids)
+			c.fiter ()
+	}
+
+	method gethref ()
+		for (p in $parents ())
+			if (p.tag == "a")
+				return p.getattr ("href")
+
+	# walk everything after a node (including the node itself)
+
+	method walk_after ()
+	{
+		itr = far_yield_acceptor ($root ().fiter)
+		for (n in itr)
+			if.break (n is self) {
+				yield n
+				for (n in itr)
+					yield n
+			}
+	}
+
+	#
+	method nearest_content ()
+		for (k in $walk_after ())
+			if (!k.tag)
+				return k
+
+	#
+	method cdata ()
+		return $getattr (">")
+
+	method vattributes ()
+	{
+		p = a = []
+		for (x in $attributes)
+			if (p is a) p = x
+			else {
+				a << (p, x)
+				p = a
+			}
+		return a
+	}
+
+	method str_attr ()
+		return "<%s\n" %$tag + "\n".join (["\t%s=%s" %(k, v) for (k, v in $vattributes ())]) + ">"
+
+	#
+	method new_kid (tag, attributes)
+		$kids.append ($common.Node (tag, attributes, self))
+}
+
+class Replaced
+	free = void
+
+def attrs2pairs (a)
+{
+	l = []
+	p = None
+	for (a in a)
+		if (p is None) p = a
+		else {
+			l.append ((p, a))
+			p = None
+		}
+	return l
+}
+
+def reparent (nlist, newpar)
+	for (n in nlist)
+		if !(n => Content)
+			n.parent = newpar
+
+# root pseudo-node. Useful during parsing.
+
+class DocumentRoot
+{
+	method __init__ ($makeNode)
+	{
+		$kids = []
+		$parent = None
+		$styles = []
+		$title_tag = ""
+		$images = []
+		$link = []
+		$forms = []
+		$current_form = None
+		$metas = []
+		$maps = {}
+		$has_frames = False
+		$tag = "html"
+		$base = None
+	}
+
+	method close_form ()
+		$current_form = None
+
+	# Make Pointers to $html, $head, $body tags
+
+	method structure_html ()
+	{
+		HeadTags = { "title", "meta", "base", "link", "script", "style", "object", None }
+
+		for (c in $kids)
+			if.break (c.tag == "html")
+				$html = c
+		else.for {
+			$html = $makeNode ("html", (), self)
+			$html.kids = $kids
+			reparent ($kids, $html)
+			$kids = [$html]
+		}
+
+		$html.parent = None
+
+		head = body = None
+		for (c in $html.kids)
+			if.break (c.tag == "head")
+				head = c
+
+		for (c in $html.kids)
+			if.break (c.tag == "body")
+				body = c
+
+		if (body and not head) {
+			i = $html.kids.index (body)
+			head = $makeNode ("head", (), $html)
+			head.kids = $html.kids [:i]
+			reparent (head.kids, head)
+			$html.kids [0:i] = [head]
+		} else if (head and not body) {
+			for (c in head.kids)
+				if.break (c.tag not in HeadTags) {
+					i = head.kids.index (c)
+					while (i and head.kids [i - 1].tag is None)
+						i -= 1
+					body = $makeNode ("body", (), $html)
+					body.kids = head.kids [i:]
+					reparent (body.kids, body)
+					del head.kids [i:]
+					head.put_after (body)
+				}
+			else.for {
+				i = $html.kids.index (head) + 1
+				body = $makeNode ("body", (), $html)
+				body.kids = $html.kids [i:]
+				reparent (body.kids, body)
+				$html.kids [i:] = [body]
+			}
+		} else if (not head and not body) {
+			for (c in $html.kids)
+				if.break (c.tag not in HeadTags) {
+					i = $html.kids.index (c)
+					while (i and $html.kids [i - 1].tag is None)
+						i -= 1
+				}
+			else.for i = len ($html.kids)
+			head = $makeNode ("head", (), $html)
+			body = $makeNode ("body", (), $html)
+			head.kids = $html.kids [:i]
+			body.kids = $html.kids [i:]
+			reparent (head.kids, head)
+			reparent (body.kids, body)
+			$html.kids = [head, body]
+		}
+
+		$html.body = body
+		$html.head = head
+		$html.images = $images
+		$html.link = $link
+		if ($title_tag)
+			title = $title_tag.cdata ().replace ("\n", " ").strip ()
+		else title = ""
+		$html.title = title
+		$html.styles = $styles
+		$html.remote_styles = []
+		$html.base = $base
+		$html.has_frames = $has_frames
+		$html.refresh = None
+		$html.forms = $forms
+		$html.maps = $maps
+
+		for (m in $metas)
+			if ("http-equiv" in m and m ["http-equiv"].lower () == "refresh") {
+				# In theory, htt-equiv stuff should be added to
+				# the HTTP headers.  in practice that doesn't make
+				# too much sense and it is deprecated.  for one,
+				# HTTP knows nothing about a "Refresh: " header.
+				try {
+					r = m ["content"]
+					if (";" in r) {
+						secs, None, url = r.partition (";")
+						secs = int (secs)
+						url = url.partition ("=")[2].strip ()
+					} else {
+						secs = int (r)
+						url = None
+					}
+					$html.refresh = secs, url
+				} except 
+					print "BAD REFRESH [%s]" %r
+			}
+
+		$html.favicon = "/favicon.ico"
+		for (l in head.kids)
+			if (l.tag == "link" and l.lattr ("rel") == "shortcut icon")
+				$html.favicon = l.getattr ("href")
+	}
+}
+
+# Basic DOM
+
+namespace DOM
+{
+	class Node;
+
+	class NodeHtml
+	{
+		__slots__ = None
+		method find_label (label)
+			return LabelFinder (self, label).result
+
+		namespace charset_func
+		{
+			# A page's text is eventually converted to either "latin-1" or "utf-8"
+			# and this is set in $charset attribute. These functions may be used in
+			# various places to convert to/from the original page charset.
+			method need_transcoding ()
+				return $charset == "utf-8" and $original_charset != "utf-8"
+			# i.e. iso-8859-7 to utf-8
+			method to_local (txt)
+			{
+				if ($charset == "utf-8" and $original_charset != "utf-8")
+					return unicode.transcoder ($original_charset)(txt)
+				return txt
+			}
+			# i.e. utf-8 to iso-8859-7
+			method to_remote (txt)
+			{
+				if ($charset == "utf-8" and $original_charset != "utf-8") {
+					ok, na, newtxt = unicode.r_transcode ($original_charset, txt)
+					if (na) print "%i characters failed converting to [%s]" %(
+						na, $original_charset)
+					return newtxt
+				}
+				return txt
+			}
+		}
+	}
+
+	class NodeA
+		method isvisited ()
+		{
+			href = $getattr ("href")
+			try return $common.visited_cache [href]
+			visited = False
+			try visited = $common.dom_root.url.generate ($getattr ("href")).is_visited ()
+			$common.visited_cache [href] = visited
+			return visited
+		}
+
+	class NodeHead
+		method eval_tag ()
+			for (k in $kids)
+				if (k.tag == "body")
+					return k.move_after (self)
+
+	class NodeAddress;
+	class NodeBlockquote;
+	class NodeBody
+		HTMLCSS = ("bgcolor", "text")
+
+	class NodeBase
+		method __init__ (*args)
+		{
+			$einit (args)
+			$root ().base = $getattr ("href")
+		}
+
+	class NodeMeta
+		method __init__ (*args)
+		{
+			$einit (args)
+			try $root ().metas << dict ($vattributes ())
+		}
+
+	class NodeMap
+	{
+		areas = None
+		__slots__ = None
+
+		method __init__ (*args)
+		{
+			$pinit (args)
+			try $root ().maps [$getattr ("name")] = self
+		}
+	}
+
+	class NodeDiv;
+	class NodeP;
+
+	class NodeDd;
+	class NodeDl;
+	class NodeDt;
+
+	class NodeFieldset;
+	class NodeFrame
+		method eval_tag ()
+		{
+			# convert frames to hrefs.
+			# This is not strictly true but it is a good workaround
+			# for displays that don't support frames.
+			# A display that does support frames should discard any
+			# kids of the FRAME tag...
+			$kids.append ($makeNode ("hr", (), self))
+			name = $getattr ("name") or $getattr ("src")
+			$kids.append (Content ("Frame \"%s\" :  " %name))
+			hlink = $makeNode ("a", ("href", $getattr ("src")), self)
+			$kids.append (hlink)
+			hlink.kids.append (Content ($getattr ("src") or ""))
+			$kids.append ($makeNode ("hr", (), self))
+		}
+
+	class NodeFrameset
+		method __init__ (*args)
+		{
+			$pinit (args)
+			$root ().has_frames = True
+		}
+
+	class NodeH1;
+	class NodeH2;
+	class NodeH3;
+	class NodeH4;
+	class NodeH5;
+	class NodeH6;
+	class NodeIframe
+
+	{
+		__slots__ = None
+		method __init__ (*args)
+		{
+			$pinit (args)
+			$kids = [ReplacedContent (self)]
+		}
+	}
+
+	class NodeNoframes;
+	class NodeObject
+	{
+		__slots__ = None
+		method __init__ (*args)
+		{
+			$pinit (args)
+			print "OBJECT:", $attributes
+#			$kids = [ReplacedContent (self)]
+		}
+	}
+
+	class NodeOl;
+	class NodeUl;
+	class NodeLi;
+
+	class NodeApplet;
+	class NodeCenter;
+	class NodeDir;
+	class NodeMenu;
+
+	###
+	class NodeForm
+	{
+		__slots__ = None
+		method __init__ (*args)
+		{
+			$pinit (args)
+			$root ().current_form = self
+		}
+
+		method eval_tag ()
+		{
+			$root ().forms << self
+			$Form = Form (self)
+		}
+	}
+	class NodeTextarea (**Replaced)
+	{
+		__slots__ = None
+		method __init__ (*args)
+		{
+			$pinit (args)
+			$kids = (ReplacedContent (self),)
+			value = $cdata ()
+			if (value.sw ("\n"))
+				value = value [1:]
+			$textarea_value = value
+			$in_form = $root ().current_form
+		}
+	}
+	class NodeInput (**Replaced)
+	{
+		__slots__ = None
+		method __init__ ($tag, $attributes, $parent)
+		{
+			$in_form = $root ().current_form
+			$kids = ReplacedContent (self),
+		}
+	}
+	class NodeOption
+	{
+		__slots__ = None
+		method __init__ ($tag, $attributes, $parent)
+		{
+			$kids = []
+			$in_form = $root ().current_form
+		}
+	}
+	class NodeButton;
+	class NodeSelect (**Replaced)
+	{
+		__slots__ = None
+		method __init__ ($tag, $attributes, $parent)
+		{
+			$kids = []
+			$in_form = $root ().current_form
+		}
+		method eval_tag ()
+		{
+			$kids2 = $kids
+			$kids = ReplacedContent (self),
+		}
+	}
+	##
+
+	class NodeBr;
+	class NodeNobr;
+	class NodeHr;
+
+	class NodeThead;
+	class NodeTfoot;
+	class NodeTbody;
+	class NodeCol;
+	class NodeColgroup;
+	class NodeTd
+		HTMLCSS = "bgcolor", "width"
+	class NodeTh
+		HTMLCSS = "bgcolor", "width"
+	class NodeTr
+		HTMLCSS = ("bgcolor",)
+	class NodeCaption;
+	class NodeTable
+	{
+		HTMLCSS = "bgcolor", "width"
+		__slots__ = None
+		method fix_td ()
+		{
+			# collect stray <td> nodes.
+			# UNUSED. fixed in the lexer
+			for (k in $kids)
+				if (k.tag in ("th", "td"))
+					break
+			else.for return
+
+			kids = []
+			ik = iter ($kids)
+			for (k in ik) {
+				if (k.tag in ("th", "td")) {
+					stray = [k]
+					for (k in ik)
+						if (k.tag not in ("th", "td"))
+							break
+						else stray << k
+					tr = $makeNode ("tr", (), self)
+					tr.kids = stray
+					reparent (stray, tr)
+					kids << tr
+				} else kids << k
+			}
+			$kids = kids
+		}
+
+		method free ()
+		{
+			for (c in $kids)
+				c.free ()
+			del $kids
+		}
+	}
+
+	class NodeLink
+		method __init__ (*args)
+		{
+			$einit (args)
+			$root ().link << self
+			if ($lattr ("rel") == "stylesheet")
+				$root ().styles << self
+		}
+
+	class NodeStyle
+		method __init__ (*args)
+		{
+			$einit (args)
+			$root ().styles << self
+		}
+
+	class NodeScript;
+
+	class NodeTitle
+		method __init__ (*args)
+		{
+			$einit (args)
+			if (!$root ().title_tag)
+				$root ().title_tag = self
+		}
+
+	class NodeFont
+		HTMLCSS = "color", "face"
+
+	class NodeImg (**Replaced)
+	{
+		__slots__ = None
+		method __init__ ($tag, $attributes, $parent)
+		{
+			style = ""
+			a = []
+			for (k, v in attrs2pairs (attributes))
+				if (k in ("width", "height") and v is not None)
+					style += "%s:%spx;" %(k, v)
+				else if (k == "align") {
+					if (v in ("left", "right"))
+						style += "float:%s;" %v
+					else {
+						a << k
+						a << v
+					}
+				} else if (k == "style" and v)
+					style += v + ";"
+				else {
+					a << k
+					a << v
+				}
+			if (style)
+				if (a) {
+					a << "style"
+					a << style [:-1]
+					$attributes = a
+				} else $attributes = ["style", style [:-1]]
+			$root ().images << self
+			$kids = ReplacedContent (self),
+		}
+	}
+
+	class NodePre	# REMOVE NEWLINES IN START AND END OF TEXT
+		method eval_tag ()
+		if ($kids) {
+			if ($kids [0] => Content and $kids [0].text.sw ("\n"))
+				$kids [0].text = $kids [0].text [1:]
+			#if ($kids [-1] => Content and $kids [-1].text.ew ("\n"))
+			#	$kids [-1].text = $kids [-1].text [:-1]
+		}
+
+	class NodeStrong;
+	class NodeSpan;
+	class NodeCode;
+	class NodeEm;
+	class NodeDfn;
+	class NodeVar;
+	class NodeSub;
+	class NodeCite;
+	class NodeKbd;
+	class NodeI;
+	class NodeSite;
+	class NodeBig;
+	class NodeB;
+	class NodeSmall;
+	class NodeTt;
+	class NodeLegend;
+	class NodeLabel;
+	class NodeWbr;
+	class NodeNoscript;
+	class NodeAbbr;
+	class NodeStrike;
+	class NodeU;
+	class NodeSup;
+	class NodeSamp;
+	class NodeAcronym;
+	class NodeArea;
+	class NodeParam;
+	class NodeEmbed;
+	class NodeQ;
+
+	# generated content pseudo nodes
+	class Node_content_;
+} # DOM
+
+# generates an __init__ function which converts the specified valid attributes
+# to CSS "style"
+namespace a2c
+{
+	# %Color
+	def bgcolor (x)
+	{
+		if (len (x) in (3,6) and x [0] in "0123456789abcdefABCDEF")
+			x = "#"+x
+		return "background-color: %s;" %x
+	}
+	# %Color
+	def color (x)
+	{
+		if (len (x) in (3,6) and x [0] in "0123456789abcdefABCDEF")
+			x = "#"+x
+		return "color: %s;" %x
+	}
+	# <font>
+	def face (x)
+		return "font-family: %s;" %x
+	# %Length
+	def width (x)
+		try {
+			int (x)
+			return "width: %spx;" %x
+		} except if (x and x.ew ("%"))
+			return "width: %s;"%x
+	def height (x)
+		try {
+			int (x)
+			return "height: %spx;" %x
+		} except if (x and x.ew ("%"))
+			return "height: %s;"%x
+	text = color
+}
+
+def attribute_to_style (attrs)
+{
+	d = {a:a2c.__dict__ [a] for (a in attrs)}
+
+	def html2css (attributes)
+	{
+		style = ""
+		a = []
+		for (k, v in attrs2pairs (attributes))
+			if (k in d) {
+				if (v = d [k](v))
+					style += v
+			} else if (k == "style")
+				style += v + ";"
+			else {
+				a << k
+				a << v
+			}
+		if (style) {
+			if (a) {
+				a << "style"
+				a << style [:-1]
+				return a
+			}
+			return ["style", style [:-1]]
+		}
+		return a
+	}
+
+	method __init__ ($tag, attributes, $parent)
+	{
+		$kids = []
+		$attributes = attributes ? html2css (attributes) : ()
+	}
+
+	return __init__
+}
+
+# Content pseudo nodes
+
+class Content
+{
+	content = "text"
+	Type = "text"
+	replaced = False
+	tag = None
+	__slots__ = ("text",)
+	free = void
+
+	method __init__ ($text);
+	method fiter () faryield (self)
+	method dump (level=0) print " "*level, "'%s'" %$text.replace ("\n", "\\n")
+
+	method parents ()
+	{
+		p = $parent
+		while (p) {
+			yield p
+			p = p.parent
+		}
+	}
+}
+
+class ReplacedContent
+{
+	content = "replaced"
+	Type = "image"
+	replaced = True
+	tag = ""
+	__slots__ = ("parent",)
+
+	method __init__ ($parent);
+	free = void
+	method fiter () faryield (self)
+	method dump (level=0) print " "*level, "replaced content"
+}
+
+# Create the DOM classes:
+# Recreate all classes so they inherit from **NodeFast, NodeSlow.
+#
+# This is called for *every* document layout. By recreating all the
+# node classes we inject a special "common" instance to them.
+# So given a node `n` we can use `n.common.root` to find, for example,
+# the -common- root node through a class attribute.
+# In other words, all the DOM nodes of a document, share the same
+# `common` instance in their class, a common useful placeholder for stuff. 
+
+def MakeDom (do_htmlcss)
+{
+	L = {}
+
+	class Domain
+	{
+		method makeNode (tag, attributes, parent)
+			return $Node (tag, attributes, parent)
+	}
+	Domain = Domain ()
+
+	class Slow (**NodeSlow)
+		common = Domain
+
+	method generic_init ($tag, $attributes, $parent)
+		$kids = []
+
+	for (k, v in DOM.__dict__.items ()) {
+		if (k.sw ("Node")) {
+			kk = intern (k [4:].lower ())
+
+			if (kk in OEMPTY)
+				class x (**v, **NodeFastLeaf, Slow);
+			else
+				class x (**v, **NodeFast, Slow);
+			x.__name__ = k
+			if (hasattr (v, "HTMLCSS"))
+				if (do_htmlcss)
+					x.__init__ = attribute_to_style (v.HTMLCSS)
+				else x.__init__ = generic_init
+			L [k] = x
+		}
+	}
+
+	# Create the tag -> class dictionary
+	N = { intern (k [4:].lower ()) or "*": v
+			for (k, v in L.items ()) if (k.sw ("Node")) }
+
+	Domain.nodes_dict = N
+
+	setd = N.setdefault
+	dflt = N ["*"]
+
+	# :before, :after specials
+	N [":"] = N ["_content_"]
+	del N ["_content_"]
+
+	# Make the node factory
+	def Node (tag, attributes, parent)
+	{
+		try f = N [tag]
+		except {
+			print "MISSING TAG", tag
+			f = dflt
+		}
+		return f (tag, attributes, parent)
+	}
+
+	Domain.Node = Node
+	Domain.Content = Content
+	# every node can call `$makeNode` to create a new node in the
+	# same Dom. This confusing trick is used to attach a *bound method*
+	# to the class so that when getting it from an instance it won't
+	# become a bound method (advanced)
+	Slow.makeNode = Domain.makeNode
+	return Node
+}
+
+##
+## Label locator.  Traverse a DOM tree looking for a label (<a name=> or <??? id=>)
+## Then return the closest content node
+##
+
+class LabelFinder (**AllVisitor)
+{
+	method __init__ (dom, $label)
+	{
+		$result = None
+		try $walk (dom)
+		except (LabelFinder) return
+	}
+
+	method action (node)
+		if (node.getattr ("id") == $label
+		or (node.tag == "a" and node.getattr ("name") == $label)) {
+			$result = node
+			raise LabelFinder
+		}
+}
+
+##
+## parse some html and return a dom tree
+##
+
+def produce (txt, charset="", htmlcss=False)
+{
+	Text = Content
+	Node = MakeDom (htmlcss)
+
+	stack = []
+	pop = stack.pop
+	top_box = DocumentRoot (Node)
+	kids = top_box.kids
+
+	namespace ud
+	{
+		uta = {}		# uniq tag names and attribute names
+		uv = {}.setdefault	# uniq attribute values
+	}
+
+	##"pyc::type kids list"
+
+	for (t0, t1 in lex (txt, charset, ud, top_box))
+		if (!t0) {
+			kids.append (Text (t1))
+		} else if (t0 == "<") {
+			attr = t1 [1]
+			tag = t1 [0]
+			box = Node (tag, attr, top_box)
+			kids.append (box)
+			stack.append (top_box)
+			top_box = box
+			kids = box.kids
+		} else if (t0 == "/") {
+			f = top_box.eval_tag
+			if (f) f ()
+			top_box = pop ()
+			kids = top_box.kids
+		} else if (t0 == "@") {
+			kids.append (Node (t1 [0], t1 [1], top_box))
+		}
+
+	top_box.structure_html ()
+	if (!charset or charset in ("iso-8859-1", "ascii", "us-ascii"))
+		top_box.html.charset = "ascii"
+	else top_box.html.charset = "utf-8"
+	top_box.html.original_charset = charset
+	dom_root = top_box.html
+	dom_root.common.dom_root = dom_root
+	dom_root.common.visited_cache = {}
+	dom_root.ud = ud
+	return dom_root
+}
+
+####
+####
+####
+
+if (__name__ == __main__)
+for (f in sys.argv [1:])
+{
+	from time import time
+	print f
+	t0 = time()
+	root = produce (readfile (f))
+	print time()-t0
+#	root.dump ()
+}

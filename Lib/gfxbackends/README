@@ -1,0 +1,37 @@
+graphics backends open a "drawing area" (output) and receive input
+events from mouse/keyboard, etc.
+On top of that we can have applications with a GUI.
+
+A graphic backend can be:
+	- X Windows backend. Opens a window in X11.
+	- SDL backend. Usually since pyvm is known to work only on
+	  linux the SDL backend will probably be SDL on X Windows
+	  which is still interesting for testing.
+	  SDL is also supposed to work on the linux framebuffer
+	  console but that has not been tested.
+	- linuxfb backend. Works only on linux and uses an entire
+	  virtual terminal for the application. In this case there
+	  can be only one open window and its size is the entire screen.
+
+On any of the above backends pyvm can run a windowing server and
+that is one more possible backend: pyvm windowing environment
+backend for which applications use a UNIX socket and shared memory.
+Of course, only pyvm applications can use this backend (until we
+implement support for it in SDL)
+
+Future stuff:
+
+	- X11 server. Just listen to a port and start some X program
+	  with --display=127.0.0.1:port and slowly implement stuff.
+	- VNC backend
+	- a framebuffer alternative for the BSDs
+	- window manager for X11 in pyvm
+	- remote, network transparent, pyvm backend. Can be an extension
+	  of the pyvm windowing environment protocol, and should have
+	  by default, encryption, authentication and some RLE encodings
+	  to reduce the amount of transferred data.
+	- Mesa on linuxfb backend (altough there are objections about whether
+	  openGL is the best way to take advantage of hw or it is useful only
+	  for GLGears)
+
+

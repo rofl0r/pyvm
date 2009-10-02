@@ -1,0 +1,257 @@
+#!/bin/sh
+#
+# manualconf 0.0
+#
+
+cc="gcc"
+help=no
+pyvm_home=`cd .. && pwd`/
+endian="little"
+cflags=""
+bltin_zlib=yes
+force=yes
+
+for opt do
+	optarg=`expr "x$opt" : 'x[^=]*=\(.*\)'`
+	case "$opt" in
+	--cc=*) cc="$optarg"
+	;;
+	--help|-h) help=yes
+	;;
+	--builtin-zlib) bltin_zlib=yes
+	;;
+	--no-force) force=no
+	esac
+done
+
+# do not generate config.h if it exists
+if test $force = "no"; then
+	if test -a config.h; then
+		exit
+	fi
+fi
+
+if test $help = "yes" ; then
+cat << EOF
+
+Usage: configure [options]
+
+options:
+  --help		print this message
+  --cc=CC		use C compiler CC [$cc]
+  --builtin-zlib	build/link builtin zlib
+EOF
+exit 1
+fi
+
+machine=`$cc -dumpmachine`
+
+##
+## Test if we can use -march=native
+##
+
+cat > TMP.c <<EOF
+int main (void) {}
+EOF
+
+if $cc -c -march=native -o /dev/null TMP.c 2> /dev/null ; then
+	native="yes"
+	cflags="-march=native $cflags"
+else
+	native="no"
+fi
+
+## turn off tree-vectorize. gcc may emit two versions of code, one with
+## SIMD and one plain, plus code to detect the alignment to determine which
+## version should be called, even if the loop is called rarely and does
+## just a dozen of iterations!  The wonders of SPEC-driven development.
+
+if $cc -c -O3 -fno-tree-vectorize -o /dev/null TMP.c 2> /dev/null ; then
+	cflags="-fno-tree-vectorize $cflags"
+fi
+
+##
+## Test if we can use -m32
+##
+
+if $cc -m32 $cflags -o /dev/null TMP.c 2> /dev/null ; then
+	cflags="-m32 $cflags"
+fi
+
+rm TMP.c
+
+##
+## Verify 32-bit system
+##
+
+cat > TMP.c << EOF
+int main(void) { return !(sizeof (int) == sizeof (void*) && sizeof (int) == 4); }
+EOF
+
+if $cc $cflags -o TMP.e TMP.c 2>/dev/null ; then
+	if ./TMP.e ; then
+		:
+	else
+		echo "ERROR! pyvm works only at 32-bits."
+		echo "This system doesn't seem to support 32 bit executables"
+		exit 1
+	fi
+else
+	echo "sizeof(int) test unexpectedly failed!"
+	exit 1
+fi
+
+rm TMP.[ec]
+
+##
+## Figure out endianess
+##
+
+cat > TMP.c << EOF
+int main(int argc, char ** argv){
+        volatile unsigned int i=0x01234567;
+        return (*((unsigned char*)(&i))) == 0x67;
+}
+EOF
+
+if $cc $cflags -o TMP.e TMP.c 2>/dev/null ; then
+	./TMP.e && endian="big"
+	if [ $endian = "big" ] ; then
+		echo "WARNING: This seems to be a big endian system."
+		echo "There will certainly be some problems! (bad RGB, etc)"
+	fi
+else
+	echo "Endian test failed!"
+	exit 1
+fi
+
+rm TMP.[ec]
+
+##
+## Have memrchr
+##
+
+cat > TMP.c << EOF
+int main () { int a [10]; memrchr (a, 0, 10); return 0; }
+EOF
+
+if $cc $cflags -o TMP.e TMP.c 2>/dev/null ; then
+	have_memrchr="yes"
+else
+	have_memrchr="no"
+fi
+
+rm TMP.[ec]
+
+##
+## Have ppoll
+##
+
+cat > TMP.c << EOF
+#define _GNU_SOURCE
+#include<poll.h>
+int main () { void *p = ppoll; return 0; }
+EOF
+
+if $cc $cflags -o TMP.e TMP.c 2>/dev/null ; then
+	have_ppoll="yes"
+else
+	have_ppoll="no"
+fi
+
+rm TMP.[ec]
+
+##
+## Test for zlib
+##
+
+if test $bltin_zlib = "no" ; then
+	cat > TMP.c << EOF
+	#include <zlib.h>
+	int main () { return adler32 (0, "abcd", 4); }
+EOF
+
+	if $cc $cflags TMP.c -lz 2>/dev/null ; then
+		have_zlib="yes"
+		libs="-lz"
+	else
+		have_zlib="no"
+		libs=""
+	fi
+
+	rm -f TMP.c a.out
+else
+	have_zlib="no"
+	libs=""
+fi
+
+##
+## Test for Python
+##
+
+cat > TMP.py << EOF
+import sys
+if sys.version_info[0] == 2 and sys.version_info [1] in (3, 4, 5):
+	# Not very robust but works in the common case
+	path = min ([x for x in sys.path if x.startswith ('/usr')])
+	print path + "/"
+EOF
+
+python_path=`python TMP.py`
+
+rm TMP.py
+
+##
+## Status report
+##
+
+cat << EOF
+Pyvm home directory	$pyvm_home
+C Compiler		$cc
+External zlib		$have_zlib
+Use -march=native	$native
+Endian			$endian
+Python Libs		$python_path
+CFLAGS			$cflags
+Have ppoll		$have_ppoll
+EOF
+
+##
+## Make files
+##
+
+echo '# config.mak, automatically generated' > config.mak
+
+if [ $have_zlib == "yes" ] ; then
+	echo "ZLIBO=" >> config.mak
+else
+	echo "ZLIBO=zlib/libz.a" >> config.mak
+fi
+
+echo "CCFLAGS=$cflags" >> config.mak
+echo "LIBS=$libs" >> config.mak
+echo "CC=$cc" >> config.mak
+
+echo '/* config.h, automatically generated */' > config.h
+echo "#define COMPILER \"$cc\"" >> config.h
+echo "#define CC_COMMAND \"$cc $cflags\"" >> config.h
+echo "#define PYVM_HOME \"$pyvm_home\"" >> config.h
+echo '#define PYVM_ENDIAN_LITTLE 1' >> config.h
+echo '#define PYVM_ENDIAN_BIG	 2' >> config.h
+if [ $endian = "big" ] ; then
+	echo '#define PYVM_ENDIAN PYVM_ENDIAN_BIG' >> config.h
+else
+	echo '#define PYVM_ENDIAN PYVM_ENDIAN_LITTLE' >> config.h
+fi
+if [ $have_memrchr == "yes" ] ; then
+	echo '#define HAVE_MEMRCHR' >> config.h
+fi
+if [ $have_ppoll == "yes" ] ; then
+	echo '#define HAVE_PPOLL' >> config.h
+fi
+if [ $python_path ] ; then
+	echo "#define PYTHON_PATH \"$python_path\"" >> config.h
+fi
+echo "#define MACHINE \"$machine\"" >> config.h
+
+echo "GCC=$cc" > lwc/config.mak

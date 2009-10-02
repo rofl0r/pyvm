@@ -1,0 +1,115 @@
+__autosem__
+
+def load_trans (lang)
+	if (lang == "greek")
+		return Greek
+	else raise Error ("no alt keyboard handler for [%s]" %lang)
+
+from fonts.unicode import int2utf8
+
+# Greek is a bit more complex because it needs a state machine to handle
+# the "tonos".  Other languages would be a simple dict.
+#
+# (ta dialitika den exoun ylopoiithei! pote den evaza tonous sto sxoleio.
+#  ean exete oreksi gia programatismo kai vazete tonous, ylopoiiste ta!)
+
+namespace Greek
+{
+	Tonos = False
+
+	Trans1 = {
+		k:int2utf8 (v) for (k, v in (
+			('A',0x391),
+			('B',0x392),
+			('G',0x393),
+			('D',0x394),
+			('E',0x395),
+			('Z',0x396),
+			('H',0x397),
+			('U',0x398),
+			('I',0x399),
+			('K',0x39a),
+			('L',0x39b),
+			('M',0x39c),
+			('N',0x39d),
+			('J',0x39e),
+			('O',0x39f),
+			('P',0x3a0),
+			('R',0x3a1),
+			('S',0x3a3),
+			('T',0x3a4),
+			('Y',0x3a5),
+			('F',0x3a6),
+			('X',0x3a7),
+			('C',0x3a8),
+			('V',0x3a9),
+			('a',0x3b1),
+			('b',0x3b2),
+			('g',0x3b3),
+			('d',0x3b4),
+			('e',0x3b5),
+			('z',0x3b6),
+			('h',0x3b7),
+			('u',0x3b8),
+			('i',0x3b9),
+			('k',0x3ba),
+			('l',0x3bb),
+			('m',0x3bc),
+			('n',0x3bd),
+			('j',0x3be),
+			('o',0x3bf),
+			('p',0x3c0),	# pi
+			('r',0x3c1),
+			('w',0x3c2),
+			('s',0x3c3),
+			('t',0x3c4),
+			('y',0x3c5),
+			('f',0x3c6),
+			('x',0x3c7),
+			('c',0x3c8),
+			('v',0x3c9),
+		))
+	}
+
+	Trans2 = dict (Trans1)
+	for (k, v in (
+		('A',0x386),
+		('E',0x388),
+		('H',0x389),
+		('I',0x38a),
+		('O',0x38c),
+		('Y',0x38e),
+		('V',0x38f),
+		('a',0x3ac),
+		('e',0x3ad),
+		('h',0x3ae),
+		('i',0x3af),
+		('o',0x3cc),
+		('y',0x3cd),
+		('v',0x3ce),
+	)) Trans2 [k] = int2utf8 (v)
+
+	def enter ()
+		{ }
+
+	def translate (k)
+		if (k == ';')
+			if (Greek.Tonos) {
+				Greek.Tonos = False
+				return ';'
+			} else {
+				Greek.Tonos = True
+				return ''
+			}
+		else if (!Greek.Tonos) {
+			try return Greek.Trans1 [k]
+			except return k
+		} else {
+			Greek.Tonos = False
+			try return Greek.Trans2 [k]
+			except return k
+		}
+
+	def leave ()
+		Greek.Tonos = False
+}

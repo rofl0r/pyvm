@@ -1,0 +1,52 @@
+##  Graphics backend selection
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from sysconfig import GETCONF
+from backend_base import Exit
+
+def Init ()
+{
+	from os import getenv
+
+	if (display = (getenv ("PYVM_DISPLAY") or sys.GuiDisplay)) {
+		if (display.sw ("x11:")) {
+			from backend_xlib     import WindowForDpy
+			return WindowForDpy (display [4:])
+		}
+
+		if (display.sw ("pywm:")) {
+			from backend_pywm import Window
+			return Window (display [5:])
+		}
+		raise Error ("UNKNOWN PYVM_DISPLAY value [%s]"%display)
+	}
+
+	inX11 = bool (getenv ("DISPLAY"))
+	if (!inX11 and !GETCONF ("startfbgui"))
+		raise Error ("No graphics outside X11. Use the option \"StartFBGUI\"")
+	B = inX11 ? GETCONF ("X11backend") : GETCONF ("framebufferbackend")
+
+	if (!B) raise Error ("No graphics")
+	if (B -> str) B = B,
+
+	for (b in B) try {
+		if      (b == "x11")   from backend_xlib     import Window
+		else if (b == "sdl")   from backend_sdl      import Window
+		else if (b == "dfb")   from backend_directfb import Window
+		else if (b == "linux") from backend_linux    import Window
+		else if (b) {
+			print "Unknown backend:", b
+			continue
+		}
+		Window.inX = inX11
+		return Window
+	} except print "Backend:", b, "Failed.", sys.exc_info ()
+
+	raise Error ("No graphics")
+}

@@ -1,0 +1,98 @@
+##  RC4 encryption
+##  Uses the C implementation of RC4 by Kalle Kaukonen
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+#
+# RC4 is a very simple and very fast encryption method.
+# It has been accused of being insecure, but, as always, it
+# all depends on the value of the secret.
+#
+
+# WARNING: RC4 is a stream cipher (like SHAENC level1).
+# Therefore it is *not* suitable for using the same key twice, for
+# example you should not use RC4 to encrypt multiple files with
+# one key as it is vunerable to known plaintext attack.
+
+namespace C
+{
+	rc4method = @sysconfig.GETCONF ("rc4method")
+	if (rc4method == "test") {
+		print "Testing best method for RC4"
+		from time import Timit
+		T = []
+		for (state in ("CHAR_STATE", "INT_STATE")) {
+			locals ().update (@DLL.Clib ('rc4', "-D%s -O3"%state, pelf=True, force=1))
+			CTX = _buffer (sizeof_rc4)
+			arcfour_init (CTX, "xyzzy", 5)
+			data = "00"*500000
+			t = Timit ()
+			for (i in *10)
+				arcfour_encrypt (CTX, data, data, len (data))
+			T.append ((t.pr (state + ": "), state))
+			del data
+		}
+		rc4method = min (T)[1]
+		@sysconfig.SETCONF ("rc4method", rc4method)
+		print "Set rc4 method:", rc4method, max(T)[0]/min(T)[0]
+		locals ().update (@DLL.Clib ('rc4', '-O3 -D%s' %rc4method, pelf=True, force=True))
+	} else locals ().update (@DLL.Clib ('rc4', '-O3 -D%s' %rc4method, pelf=True))
+}
+
+namespace parameters
+{
+	block_size = 1
+	iv = None
+	key_size = None
+	header = None
+}
+
+class RC4
+{
+	method __init__ (key, skip=0)
+	{
+		$CTX = _buffer (C.sizeof_rc4)
+		C.arcfour_init ($CTX, key, len (key))
+		if (skip) encrypt (_buffer (skip))
+	}
+
+	method encrypt (data, DST=None)
+	{
+		if (DST is None)
+			DST = _buffer (len (data))
+		C.arcfour_encrypt ($CTX, DST, data, len (data))
+		return DST
+	}
+
+	decrypt = encrypt
+}
+
+def encryptor (password)
+	return RC4 (password).encrypt
+
+decryptor = encryptor
+
+if (__name__ == __main__)
+{
+	E = RC4('xyzzy')
+	D = RC4('xyzzy')
+	msg = 'rc4 works alright'
+	cipher = E.encrypt (msg)
+	print "CIPHERTEXT:", cipher.hexlify ()
+	print "Working:", msg == D.decrypt (cipher)
+
+	# Time it
+	MSG = 'xxxxxxxxxxxxxxxxxxxxxxxxxx' * 1024
+	N = 20
+	t = @time.Timit ()
+	for (i in *N)
+		D.decrypt (E.encrypt (MSG))
+	dt = t ()
+	f = (len (MSG) * N / dt) / (1024*1024)
+	print "%.2fMB/sec" %f
+}

@@ -1,0 +1,201 @@
+##  Toplevel Viewer Application
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+#
+# This file is not part of the pdf library.  It's the application
+# that uses the library.
+#
+__autosem__
+
+import gui, os
+from pdflib import PDF
+from graphics.framebuffer import FrameBuffer
+
+# open file
+
+USAGE = "pyvm pdf [<pdf-file>]"
+
+if (sys.argp.check_switch ("-open")) {
+	from gui.opener import Open
+	File = Open ("PDF")
+	if (!File)
+		exit ()
+	print "LOADING..."
+} else File = sys.argp.filename_ex ()
+
+Book = PDF (File)
+
+# Reset/Load Preferences for the specific book
+
+namespace config {
+	CurrentPage = 0
+	Mag = 100
+	DW = int (Book.DefaultWidth)
+	XOFF = 0
+	YOFF = 0
+	TITLE = Book.Document.Title ()
+}
+
+prefs = @serialize.appdata2 ("pdf", os.abspath (File))
+if (prefs.d and prefs ["TITLE"] == config.TITLE)
+	for (k in ["CurrentPage", "Mag", "DW", "XOFF", "YOFF"])
+		if (prefs [k] is not None)
+			config.(k) = prefs [k]
+
+# The main form
+
+Book.magnify (config.Mag/100.0)
+wm = gui.Wm (int (config.DW), 0, File)
+with (gui.vcontainer ()) {
+	MAIN = gui.image ()
+	gui.hr ()
+	with (gui.hcontainer ()) {
+		BEXIT = gui.button ("Exit")
+		BPLUS = gui.button ("+")
+		BMINUS = gui.button ("-")
+		BFONTENGINE = gui.togglebutton (" Freetype engine ", state=True)
+		SINFO = gui.status ()
+	}
+}
+
+def MAIN.onWheel (x)
+	if (MAIN.wm.key_ctrl)
+		return MAIN.onKey (x == "up" ? "ppage" : "npage")
+	else return MAIN.onKey (x == "up" ? "wheelup" : "wheeldown")
+
+### gui Callbacks
+
+def GoTo (n=None, draw=1)
+{
+	if (n is not None)
+		config.CurrentPage = n
+	else n = config.CurrentPage
+	pg = Book.render_page (n)
+	if (!pg) {
+		# (render traceback?)
+		pg = FrameBuffer (int (MAIN.w), int (MAIN.h), 3)
+		pg.clear (0xffffff)
+		w = int (Book.Width)
+		h = int (Book.Height)
+		pg.draw_line (0, 0, w, h, 0)
+		pg.draw_line (0, h, w, 0, 0)
+	}
+	MAIN.load_fb (pg)
+	SINFO.setmsg ("Page %i/%i -- %i%%" %(n+1, Book.Pages, int (Book.Scale*100)))
+	REFRESH ()
+}
+
+def REFRESH ()
+{
+	MAIN.xoff = config.XOFF
+	MAIN.Draw ()
+}
+
+def BFONTENGINE.onToggle (state)
+{
+	for (v in Book.Fonts.values ())
+		v.switch_rasterizer ()
+	GoTo ()
+}
+
+def MAIN.onKey (k)
+{
+	if (k == "PAGEDOWN") {
+		if (MAIN.h + MAIN.yoff < MAIN.ih) {
+			MAIN.yoff = max (0, MAIN.ih - MAIN.h)
+			MAIN.Draw ()
+		} else if (config.CurrentPage < Book.Pages-1) {
+			GoTo (config.CurrentPage + 1)
+		}
+	} else if (k == "PAGEUP") {
+		if (MAIN.yoff > 0) {
+			MAIN.yoff = 0
+			MAIN.Draw ()
+		} else if (config.CurrentPage > 0) {
+			GoTo (config.CurrentPage - 1)
+			MAIN.yoff = max (0, MAIN.ih - MAIN.h)
+			MAIN.Draw ()
+		}
+	} else if (k in ("DOWN", "wheeldown")) {
+		if (MAIN.h + MAIN.yoff < MAIN.ih) {
+			MAIN.yoff += k == "DOWN" ? 10 : 40
+			MAIN.Draw ()
+		} else if (k == "wheeldown")
+			if (config.CurrentPage < Book.Pages-1)
+				GoTo (config.CurrentPage + 1)
+	} else if (k in ("UP", "wheelup")) {
+		if (MAIN.yoff > 0) {
+			MAIN.yoff -= k == "UP" ? 10 : 40
+			MAIN.Draw ()
+		} else if (k == "wheelup")
+			if (config.CurrentPage > 0) {
+				GoTo (config.CurrentPage - 1)
+				MAIN.yoff = max (0, MAIN.ih - MAIN.h)
+				MAIN.Draw ()
+			}
+	} else if (k == "RIGHT") {
+		config.XOFF += 10
+		REFRESH ()
+	} else if (k == "LEFT") {
+		config.XOFF -= 10
+		REFRESH ()
+	} else if (k == "npage") {
+		if (config.CurrentPage < Book.Pages-1)
+			GoTo (config.CurrentPage + 1)
+	} else if (k == "ppage") {
+		if (config.CurrentPage > 0) {
+			GoTo (config.CurrentPage - 1)
+			MAIN.yoff = 0
+		}
+	} else print k
+}
+
+def BEXIT.Action ()
+	raise SystemExit
+
+def BPLUS.Action ()
+{
+	config.Mag += 10
+	Book.magnify (config.Mag/100.0)
+	W = MAIN.iw
+	H = MAIN.ih
+	wm.Resize (W, H + 20)
+	wm.Draw ()
+	GoTo (config.CurrentPage)
+}
+
+def BMINUS.Action ()
+{
+	config.XOFF = 0
+	config.Mag -= 10
+	Book.magnify (config.Mag/100.0)
+	W = MAIN.iw
+	H = MAIN.ih
+	wm.Resize (W, H + 20)
+	wm.Draw ()
+	MAIN.clear ()
+	GoTo (config.CurrentPage)
+}
+
+# Go
+
+GoTo (config.CurrentPage, 0)
+MAIN.yoff = config.YOFF
+MAIN.setKeyWidget ()
+try wm.Start ()
+finally {
+	# Save Preferences
+	prefs.update ({
+		"CurrentPage":config.CurrentPage,
+		"Mag":config.Mag,
+		"DW":wm.width,
+		"XOFF":config.XOFF,
+		"YOFF":MAIN.yoff,
+		"TITLE":config.TITLE,
+	})
+	prefs.save ()
+}

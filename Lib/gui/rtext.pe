@@ -1,0 +1,274 @@
+
+# Slightly advanced "rich text" widget.
+# The question is "how far should one go" when making a rich text widget?
+# Should it include pictures? Hyperlinks? text entries and buttons?
+# In the end, if one starts thinking like that, he can only come to the
+# conclusion that the best rich text widget is a web browser!
+#
+# This is a very simple text widget that uses fixed font text with the
+# ability to have:
+#	clikable elements, background and foreground colors and
+#	for the base font, style of bold,italic and bold+italic.
+#
+# And it stops there. That's good enough for developing the initial
+# part of various applications. When happy, applications can implement
+# their own "more advanced" rich text widget, which may end up in
+# the toolkit, or remain in the app...
+
+__autosem__
+
+from fb import fbview
+from scrollbarz import hscrollbar
+from container import hcontainer
+from utfutil import utf8_len as ulen, utf8_slice
+
+class _rtext (fbview)
+{
+	BG = 0xeeeeee
+	FG = 0
+	ybar = None
+
+	method Init (dowheel=False, $lst0=[], fontsize=0, **kw)
+	{
+		$fbview_init (**kw)
+		$setfont (fontsize)
+		if (dowheel)
+			$onWheel = $onWheel_
+		$selection = None
+	}
+
+	method getTVOh ()
+		return $ll, $ny, $offset
+	method setTVOh (d=None, o=None)
+		if (d) $scroll (d*d*d)
+		else {
+			$offset = o
+			$draw ()
+		}
+
+	method __setup__ ()
+	{
+		$fbview_setup ()
+		$load ($lst0, 0)
+		del $lst0
+	}
+
+	method setfont (sz)
+	{
+		$fnt   = $wm.OpenFixedFont ("mono",    sz).as_utf8 ()
+		$fntb  = $wm.OpenFixedFont ("mono-b",  sz).as_utf8 ()
+		$fnti  = $wm.OpenFixedFont ("mono-i",  sz).as_utf8 ()
+		$fntbi = $wm.OpenFixedFont ("mono-bi", sz).as_utf8 ()
+		$fonts = {
+			None:$fnt,
+			"":$fnt,
+			"b":$fntb,
+			"i":$fnti,
+			"bi":$fntbi
+		}
+		$dy = $fnt.maxh
+		$dx = $fnt.maxw
+		$nx = $w / $dx
+		$ny = $h / $dy
+	}
+
+	method _resize_w (dw)
+	{
+		$w += dw
+		$nx = $w / $dx
+	}
+
+	method _resize_h (dh)
+	{
+		$h += dh
+		$ny = $h / $dy
+#		if ($h % $dy > $dy / 3)
+#			$ny += 1
+	}
+
+	method load ($list, $offset=0)
+	{
+		if !(list -> list or list -> tuple)
+			$list = [x for (x in $list)]
+		$selection = None
+		$ll = len ($list)
+		if ($offset == -1)
+			$offset = max ($ll - $ny, 0)
+		$draw ()
+		if ($ybar)
+			$ybar.modTVO ()
+	}
+
+	method draw (start=-1, end=1000)
+	{
+		$fb.clear ($BG)
+
+		$clicks = c = []
+		for (i in *($ny+1)) {
+			if (i < start or i > end)
+				continue
+			y = i * $dy
+			n = i + $offset
+			if (n >= $ll)
+				break
+			lc = $list [n][0]
+			if (lc is not None)
+				$fb.fill_rect (0, y, $w, $dy, lc)
+			if ($selection) {
+				(ty, tx), (by, bx) = $selection
+				if (ty <= n <= by) {
+					if (n != ty) tx = 0
+					if (n != by) bx = $nx
+					$fb.fill_rect (tx * $dx, y, (bx - tx) * $dx, $dy, 0x3333ff)
+				}
+			}
+			if.continue ($list [n][1] -> int)
+				$fb.draw_line (0, y, $w, y, $list [n][1])
+			c = 0
+			for (text, color, font, ul, click in $prep ($list [n][1])) {
+				$write_text (text, color, font, ul, c, i, click, n)
+				c += ulen (text)
+			}
+		}
+
+		$flip_fb ()
+	}
+
+	method write_text (text, fg, font, ul, cx, cy, click, n)
+	{
+		x = cx * $dx + 1
+		y = cy * $dy
+		w = font.isizeof (text)
+		if (ul) {
+			font.underline ($fb, x, y, text, 0x363658)
+		}
+		font.render_to ($fb, x, y, text, fg)
+		if (click)
+			$clicks<< (x, y, x + w, y + $dy, click)
+	}
+
+	method scroll (d)
+	{
+		o = minmax (0, $offset + d, max ($ll - $ny, 0))
+		if (o != $offset) {
+			$offset = o
+			$draw ()
+		}
+		if ($ybar)
+			$ybar.modTVO ()
+		return True
+	}
+
+	method yxt (x, y)
+		return y / $dy + $offset, x / $dx
+
+	method onClick (x, y)
+	{
+		if ($selection) {
+			$selection = None
+			$draw ()
+		}
+		for (x0, y0, x1, y1, c in $clicks)
+			if (x0 < x < x1 and y0 < y < y1) {
+				$doclick (c)
+				return True
+			}
+		if ($mouse_pressed ()) {
+			lyx = tyx = $yxt (x, y)
+			$selection = [tyx, tyx]
+			for (e in $A.followMouseOrScroll ()) {
+				if (e) $scroll (e == "up" ? -3 : 3)
+				x, y = $wherein ()
+				if (y >= $h)
+					$scroll (2)
+				if (y <= 0)
+					$scroll (-2)
+				tyx2 = $yxt (x, y)
+				if (lyx != tyx2) {
+					lyx = tyx2
+					$selection = [tyx, lyx].sort ()
+					#xxx: optimize the draw
+					$draw ()
+				}
+			}
+		}
+	}
+
+	method get_selection ()
+	{
+		if (!$selection)
+			return ""
+		s = [];
+		(ty, tx), (by, bx) = $selection
+		for (n in xrange (ty, by + 1)) {
+			xs = n != ty ? 0 : tx
+			xe = n != by ? $nx : bx
+			t = ""
+			c = 0
+			if (n >= len ($list))
+				continue
+			for (text, None, None, None, None in $prep ($list [n][1])) {
+				ul = ulen (text)
+				st = c < xs ? xs - c : 0
+				en = c > xe ? 0 : c + ul > xe ? xe - c : ul
+				text = utf8_slice (text, st, max (0, en-st))
+				c += ul
+				t += text
+			}
+			s<< t
+		}
+		return len (s) == 1 ? s [0] : "\n".join (s)
+	}
+
+	method onKey (k)
+	{
+		sk = {
+			"PAGEUP": -$ny,
+			"PAGEDOWN": $ny,
+			"UP":-1,
+			"DOWN":1,
+			"HOME":-$ll,
+			"END":$ll
+		}
+		if (k in sk)
+			return $scroll (sk [k])
+
+		return $onkey (k)
+	}
+
+	method onWheel_ (x)
+		$scroll ((x == "up" ? -3 : 3) * ($wm.key_ctrl ? 10 : 1))
+
+	method rMenu ()
+	{
+		def copy ()
+			$wm.Copy ($get_selection ())
+		return $selection ? [["copy", 1, copy]] : None
+	}
+
+	# overridable
+	method doclick (c)
+		c ()
+	method onkey (k)
+		return False
+	method prep (l)
+		for (i in l) {
+			if.continue (i -> str)
+				yield i, $FG, $fnt, False, None
+			text, color, font, click = i
+			if (font and "u" in font) {
+				ul = True
+				font = font.replace ("u", "")
+			} else ul = False
+			yield text, color is None ? $FG : color, $fonts [font], ul, click
+		}
+}
+
+def rtext (*args, **kwargs)
+{
+	with (hcontainer ()) {
+		r = _rtext (*args, **kwargs)
+		r.ybar = hscrollbar (r)
+	}
+	return r
+}

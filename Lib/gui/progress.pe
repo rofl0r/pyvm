@@ -1,0 +1,66 @@
+__autosem__
+from widget import widget
+
+class progress (widget)
+{
+	method Init (**kw)
+	{
+		if ('h' not in kw) kw ['h'] = 11
+		if ("w" in kw) $elastic = False
+		$col = $A.color_blue
+		$widget_init (**kw)
+		$total = 0
+	}
+
+	method _resize_w (dw)
+		$w += dw
+
+	method getaw ()
+		return min (int (float ($w * $done) / $total), $w)
+
+	method Draw ()
+	{
+		if (!$total) $draw_blank ()
+		else {
+			aw = $getaw ()
+			$fill_rect (0, 0, aw, $h, $col)
+			$fill_rect (aw, 0, $w - aw, $h, $A.color_bg)
+			$outline ('sunken')
+		}
+	}
+
+#	method init ($total)
+#	{
+#		$done = 0
+#		$Draw ()
+#		$A.flush ()
+#	}
+#
+#	method Advance (x)
+#	{
+#		aw = $getaw ()
+#		$done += x
+#		if (aw != $getaw ()) {
+#			$Draw ()
+#			$A.flush ()
+#		}
+#	}
+
+	method redraw ()
+	{
+		$Draw ()
+		$A.flush ()
+	}
+
+	# Assume that a progress widget will be used asynchronously
+	# (iow, not from the main GUI thread, but a secondary thread)
+
+	method Advance2 ($done, $total)
+		$wm.async ($redraw)
+
+	method Close ()
+	{
+		$total = 0
+		$wm.async ($redraw)
+	}
+}

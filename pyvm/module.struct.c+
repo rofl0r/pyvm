@@ -1,0 +1,150 @@
+/*
+ *  struct module
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+# `struct.pack` is commented out because there is a better solution
+#  with the "%M*%m*%a*" print operators.
+#  unpack should also be removed eventually.
+#  For compatibility with Python, these may be implemented in python
+*/
+
+#include "dynlib.h"
+#include "config.h"
+
+//#include <byteswap.h>	// is this standard?
+
+/* struct module */
+
+static char *struct_fmt (__object__ *s, int *size, bool *swap)
+{
+	char *S = StringObj.checkedcast (s)->str;
+
+	if (strchr ("<>!=@", S [0])) {
+#if	PYVM_ENDIAN == PYVM_ENDIAN_LITTLE
+		if (in2 (S [0], '>', '!'))
+#else
+		if (S [0] == '<')
+#endif
+			*swap = true;
+		++S;
+	}
+
+	int sz = 0;
+	for (int i = 0; S [i]; i++)
+		switch (S [i]) {
+		case 'i': case 'I':
+			if (sz%4) RaiseNotImplemented ("struct with padding");
+			sz += 4;
+		ncase 'h': case 'H':
+			if (sz%2) RaiseNotImplemented ("struct with padding");
+			sz += 2;
+		ncase 'b': case 'B':
+			++sz;
+		ndefault:
+			RaiseNotImplemented ("struct.(un)pack can only (un)pack 'i' for now..");
+	}
+
+	*size = sz;
+	return S;
+}
+
+_module __object__ *sizeof_struct (REFPTR argv[])
+{
+	int size;
+	bool swap;
+	struct_fmt (argv [0].o, &size, &swap);
+	return newIntObj (size);
+}
+
+#if 0
+_module __object__ *pack_struct (REFPTR argv[], int argc)
+{
+#define __STOR(X, V) *(X*)bfr = (X) V; bfr += sizeof (X);
+#define STOR(X) __STOR(X, v)
+#define STOR16(X) __STOR(X, (swap ? bswap_16 (v) : v))
+#define STOR32(X) __STOR(X, (swap ? bswap_32 (v) : v))
+	int size;
+	bool swap = false;
+	char *f = struct_fmt (argv [0].o, &size, &swap);
+
+	if (argc - 1 != strlen (f))
+		RaiseTypeError ("argument number mismatch for pack");
+
+	void *bfr = seg_alloc (strlen (f) * size + 1), *bfr0 = bfr;
+	for (int i = 0; f [i]; i++) {
+		int v = IntObj.fcheckedcast (argv [i + 1].o)->i;
+		switch (f [i]) {
+			 case 'i': STOR32(int)
+			ncase 'I': STOR32(unsigned int)
+			ncase 'h': STOR16(short)
+			ncase 'H': STOR16(unsigned short)
+			ncase 'B': STOR(unsigned char)
+			ncase 'b': STOR(signed char)
+		}
+	}
+	*(char*) bfr = 0;
+	return new StringObj allocated (bfr0, bfr - bfr0);
+#undef __STOR
+#undef STOR
+#undef STOR16
+#undef STOR32
+}
+#endif
+
+_module __object__ *unpack_struct (REFPTR argv[])
+{
+#define __STOR(X, F) v = swap ? F(*(X*)B) : (*(X*)B); B += sizeof (X);
+#define STOR(X) __STOR(X,)
+#define STOR16(X) __STOR(X,bswap_16)
+#define STOR32(X) __STOR(X,bswap_32)
+	int size;
+	bool swap = false;
+	char *f = struct_fmt (argv [0].o, &size, &swap);
+	StringObj *S = StringObj.fcheckedcast (argv [1].o);
+	int l = strlen (f);
+	if (size != S->len)
+		RaiseTypeError ("unpack size does not match format");
+
+	void *B = (void*) S->str;
+	int v;
+	Tuplen *t = new Tuplen __sizector (l);
+	for (int i = 0; i < l; i++) {
+		switch (f [i]) {
+			default: /* warning */
+			 case 'i': STOR32(int)
+			ncase 'I': STOR32(unsigned int)
+			ncase 'h': STOR16(short)
+			ncase 'H': STOR16(unsigned short)
+			ncase 'B': STOR(unsigned char)
+			ncase 'b': STOR(signed char)
+		}
+		t->__xinititem__ (i, newIntObj (v));
+	}
+	return t;
+#undef __STOR
+#undef STOR
+#undef STOR16
+#undef STOR32
+}
+
+/* module */
+
+static const bltinfunc struct_funcs [] = {
+//	{"pack",	SETARGC (2, INFARGC), pack_struct},
+	{"unpack",	SETARGC (2, 2), unpack_struct},
+	{"sizeof",	SETARGC (1, 1), sizeof_struct},
+	BENDITEM
+};
+
+slowcold __object__ *import_struct ()
+{
+	return new ModuleObj BltinModule ("struct", struct_funcs);
+}

@@ -1,0 +1,41 @@
+# Dump all the glyphs of a font file onto FONTDUMP.ppm
+
+__autosem__
+
+from fonts.render import Open
+from fonts.unicode import int2utf8 as i2u
+from graphics.framebuffer import FrameBuffer
+
+USAGE = "fontdump <font-file>
+
+Generate an image FONTDUMP.ppm which has all the glyphs of the font
+"
+
+W, H = 1500, 900
+
+FB = FrameBuffer (W, H, 3)
+FB.clear (0xccddee)
+
+BLTIN=True
+r = Open (sys.argp.filename_ex (), 15, builtin_raster=BLTIN).as_utf8 ()
+
+print r
+ucs = [x for (x in r.R.F.ucs)]
+ucs.sort ()
+print "%i unicode charcodes" %len (ucs)
+x = y = 0
+mx = 0
+for (k in ucs) {
+	print k
+	fb = r.FBText ("%i: %s " % (k, i2u (k)), 0, 0xffffff)
+	FB.put_image (fb.to_image (), x, y)
+	y += fb.h
+	mx = max (mx, fb.w)
+	if (y >= H - fb.h) {
+		y = 0
+		x += mx + 10
+		mx = 0
+	}
+}
+
+FB.save_as_ppm ("FONTDUMP.ppm")

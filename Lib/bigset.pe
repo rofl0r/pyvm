@@ -1,0 +1,207 @@
+##  big set data structure
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import serialize
+
+# Big set for string keys of fixed size (MD5/SHA digests, IP addresses, etc).
+# This is a set-like data structure that is designed to store up to millions
+# of keys. It uses the most efficient way to store the keys in memory and
+# the lookup usually requires about 10 comparsions to find a match.
+
+# this is used by:
+#	web browser visited links db
+
+# The core structure which is immutable. Keys are sorted alphanumerically and
+# joined in one big string. Then, assuming uniform distribution the starting
+# bytes of a key to look-up are used to supply an initial index which is
+# quite close to the key if that exists. Then starting from that index
+# decreasing steps from 32 to 1 are used to search for a match.
+
+class hs
+{
+	method __init__ ($d, es)
+	{
+		$dl = len (d) / es
+		def $nth (n)
+		{
+			n *= es
+			return d [n:n+es]
+		}
+	}
+
+	method makelist ()
+	{
+		nth = $nth
+		return [nth (x) for (x in *$dl)]
+	}
+
+	# returns the index (integer) or none.
+	method contains (i)
+	{
+		# for a uniform distribution of 120K md5 digests this achieves
+		# a lookup in 9 comparisons average.
+		dl = $dl
+		nth = $nth
+		st = (ord (i [0]) * dl) / 256 + (ord (i [1]) * dl) / 65536
+
+		c = cmp (nth (st), i)
+		if (!c) return st
+
+		step = 32
+		if (c < 0)
+			while (1) {
+				c = cmp (nth (st), i)
+				if (c == 0) return st
+				if (c == 1) {
+					if (step == 1)
+						return None
+					st -= step
+					step = step / 2
+				}
+				st += step
+				if (st >= dl) {
+					if (step == 1)
+						return None
+					st -= step
+					step = 1
+				}
+			}
+
+		while (1) {
+			c = cmp (nth (st), i)
+			if (c == 0) return st
+			if (c == -1) {
+				if (step == 1)
+					return None
+				st += step
+				step = step / 2
+			}
+			st -= step
+			if (st < 0) {
+				if (step == 1)
+					return None
+				st += step
+				step = 1
+			}
+		}
+	}
+}
+
+# a more convenient data structure which:
+#	- does caching. Although the core hs structure is fast it's also a cache killer.
+#	  the caching can help is some very frequently used keys situation. caches matches
+#	  and misses.
+#	- it is possible to add new keys. These are stored in an intermediate set
+#	  which is flushed into the hs structure when it has 5400 keys.
+#	- can save and load itself and even start an auto-save mode.
+
+import thread
+
+class hashset
+{
+	# in the vm, dicts expand at: ..., 85, 341, 1365, 5461, 10922, ...
+
+	FASTSIZE = 5400
+	MAXCACHE = 5400
+
+	method __init__ ($ES=16)
+	{
+		$SL = thread.xlock ()
+		$UL = None
+		$load_set (())
+	}
+
+	method start_autosave (filename, interval)
+		thread.start_new ($autosave, filename, interval)
+
+	method autosave (filename, interval)
+	{
+		UL = thread.xlock (False)
+		$UL = UL.release
+		while (1) {
+			UL.acquire ()
+			sleep (interval)
+			$save (filename, force=False)
+		}
+	}
+
+	method load_set (s)
+	{
+		$dirty1 = $dirty2 = False
+
+		for (x in s)
+			if (len (x) != $ES)
+				raise Error ("Bad item size")
+
+		$hs = hs ("".join ([x for (x in s)].sort ()), $ES)
+		$new = set ()
+		$cache = {}
+	}
+
+	method save (filename, force=True)
+		with ($SL)
+		{
+			if ($dirty2 or force)
+				open (filename + ".big", "w").write ($hs.d)
+			if ($dirty1 or force)
+				serialize.save (filename + ".small", list ($new), False)
+			$dirty1 = $dirty2 = False
+		}
+
+	method load (filename)
+	{
+		$hs = hs (readfile (filename + ".big") ?? "", $ES)
+		$new = set (serialize.load (filename + ".small")) ?? set ()
+		$cache = {}
+		$dirty1 = $dirty2 = False
+	}
+
+	method contains (i)
+	{
+		if (len ($cache) > $MAXCACHE)
+			$cache = {}
+
+		try return $cache [i]
+		return $cache [i] = i in $new or $hs.contains (i) is not None
+	}
+
+	method flush ()
+		with ($SL) {
+			if (len ($new) < $FASTSIZE)
+				return
+			$dirty2 = True
+			new = $new
+			$new = set ()
+			h = $hs.contains
+			s = []
+			ES = $ES
+			for (i in new)
+				if (len (i) != ES)
+					print ("Bad key size!!!", i)
+				else if (h (i) is None)
+					s << i
+			s = $hs.makelist () + s
+			h, $hs = $hs, hs ("".join (s.sort ()), $ES)
+			del h.nth, h.d
+		}
+
+	method add (i)
+	{
+		$dirty1 = True
+		$cache [i] = True
+		$new.add (i)
+		if (len ($new) > $FASTSIZE)
+			$flush ()
+		if ($UL)
+			$UL ()
+	}
+
+	method len ()	# approx. doesn't check dupes in new
+		return $hs.dl + len ($new)
+}

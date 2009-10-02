@@ -1,0 +1,97 @@
+SHA Encryption
+--------------
+
+SHA Encryption is a very simple (but rather secure indeed!) symmetric encryption
+method, invented for the pyvm project.
+
+Level 0
+=======
+
+Level 0 is based on the concept of a chain of keys where each key
+
+	K_n = (MD5 (K_{n-1} + password) + K_{n-1}) [:32]
+
+is the first 32 bytes of the MD5 digest of the previous key plus the
+password, plus the previous key.  The starting key is the MD5
+of the password.
+
+For example, given passowrd "xyzzy", the keys are:
+
+  m = MD5 ("xyzzy") = 1271ed5ef305aadabc605b1609e24c52
+  k0 = MD5 (m + "xyzzy") + m   = 254bd70033835179bce6a1d091a62ccc1271ed5ef305aadabc605b1609e24c52
+  k1 = MD5 (k0 + "xyzzy") + k0 = ef8a4f052afed76a83b9d23508658583254bd70033835179bce6a1d091a62ccc
+  k2 = MD5 (k1 + "xyzzy") + k1 = 5a4a87ca91ef2583c75faf32830f8251ef8a4f052afed76a83b9d23508658583
+  k3 = MD5 (k2 + "xyzzy") + k2 = e8f3fbc0ecdec3bebe78d3fd7d949f315a4a87ca91ef2583c75faf32830f8251
+  k4 = MD5 (k3 + "xyzzy") + k3 = 663f5600f2d87601108bae7aec82541be8f3fbc0ecdec3bebe78d3fd7d949f31
+
+From each key we generate a 20-byte xor pad as the SHA digest of
+the key.  So starting from password "xyzzy" we have the following
+xor pads.
+
+  p0 = SHA (k0) = fb8abac53de92f1174bc2e39046df67afb2671a3
+  p1 = SHA (k1) = 864fe4fa03d845eece416350efba9bb4c7e988db
+  p2 = SHA (k2) = 63f271adc1a8e9387dc56d3d1740a1ddb2278acf
+  p3 = SHA (k3) = e13f1e9f012d2ae14e3b315f3745e936c4ddae62
+  p4 = SHA (k4) = c2654bef0de3cb433559ae96cf3eef3d3b31bf5f
+  p5 = SHA (k5) = 781d1849e10e106bce449c0a0220485e5dd61fb3
+
+And this can be  used to XOR messages once for encryption and
+a second time for decryption.
+
+Level 0 is vunerable to known-plaintext attack.  If the attacker
+knows some bytes of one plaintext message and its ciphertext,
+he can decrypt the same bytes of any message.
+For that we use two-tier random key encryption, in level 1.
+
+Level 1
+=======
+
+In order to encrypt a message, we generate a 20-byte random key Kr.  The random
+key is encrypted with the password as follows.
+
+	cipher = XOR (SHA1 (password), Kr)
+
+The random key can be decrypted as:
+
+	Kr = XOR (cipher, SHA1 (password))
+
+The rest of the message is encrypted/decrypted with the random key as
+described in level 0.
+
+Because the random key is different each time, the same message encrypted
+with the same password, produces different ciphertexts each time.
+This makes known-plaintext attack impossible.
+
+Also, this adds an initial overhead of 20 bytes to the ciphertext.
+
+
+CryptoTheory
+============
+
+In reallity, the schema presented here is a DOUBLE ONE TIME PAD method.
+
+According to ``Applied Cryptography``, a one-time pad is the perfect
+encryption scheme.  It has one problem though;
+
+ You can never use the key sequence again, ever.
+
+The random key Kr is used to create such a pad which is different every time,
+and it is the responsibility of the encryptor to make sure that the random key
+is really random and different.  So this solves the problem for this pad.
+
+The password is also used as a XOR pad to encrypt the random key.
+In this case the same PAD is used many times; However, the plaintext which
+is the random key Kr, is random and therefore an attacker cannot do anything
+useful with it: all the bits have an equal probability to be 0 or 1, for all
+the random keys.  In other words, since the encryptor selects Kr, the
+ability for known-plaintext or known-properties-of-plaintext is completely
+eliminated.  So this pad is OK too.
+
+---
+The above shows that SHAENC is based on inserting non determinism in the
+encryption.  By doing that, several kinds of attacks are avoided.
+The permanent key is always applied on random plaintext, and the random
+key is used only once.
+
+SHAENC is here if you don't trust any of the existing algorithms.
+It's beauty is its simplicity.

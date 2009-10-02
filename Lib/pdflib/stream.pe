@@ -1,0 +1,142 @@
+##  PDF Stream object and decoding
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+import zlib
+from base import Cpdf, WARNING
+
+class Error (Exception);
+
+class stream
+{
+	method __init__ ($txt) $d=None
+
+	method set_dict ($d)
+	{
+		$Type = d.get ("Type", None)
+		$Filter = d.get ("Filter", None)
+	}
+
+	method fix ()
+	{
+		if ($d ["Length"]) {
+			if ($d ["Length"] != len ($txt))
+				$txt = $txt [:$d ["Length"]]
+		}
+
+		# FOP encodes everything with ASCII85. We decode
+		# here and make the txt smaller.
+		try f = $Filter
+		except return
+
+		if (f -> list and f [0] == "ASCII85Decode") {
+			$txt = Filter.ASCII85Decode ($txt)
+			if (len (f) == 2) $Filter = f [1]
+			else f.pop (0)
+		}
+
+		# turn off
+		def $fix ();
+	}
+
+	method __str__ ()
+	{
+		if (!$d)
+			return "<stream of %i bytes>" %len ($txt)
+		return "<stream of %i bytes>\n\t" %len ($txt)
+				 + '\n\t'.join (['%s: %s'%(k,v) for (k,v in $d.iteritems ())])
+	}
+}
+
+#
+# /Filters
+#
+
+method stream.decode ()
+{
+	$fix ()
+	if (!(f = $Filter))
+		return $txt
+
+	if (f -> list)
+		if (len (f) == 1) $Filter = f = f [0]
+		else raise Error ("DECODER IS A LIST [%s]" %str (f))
+
+	if (f == "FlateDecode") {
+		bufsize = $unzipped_len ?? None
+		txt = Filter.FlateDecode ($txt, bufsize)
+		if (!bufsize)
+			$unzipped_len = len (txt)
+		return txt
+	}
+
+	if (f == "LZWDecode") F = Filter.LZWDecode
+	else if (f == "ASCII85Decode") F = Filter.ASCII85Decode
+	else raise Error ("UNKNOWN DECODER [%s]" %f)
+
+	return F ($txt)
+
+}
+
+method stream.decodeImage ()
+{
+	$fix ()
+	if (!(f = $Filter))
+		return $txt
+
+	if (f == "DCTDecode") {
+		# a jpeg (xxx: do in-memory)
+		from misc import tmpfile
+		f = tmpfile ("jpg")
+		f.write ($txt)
+		from graphics import ImageFile
+		img = ImageFile (f.fnm)
+		img.ref = f
+		return img
+	}
+
+	if (f == "FlateDecode") {
+		# (xxx: predictors)
+		bufsize = $unzipped_len ?? None
+		data, w, h = Filter.FlateDecode ($txt, bufsize), $d ["Width"], $d ["Height"]
+
+		if (len (data) != w * h * 3) {
+			WARNING ("Can't properly decode FlateEncoded image")
+			return
+		}
+		if (!bufsize)
+			$unzipped_len = len (data)
+
+		from graphics import image
+		return image (data, w, h)
+	}
+
+	print "UNKNOWN Image decoder [%s]" %f
+}
+
+
+namespace Filter
+{
+	def FlateDecode (txt, bufsize)
+		return zlib.decompress (txt, bufsize=bufsize)
+
+	def ASCII85Decode (txt)
+		return (Filter.ASCII85Decode = @base85.decode) (txt)
+
+	def LZWDecode (txt)
+	{
+		n = 6 * len (txt)
+		while (1) {
+			out = _buffer (n)
+			used = Cpdf.LZWDecode (txt, len (txt), out, len (out))
+			if (used >= 0)
+				return out [:used]
+			if (used == -1) n *= 2
+			else raise Error ("LZW error, code=%i"%used)
+		}
+	}
+}

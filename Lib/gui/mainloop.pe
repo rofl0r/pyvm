@@ -1,0 +1,964 @@
+##  Toplevel widget & layer container (mini window manager)
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from util     import intersection
+from widget   import widget, domain
+from pulldown import PullDown
+from layer    import stack_rects, stack_lines
+from encapsulator import encapsulator
+import thread
+import altkbd
+import gfxbackends as backends
+
+# Initialize display (should be done when we create first wm, etc, etc)
+
+Window = backends.Init ()
+
+class GUI_LOCK
+{
+	method __init__ ()
+		$t = thread.rlock ()
+	method __context__ ()
+		return self
+	method __enter__ ()
+		$t.acquire ()
+	method __exit__ (*args)
+		$t.release ()
+}
+
+class UNLOCK
+{
+	method __init__ ($t);
+	method __context__ ()
+		return self
+	method __enter__ ()
+		$t.release ()
+	method __exit__ (*args)
+		$t.acquire ()
+}
+
+class Wm
+{
+	Domain = domain
+
+	# `CaptureStdout`	: display printed messages with ctrl-z. ("fb" only if not in X11)
+	# `International`	: widgets by default utf-8
+
+	method __init__ (w=0, h=0, title=None, KeyCtrl=None, $CaptureStdout=False,
+			 $International=True, $exit_at_esc=True)
+	{
+		if (title is None)
+			title = sys.script_name
+
+		if ($CaptureStdout == "fb")
+			$CaptureStdout = !Window.inX
+
+		# alt keyboard on ALT-SHIFT
+		$Lang = @sysconfig.GETCONF ("altgr")
+		if ($Lang == "none")
+			$Lang = None
+
+		#
+		$LOCKED = GUI_LOCK ()
+		$UNLOCKED = UNLOCK ($LOCKED.t)
+		$PLOCK = $LOCKED.t
+		$HBLOCK = thread.xlock (False)
+		$BHLOCK = thread.xlock (False)
+		$Alive = True
+		$B = Window (w, h)
+		$B.set_wm_name (title)
+		$width, $height = $B.width, $B.height
+		PullDown.max_height = $height
+		$bpp = $B.bpp
+		$req = (w or $B.width), (h or $B.height)
+		$init_wm ($B)
+		$basewin = toplevel (0, 0, $width, $height, self, 1, KeyCtrl, $CaptureStdout)
+		$winstack = [$basewin]
+		$equeue = []
+		$pqueue = []
+		$Hibernating = False
+		#
+		$minx = $width
+		$miny = $height
+		$maxx = 0
+		$maxy = 0
+		$key_ctrl = $key_alt = $key_shift = False
+		#
+		$Menu = None
+	}
+
+	method Resize (w=None, h=None)
+	{
+		if (w is None) w = $width
+		if (h is None) h = $height
+		if (w < 1 or h < 1)
+			return
+		$B.resize (w, h)
+		if ($B.width != $width or $B.height != $height) {
+			$width, $height = $B.width, $B.height
+			$winstack [0].re_arrange ()
+		}
+	}
+
+	method set_title (title)
+		$B.set_wm_name (title)
+
+	method terminate ()
+	{
+		if ($basewin.CaptureStdout)
+			$basewin.console.close ()
+		$Alive = False
+		try $B.shutdown ()
+		$B = None
+		try $PLOCK.release ()
+	}
+
+	incons = False
+
+	method switch_console ()
+	{
+		$incons = not $incons
+		$basewin.BaseUnion.Switch ("other")
+		if ($incons)
+			$basewin.console.setKeyWidget ()
+	}
+
+	# release the global gui lock, while sleeping
+	method sleep (ms)
+		with ($UNLOCKED)
+			sleep (ms)
+
+	# Threads other than the main loop should
+	# use this function to invoke code that
+	# uses the GUI.
+	method async (f, *args, **kwargs)
+	{
+		if (!$Alive) return
+
+		with ($LOCKED) {
+			f (*args, **kwargs)
+			if ($Hibernating) 
+				$flush ()
+		}
+	}
+
+	# same thing but flushes the graphics and returns when done
+	method async_flush (f, *args, **kwargs)
+	{
+		if (!$Alive) return
+
+		with ($LOCKED) {
+			if (!$Alive) return
+			f (*args, **kwargs)
+			$flush ()
+		}
+	}
+
+	method do_async ()
+		while ($pqueue) {
+			f, args, kwargs = $pqueue.pop (0)
+			f (*args, **kwargs)
+		}
+
+	# international fonts.
+	# Because, at the moment, only the bitmap 8x16 console fonts contain all the
+	# unicode characters, we use the functions below.  When we get unicode
+	# scalable glyphs, revise.
+
+	method console_font ()
+		return $uni8x16 or ($uni8x16 = @fonts.Open ("$unicode-8x16.psfu", 10))
+
+	method fixed_utf_font ()
+		if ($HaveInternational)
+			return $tfont
+		else return $fixed_utf or ($fixed_utf = $console_font ().as_utf8 ())
+
+	# ------------------------
+
+	method init_wm (B)
+	{
+		$uni8x16 = None
+		$fixed_utf = None
+
+		from gfxbackends.colornames import lookup as get_color
+
+		# useful colors
+		$color_shaded = get_color ('grey68')
+		$color_darker = get_color ('grey32')
+		$color_light  = get_color ('white')
+		$color_bg     = get_color ('grey84')
+		$color_black  =
+		$color_txt    = get_color ('black')
+		$color_white  = 0xf5f5ff
+		$color_blue   = get_color ('light steel blue')
+		$color_dblue  = get_color ('blue')
+		$color_hot    = get_color ('orange')
+		$color_sandy  = get_color ('sandy brown')
+		$color_dred   = get_color ('dark red')
+		$strbg = $color_bg
+		$strfg = $color_txt
+
+		# computer classic theme
+		$color_button_bg = $color_bg
+		$color_textin_bg = $color_white
+		$color_textin_fg = $color_txt
+		$color_textin_ss = $color_dblue
+		$color_textin_ol = None
+		$color_button_bg_pressed = $color_blue
+
+		# standard fonts
+		$dfont   = B.stdfont.dfont
+		$dfontb  = B.stdfont.dfontb
+		$dfonti  = B.stdfont.dfonti
+		$dfontbi = B.stdfont.dfontbi
+		$bfont   = B.stdfont.bfont
+		$tfont   = B.stdfont.tfont
+		$strfont = $dfont
+
+		$buttonfont = B.stdfont.buttonfont
+		$dfW, $dfH = $dfont.size ()
+		$tfW, $tfH = $tfont.size ()
+
+		$OpenFont = B.stdfont.OpenFont
+		$OpenFixedFont = B.stdfont.OpenFixedFont
+		$HaveInternational = B.stdfont.HaveInternational
+
+		# basic style
+		$scroller_width = 2 * $tfont.maxh / 3
+		if ($scroller_width % 2) $scroller_width += 1
+		$scroller_height= $tfH
+
+		$bar_bg       = get_color ('grey89')
+		$bar_fg       = get_color ('steel blue')
+		$editor_fg    = get_color ('black')
+		$editor_bg    = get_color ('white')
+		$editor_selfg = get_color ('white')
+		$editor_selbg = get_color ('blue')
+	}
+
+	# Special theme for audiovideo players.  Soundlab, avplay, etc.
+	# The theme is "computer traditional":  fixed bitmap fonts, completely
+	# black background (looks great on the framebuffer!), etc.
+	# close to the machine
+
+	method avtheme ()
+	{
+		# Computer Traditional Theme
+		$dfont = $buttonfont = $console_font ()
+
+		$color_bg        = 0x000000
+		$color_txt       = 0x10dd10
+		$color_button_bg = 0x304030
+		$color_textin_bg = 0x111111
+		$color_textin_fg = 0xffffff
+		$color_textin_ol = 0x5555cc
+		$color_brown     = 0x484400
+		$color_button_bg_pressed = 0x000000
+		$strbg = $color_bg
+		$strfg = $color_txt
+	}
+
+	method get_event ()
+		if ($equeue) return $equeue.pop ()
+		else return $B.get_event ()
+
+	method unget_event (e)
+		$equeue.append (e)
+
+	method peek_event ()
+	{
+		if (e = $get_event ()) 
+			$unget_event (e)
+		return e
+	}
+
+	# because the mainloop may be hibernating, this is a special quirk
+	# that releases the HBLOCK. This will falsely notify the main loop
+	# that hibernation has ended in order to process the 'exit' event.
+	method exit ()
+	{
+		$equeue.append (("exit",))
+		if ($Hibernating)
+			$HBLOCK.release ()
+	}
+
+	method idle_for (t)
+	{
+		$sleep (t)
+		return !$peek_event ()
+	}
+
+	method untilUnclick ()
+	{
+		while (1) {
+			yield 1
+			$sleep (0.03)
+			$flush ()
+			if ($peek_event ())
+				break
+		}
+	}
+
+	method followAxisMotion (axis)
+	{
+		x0, y0 = $B.where ()
+		while (1) {
+			x1, y1 = $B.where ()
+			if (axis == 'Y') {
+				if (y1 != y0) {
+					yield y1
+					y0 = y1
+				}
+			} else {
+				if (x1 != x0) {
+					yield x1
+					x0 = x1
+				}
+			}
+			$sleep (0.03)
+			$flush ()
+			if ($peek_event ())
+				break
+		}
+	}
+
+	method followMouse ()
+	{
+		x0, y0 = $B.where ()
+		while (1) {
+			x1, y1 = $B.where ()
+			if ((x1, y1) != (x0, y0))
+				yield x0, y0 = x1, y1
+			$sleep (0.03)
+			$flush ()
+			if ($peek_event ())
+				break
+		}
+	}
+
+	method followMouseOrScroll ()
+	{
+		x0, y0 = $B.where ()
+		while (1) {
+			x1, y1 = $B.where ()
+			if ((x1, y1) != (x0, y0)) {
+				x0, y0 = x1, y1
+				yield None
+			}
+			$sleep (0.03)
+			$flush ()
+			if (e = $peek_event ())
+				if (e [0] == "WHEEL")
+					yield $get_event ()[1]
+				else break
+		}
+	}
+
+	method where ()
+		return $B.where ()
+
+	method move_mouse (x, y)
+		$B.move_mouse (x, y)
+
+	method mouse_pressed ()
+	{
+		$sleep (0.18)
+		if !(en = $get_event ())
+			return True
+		if (en [0] != "UNCLICK")
+			$unget_event (en)
+		return False
+	}
+
+	method double_click ()
+	{
+		$sleep (0.18)
+		if !(en = $get_event ())
+			return False
+		if (en [0] != "UNCLICK") {
+			$unget_event (en)
+			return False
+		}
+		$sleep (0.18)
+		if !(en2 = $get_event ()) {
+			$unget_event (en)
+			return False
+		}
+		if (en2 [0] == "CLICK")
+			return True
+		$unget_event (en2)
+		$unget_event (en)
+	}
+
+	HARROW = 'LEFT', 'RIGHT', 'HOME', 'END'
+	VARROW = 'UP', 'DOWN', 'PAGEUP', 'PAGEDOWN'
+	ALLARROW = 'LEFT', 'RIGHT', 'UP', 'DOWN', 'PAGEUP', 'PAGEDOWN', 'HOME', 'END'
+
+	method followHArrows ()
+		return $followArrows ($HARROW)
+
+	method followVArrows ()
+		return $followArrows ($VARROW)
+
+	method followXYArrows ()
+		return $followArrows ($ALLARROW)
+
+	method followArrows (ARROWS)
+		while (1) {
+			D = $get_event ()
+			if (!D) ;
+			else if (D [0]=='PRESS' and D [1] in ARROWS)
+				yield D [1]
+			else {
+				$unget_event (D)
+				break
+			}
+			$sleep (0.006)
+		}
+
+	on_setup = void
+
+	method Done ()
+	{
+		$fill_rect (0, 0, $width, $height, $color_bg)
+		$winstack [0].Done ()
+#print $winstack [0]
+#print $winstack [0].w, $winstack [0].h
+		$on_setup ()
+		$flush ()
+	}
+
+	# winstack drawing -- output
+
+	method subWindow (x, y, w, h, modal=1, dtor=None)
+	{
+		t = toplevel (x, y, w, h, self, modal, dtor=dtor)
+		$winstack.append (t)
+		return t
+	}
+
+	method pulldown (x, y, items, dtor=None)
+	{
+		s = $subWindow (x, y, 10, 10, dtor=dtor)
+		p = PullDown ($dfont, items)
+		if (s.y + p.h > $height)
+			s.y -= p.h
+		if (s.y + p.h > $height or s.y < 0)
+			s.y = 0
+		s.Done ()
+		return p
+	}
+
+	method pulldownlist (c)
+	{
+		from newlist import PDList
+		s = $subWindow (c.absx (), c.absy (c.h), 10, 10)
+		l = PDList (c, min (len (c.values), 20))
+		if (s.y + l.h > $height)
+			s.y -= l.h
+		if (s.y + l.h > $height or s.y < 0)
+			s.y = 0
+		s.Done ()
+		if (c.selected in c.values) {
+			current = c.values.index (c.selected)
+			l.setitems (c.values, current, max (0, current - 20))
+		} else l.setitems (c.values, None, 0)
+		return l
+	}
+
+	method Run_pulldownlist (combo)
+		$Menu = $pulldownlist (combo)
+
+	#
+
+	method flush ()
+	{
+		$B.flush (($minx, $miny, $maxx, $maxy))
+		$minx = $width
+		$miny = $height
+		$maxx = 0
+		$maxy = 0
+	}
+
+	method modrect (x0, y0, x1, y1)
+	{
+		$minx = min (x0, $minx)
+		$miny = min (y0, $miny)
+		$maxx = max (x1, $maxx)
+		$maxy = max (y1, $maxy)
+	}
+
+	method _draw_line (x0, y0, x1, y1, col)
+	{
+		$modrect (min (x0, x1), min (y0, y1), max (x0, x1)+1, max (y0, y1)+1)
+		$B.draw_line (x0, y0, x1, y1, col)
+	}
+
+	method draw_line (x0, y0, x1, y1, col, c=None)
+	{
+		if (c is $winstack [-1] or c is None)
+			return $_draw_line (x0, y0, x1, y1, col)
+
+		ups = [i.box () for (i in $winstack [$winstack.index (c)+1:])]
+		for (x0, y0, x1, y1 in stack_lines ((x0,y0,x1,y1), ups))
+			$_draw_line (x0, y0, x1, y1, col)
+	}
+
+	method _fill_rect (x, y, w, h, col)
+	{
+		$modrect (x, y, x + w, y + h)
+		$B.fill_rect (x, y, w, h, col)
+	}
+
+	method fill_rect (x, y, w, h, col, c=None)
+	{
+		if (c is $winstack [-1] or c is None)
+			return $_fill_rect (x, y, w, h, col)
+
+		ups = [i.box () for (i in $winstack [$winstack.index (c)+1:])]
+		for (x, y, w, h in stack_rects ((x,y,w,h), ups))
+			$_fill_rect (x, y, w, h, col)
+	}
+
+	method _draw_string (s, x, y, fg, font, bg)
+	{
+		$modrect (x, y, x + font.isizeof (s), y + font.maxh)
+		$B.draw_string (s, x, y, fg, font, bg)
+	}
+
+	method draw_string (s, x, y, fg, font, bg, c)
+	{
+		if (c is $winstack [-1] or c is None)
+			return $_draw_string (s, x, y, fg, font, bg)
+
+		box = [x, y, font.isizeof (s), font.maxh]
+		ups = [i.box () for (i in $winstack [$winstack.index (c)+1:])]
+		rects = stack_rects (box, ups)
+		if (!rects) return
+		if (len (rects) == 1 and rects [0] == box)
+			return $_draw_string (s, x, y, fg, font, bg)
+		# (can be optimized by chopping the string)
+		im = $B.image_string (s, fg, font, bg)
+		if (im) $show_image (im, x, y, 0, 0, im.w, im.h, c)
+	}
+
+	method _draw_char (s, x, y, fg, font, bg)
+	{
+		$modrect (x, y, x + font.maxw, y + font.maxh)
+		$B.draw_char (s, x, y, fg, font, bg)
+	}
+
+	method draw_char (s, x, y, fg, font, bg, c)
+	{
+		if (c is $winstack [-1] or c is None)
+			return $_draw_char (s, x, y, fg, font, bg)
+
+		box = [x, y, font.maxw, font.maxh]
+		ups = [i.box () for (i in $winstack [$winstack.index (c)+1:])]
+		rects = stack_rects (box, ups)
+		if (!rects) return
+		if (len (rects) == 1 and rects [0] == box)
+			return $_draw_char (s, x, y, fg, font, bg)
+		# (can be optimized by chopping the string)
+		im = $B.image_string (s, fg, font, bg)
+		if (im) $show_image (im, x, y, 0, 0, im.w, im.h, c)
+	}
+
+	method _show_image (img, x, y, sx, sy, w, h)
+	{
+		mw = min (img.w - sx, w)
+		mh = min (img.h - sy, h)
+		$modrect (x, y, x + mw, y + mh)
+		$B.show_image (img, x, y, sx, sy, w, h)
+	}
+
+	method show_image (img, x, y, sx, sy, w, h, c)
+	{
+		if (c is $winstack [-1] or c is None)
+			return $_show_image (img, x, y, sx, sy, w, h)
+
+		ups = [i.box () for (i in $winstack [$winstack.index (c)+1:])]
+		for (xx, yy, w, h in stack_rects ((sx+x,sy+y,w,h), ups)) {
+			sxx = sx + xx - x
+			syy = sy + yy - y
+			$_show_image (img, xx, yy, sxx, syy, w, h)
+		}
+	}
+
+	## Xxxx: todo: framebuffer
+
+	method Draw ()
+	{
+		$fill_rect (0, 0, $width, $height, $color_bg)
+		for (w in $winstack)
+			w.Draw ()
+		$flush ()
+	}
+
+	method onRedraw (*t)
+	{
+		x, y, w, h = t
+		$fill_rect (x, y, w, h, $color_bg)
+		for (wi in $winstack) {
+			I = intersection (t, wi.box ())
+			if (I) wi.onRedraw (I [0] - wi.x, I [1] - wi.y, I [2], I [3])
+		}
+	}
+
+	# Various subwindows.  Subwindows are small areas that overlay the
+	# standard window and take control of the input events.  The background
+	# may draw stuff but the subwindow overlays it.  Subwindows are things
+	# like popup menus, pulldown menus, SaveAs/Open windows, etc.
+	# When the application wants such a thing, it calls the methods below.
+	#
+	# Note that subwindows do not return a result.  They are supposed to
+	# _pass_ the result to a supplied callback function.  This avoids
+	# re-entering the main loop recursively.  The callback is, therefore
+	# invoked from the main GUI loop.
+
+	method Run_Menu (x, y, items, dtor=None)
+		$Menu = $pulldown (x, y, items)
+
+	method SaveAs (filename, directory, callback)
+	{
+		from FileDialogs import SaveAs
+		SaveAs (self, filename, directory, callback)
+	}
+
+	# clipboard funcs
+	method Copy (text)
+		return $B.Copy (text)
+	method Have ()
+		return $B.Have ()
+	method Paste ()
+		return $B.Paste ()
+}
+
+class toplevel (encapsulator)
+{
+	# `KeyCtrl` is the global keyboard handling of the window and if
+	# this function returns false, individual widgets are searched.
+
+	method __init__ ($x, $y, $w, $h, $wm, $modal, KeyCtrl=None, $CaptureStdout=False, $dtor=None)
+	{
+		$RXY = w, h
+		$B = wm.B
+		$p = wm
+		wm.setKeyWidget = void
+#		def wm.setKeyWidget (w)
+#			return
+		$outlined = False
+		$title = None
+		$A = wm
+		$c = []
+		$AC = []
+		$SelectionOwner = None
+		if (KeyCtrl is not None)
+			$cOnKey = KeyCtrl
+		$keyw = None
+		$tabgroup = False
+		domain.begin (self, wm)
+		domain.add_packer (self)
+		if (CaptureStdout)
+			$BaseUnion = @gui.union ()
+	}
+
+	# after a window resize
+	method re_arrange ()
+	{
+		$w, $h = $wm.width, $wm.height
+		w, h = $w, $h
+		$resize (0, 0)
+		$resize_w (w - $w)
+		$resize_h (h - $h)
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+#		$outline ("raised")
+		encapsulator.Draw (self)
+	}
+
+	method Done ()
+	{
+		if ($CaptureStdout) {
+			$console = @gui.console.stdoutw ()
+			$BaseUnion.pack ()
+		}
+		domain.end ()
+		w, h = $RXY
+		$resize (0, 0)
+		$resize_w (w - $w)
+		$resize_h (h - $h)
+		$setup_widgets ()
+		$Draw ()
+	}
+
+	method Close ()
+	{
+		if ($dtor)
+			$dtor ()
+		$wm.winstack.remove (self)
+		$wm.onRedraw ($absx (), $absy (), $w + 1, $h + 1)
+		$wm.flush ()
+		$wm = $B = None
+	}
+
+	method absy ()
+		return $y
+
+	method absx ()
+		return $x
+
+	method visible (w)
+		return True
+
+	# selections
+
+	method selectionGiveup ()
+		$SelectionOwner = None
+
+	method setSelectionOwner (w)
+	{
+		if ($SelectionOwner)
+			$SelectionOwner.onSelectionLose ()
+		$SelectionOwner = w
+	}
+
+	# children
+
+	method ilist (x, y)
+	{
+		L = []
+		$to_ilist (x, y, L)
+		return L
+	}
+
+	method moved ((x, y))
+	{
+		x, y = $relxy (x, y)
+		AC = $ilist (x, y)
+		if (AC == $AC)
+			return
+
+		i = 0
+		for (i, (o, n) in enumerate (zip ($AC, AC)))
+			if (o != n)
+				break
+
+		for (x in $AC [i:])
+			x.LeaveFocus ()
+		for (x in AC [i:])
+			x.EnterFocus ()
+
+		$AC = AC
+	}
+
+	# Public
+
+	method onResize (w, h)
+		$resize (w - $w, h - $h)
+
+	method getKeyWidget ()
+		return $c [0].KeyWidget ()
+}
+
+#
+# main loop after a period of idleness
+#
+#	Block until event. (event includes mouse motion although `get_event()` will
+#	just return None). The hibernator kickstarts when the BHLOCK is released.
+#	upon an event, it releases the HBLOCK.
+#
+
+method Wm.hibernate ()
+	while (1) {
+		$BHLOCK.acquire ()
+		$Hibernating = True
+		$B.block_until_event ()
+		$HBLOCK.release ()
+		$Hibernating = False
+	}
+
+#
+# main loop
+#
+#	Right now, backend get_event() is a non-blocking function
+#	and we sleep and poll for new events. About 200 times per
+#	second (estimated by desired key-repeat per sec).
+#	This is not too much (you won't notice any load). After
+#	about 2 secs without any activity (including pointer motion),
+#	we enter hibernation.
+#
+
+Wm.FlushIn = False
+method Wm.flush_inqueue ()
+	$FlushIn = True
+
+method Wm.MainLoop (forever=True, onMove=None, onIdle=None)
+{
+	thread.start_new ($hibernate)
+	LAST = 0, 0
+	idle = 0
+	CHECK_EVERY = 0.005
+	CHECK_EVERY = 0.002
+	IDLE_AFTER = 1.3
+	NIDLE = IDLE_AFTER / CHECK_EVERY
+
+	if ($Lang) {
+		altgr = False
+		KbdTrans = altkbd.load_trans ($Lang)
+		KF = KbdTrans.translate
+	} else altgr = False
+
+	try do {
+		# Note about "UNCLICK" event: in some situations we want to do something else
+		# if the mouse button is pressed down. "pressed down" is detected if no other
+		# event follows 0.18 secs after the click. so, even a key press cancels the
+		# press. In any case this is the only effect of the UNCLICK event, to cancel
+		# the on-press test.
+
+		if ($maxx != 0)
+			$flush ()
+
+		$do_async ()
+
+		e = $get_event ()
+
+		if ($FlushIn) {
+			while (e and e [0] in ("CLICK", "PRESS", "RELEASE"))
+				e = $get_event ()
+			$FlushIn = False
+		}
+
+		ewin = $basewin
+
+		if (not e) {
+			$sleep (CHECK_EVERY)
+			w = $B.where ()
+			if (w != LAST)  {
+				# tofix (modal?)
+				if ($Menu) $Menu.MouseAt (*w)
+				else if (onMove) onMove (*w)
+				else $winstack [-1].moved (w)
+				LAST = w
+			} else {
+				idle += 1
+				if (idle == min (2, NIDLE) and onIdle)
+					onIdle ()
+				if (idle > NIDLE) {
+					# release Main Gui Lock
+					$PLOCK.release ()
+					# kickstart hibernator
+					$BHLOCK.release ()
+					# wait for OK
+					$HBLOCK.acquire ()
+					# acquire MGL
+					$PLOCK.acquire ()
+					idle = 0
+				}
+				continue
+			}
+		} else if (e [0] == 'CLICK') {
+			b, x, y = e [1], e [2], e [3]
+			if ($Menu)
+				$Menu.ClickAt (x, y)
+			else for (ewin in reversed ($winstack))
+				if (ewin.xy_in (x, y)) {
+					(b == 3 ? ewin.onRightClick : ewin.onClick)
+						(x - ewin.x, y - ewin.y)
+				} else if (ewin.modal) {
+					if (ewin.modal > 1) forever = False
+					break
+				}
+		} else if (e [0] == 'REDRAW') {
+			$onRedraw (*e [1:])
+		} else if (e [0] == 'RESIZE') {
+			# (move modals)
+			$basewin.onResize (*e [1:])
+			$width, $height = $basewin.w, $basewin.h
+			$Draw ()
+		} else if (e [0] == 'PRESS') {
+			if (altgr) {
+				k = KF (e [1])
+				if (!k) continue
+			##	print "translate [%s] -> [%s] (%s)" %(e [1], k, k.hexlify ())
+				e = e [0], k
+			}
+			if ($Menu)
+				$Menu.Key (e [1])
+			else if (len ($winstack) > 1)
+				$winstack [-1].onKey (e [1])
+			else if (!ewin.onKey (e [1]))
+				if (e [1] == "ESC" and $exit_at_esc)
+					break
+
+			if (e [1] == 'z' and $key_ctrl and $CaptureStdout)
+				$switch_console ()
+
+			if (e [1] == "CTRL")
+				$key_ctrl = True
+			else if (e [1] == "SHIFT") {
+				$key_shift = True
+				if ($key_alt and $Lang) {
+					altgr = not altgr
+					KbdTrans.(altgr ? "enter" : "leave") ()
+					print "SWITCH KBD"
+				}
+			} else if (e [1] == "ALT")
+				$key_alt = True
+		} else if (e [0] == 'RELEASE') {
+			if (e [1] == "CTRL")
+				$key_ctrl = False
+			else if (e [1] == "SHIFT")
+				$key_shift = False
+			else if (e [1] == "ALT")
+				$key_alt = False
+		} else  if (e [0] == 'FOCUS') {
+			# our application had lost focus (vt-switch, etc)
+			# and the key state is unknown. reset modifier keys.
+			# if they are pressed we'll just get a RELEASE
+			# event which shall be dropped silently. SDL doesn't need that.
+			$key_alt = $key_ctrl = $key_shift = False
+		} else if (e [0] == "WHEEL") {
+			for (ewin in reversed ($winstack))
+				if (ewin.onWheel (e [1]))
+					break
+		} else if (e [0] == 'exit')
+			break
+
+		idle = 0
+	} while (forever)
+	except (backends.Exit) { }
+} 
+
+method Wm.ResetInput ()
+	while ($get_event ())
+		if (e [0] == "PRESS") {
+			if (e [1] == "CTRL") $key_ctrl = True
+			else if (e [1] == "SHIFT") $key_shift = True
+			else if (e [1] == "ALT") $key_alt = True
+		} else if (e [0] == "RELEASE") {
+			if (e [1] == "CTRL") $key_ctrl = False
+			else if (e [1] == "SHIFT") $key_shift = False
+			else if (e [1] == "ALT") $key_alt = False
+		}
+
+method Wm.Start (setup=void, onIdle=None)
+	try {
+		$Done ()
+		setup ()
+		try
+			with ($LOCKED)
+				$MainLoop (onIdle=onIdle)
+		except print sys.exc_info ()
+	} finally {
+		$terminate ()
+		sys.gc.collect ()
+	}

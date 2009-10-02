@@ -1,0 +1,29 @@
+__autosem__
+from label import label
+
+#
+# like a label but we can write "status messages" on it.
+# its width resizes freely
+#
+
+class status (label)
+{
+	method Init (msg="", **kw)
+	{
+		if ($elastic is None)
+			$elastic = "w" not in kw
+		label.Init (self, msg, **kw)
+	}
+
+	method setmsg (t, col=None)
+	{
+		if (col is not None)
+			$active_fg = col
+		$draw_blank ()
+		label.settext (self, t)
+		$Draw ()
+	}
+
+	method async_msg (t, col=None)
+		$wm.async ($setmsg, t, col)
+}

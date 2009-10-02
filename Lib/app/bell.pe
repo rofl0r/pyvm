@@ -1,0 +1,85 @@
+# Kitchen alarm clock
+
+__autosem__
+
+def beep ()
+{
+	sys.stdout.write ("\x07")
+	sys.stdout.flush ()
+}
+
+import time
+
+hh, mm, ss = time.hhmm ()
+
+USAGE = "usage: bell [-l][-L] [timespec]
+
+ set a beep alarm in the specified time to be notified when the eggs are ready.
+ examples:
+
+ bell @13:46
+	Set the alarm at the absolute time 13:46
+ bell +8m
+	Set the alarm 8 minutes from now (macaroni)
+ bell +70s
+	Set the alarm 70 seconds from now
+ bell +1h20m20s
+	Set the alarm 1 hour, 20 minutes and 20 seconds from now
+
+ -l	: longer duration beep
+ -L	: beep till stopped with Ctrl-C
+"
+
+if (!sys.argp.have_args ()) {
+	print "Now, the time is %02i:%02i:%02i" %(hh, mm, ss)
+	beep ()
+	sys.argp.help ()
+}
+
+rAbstime = @re.compilef (r"@(\d\d?):(\d\d)")
+rRelMin = @re.compilef (r"\+(\d+)m")
+rRelSec = @re.compilef (r"\+(\d+)s")
+rRelHMS = @re.compilef (r"\+(\d+)h(\d+)m(\d+)s")
+
+long, forever = sys.argp.check_switches ("-l", "-L")
+a = sys.argp.one ()
+
+if (m = rAbstime (a)) {
+	ahh, amm = int (m [1]), int (m [2])
+	dh = ahh - hh
+	dm = amm - mm
+	dt = 60 * (dh * 60 + dm) - ss
+} else if (m = rRelMin (a)) {
+	dt = 60 * int (m [1])
+} else if (m = rRelSec (a)) {
+	dt = int (m [1])
+} else if (m = rRelHMS (a)) {
+	dh, dm, ds = int (m [1]), int (m [2]), int (m [3])
+	dt = 60 * (dh * 60 + dm) + ds
+} else if (a == "0") {
+	dt = 0
+} else sys.argp.help ()
+
+if (dt < 0) {
+	print "The time has already expired!"
+	exit ()
+}
+
+print "Alarm set to go off in %i seconds" %dt
+beep ()
+sleep (dt)
+
+print "ALARM!"
+
+# Currently the alarm is using the console beep.
+# We should also use the sound card (create harmonics)
+
+if (forever) {
+	while (1) {
+		beep ()
+		sleep (0.2)
+	}
+} else for (i in *(long ? 40 : 25)) {
+	beep ()
+	sleep (0.2)
+}

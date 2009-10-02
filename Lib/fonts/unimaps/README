@@ -1,0 +1,16 @@
+Codepage to unicode tables.
+
+For newbies:
+	Take for example a web page that is sent with charset=iso-8859-7.
+	In this encoding, each byte is a glyph.  For instance a byte with
+	value 243 is the greek letter SIGMA.  In the Universal Character
+	Set which contains all the glyphs of the universe, the greek
+	SIGMA has the value 963 (and obviously needs more bytes to
+	represent).  These tables here can be used to convert some
+	text in iso-8859-7 to a UTF-8 text.
+
+Text + Codepage ==transcode==> UTF-8
+
+
+The iso* files are taken from /usr/share/kbd/unimaps
+The others downloaded from www.unicode.org and converted

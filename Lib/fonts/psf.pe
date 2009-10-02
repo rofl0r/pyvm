@@ -1,0 +1,219 @@
+##  PC Screen Font (PSF)
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# These are the fonts of the linux console. Fonts files usually
+# live in /usr/share/kbd/consolefonts
+#
+# Since this doesn't depend on external libaries, we can be
+# sure to have at least those fixed fonts.
+
+__autosem__
+
+class PSF
+{
+	bltin_descent = 0
+
+	method __init__ (filename = '')
+	{
+		if (!filename or filename == "8x16") filename = '$unicode-8x16.psfu'
+		else if (filename == "12x22") filename = "$sans12x22.psfu"
+
+		if (filename [0] == '$')
+			filename = HOME + 'Lib/FontFiles/' + filename [1:]
+
+		p = @datastream.data_parser (readfile (filename))
+
+		MAGIC = p.read (2)
+		if (MAGIC == "\x36\x04") {
+			mode, $height = p.unpack_le ("bb")
+			$width = 8
+			if (mode in (0, 2)) $num = 256
+			else if (mode in (1, 3)) $num = 512
+			else raise "Error"
+			hastable = mode & 2
+		} else if (MAGIC == "\x72\xb5") {
+			p.match_raise ("\x4a\x86")
+			None, None, flags, $num, None, $height, $width = p.unpack_le ("iiiiiii")
+			hastable = flags & 1
+		} else raise Error ("Not a psf font")
+
+		$rh = range ($height)
+		$bytewidth = ($width + 7) / 8
+		$charsize = $bytewidth * $height
+		$chardata = p.read ($num * $charsize)
+
+		# glyph api
+		$maxh = $height
+		$maxw = $width
+		$fixed = True
+		$baseline = 0
+		$ascent = $lineskip = $height
+		# (temporary fix: xxx)
+		$ascent += 1
+
+		# unicode table
+		ucs = iidict ()
+		if (hastable == 2) {
+			for (i in *$num)
+				while ((u = p.r16l ()) != 0xffff)
+					ucs [u] = i
+		} else {
+			r8 = p.r8
+			def ru ()
+				return r8 () & 0x3f
+			for (i in *$num)
+				while ((u = r8 ()) != 0xff) {
+					if (u >= 0x80) {
+						if (u < 0xe0)
+							u = ((u & 0x1f) << 6) | ru ()
+						else if (u < 0xf0) {
+							u = ((u & 0x0f) << 6) | ru ()
+							u = (u << 6) | ru ()
+						} else if (u < 0xf8) {
+							u = ((u & 0x07) << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+						} else if (u < 0xfc) {
+							u = ((u & 0x03) << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+						} else if (u < 0xfe) {
+							u = ((u & 0x01) << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+							u = (u << 6) | ru ()
+						} else raise Error
+					}
+					ucs [u] = i
+				}
+		}
+		$ucs = ucs
+	}
+
+	method get_glyph (c)
+	{
+		dat = $raw_glyph (c)
+		g = ''
+		for (y in $rh) {
+			r = ''
+			for (c in dat [:$bytewidth]) {
+				c = ord (c)
+				for (i in (128, 64, 32, 16, 8, 4, 2, 1))
+					r += (c & i) ? '\xff' : '\0'
+			}
+			g += r [:$width]
+			dat = dat [$bytewidth:]
+		}
+		return g
+	}
+
+	method uni_glyph (c)
+	{
+		dat = $raw_glyph ($ucs [c])
+		g = ''
+		for (y in $rh) {
+			r = ''
+			for (c in dat [:$bytewidth]) {
+				c = ord (c)
+				for (i in (128, 64, 32, 16, 8, 4, 2, 1))
+					r += (c & i) ? '\xff' : '\0'
+			}
+			g += r [:$width]
+			dat = dat [$bytewidth:]
+		}
+		return g
+	}
+
+	method raw_glyph (c)
+	{
+		idx = c * $charsize
+		return $chardata [idx:idx+$charsize]
+	}
+
+	method dump_glyph (c)
+	{
+		dat = $raw_glyph (c)
+		g = ''
+		for (y in $rh) {
+			r = ''
+			for (c in dat [:$bytewidth]) {
+				c = ord (c)
+				for (i in (128, 64, 32, 16, 8, 4, 2, 1))
+					r += (c & i) ? '#' : '.'
+			}
+			g += r [:$width] + "\n"
+			dat = dat [$bytewidth:]
+		}
+		return g
+	}
+
+	method idx2uni (i)
+		return [k for (k in $ucs) if ($ucs [k] == i)]
+	# API
+
+	method advance (g)
+		return $width * 64
+
+	uadvance = advance
+
+	method compute_glyph (g)
+		return "%ai%ai%ai%ai%ai%ai%ai" % ($width * 64, 0, 4-$height, $height, $width, $width, 0) +
+			$get_glyph (ord (g))
+
+	method unicode_glyph (g)
+		try
+		return "%ai%ai%ai%ai%ai%ai%ai" % ($width * 64, 0, 4-$height, $height, $width, $width, 0) +
+			$uni_glyph (g)
+}
+
+# Custom renderer to a framebuffer. This is a special case renderer
+# for the xterminal
+C = None
+
+def psf2fb (fb, font, utf=False)
+{
+	global C
+	if (C is None)
+		C = @DLL.Import ("fbt", "-O3 -Wall", pelf=1)
+	fi = _buffer (C.sizeof_finfo)
+	w, h = font.width, font.height
+	w1 = w - 1
+	h1 = h - 1
+	C.init_finfo (fi, fb.fb, w, h)
+	fillg = fb.bpp == 2 ? C.fill_glyph16 : 
+		fb.bpp == 3 ? C.fill_glyph24 :
+		fb.bpp == 4 ? C.fill_glyph32 : None
+	cache = {}
+	fillr = fb.fill_rect
+	get_glyph = utf ? font.uni_glyph : font.get_glyph
+
+	def rend (g, x, y, fg, bg)
+		if (g == 32) 
+			fillr (x*w, y*h, w1, h1, bg)
+		else {
+			try g = cache [g]
+			except try g = cache [g] = get_glyph (g)
+				except g = cache [g] = font.get_glyph (39)
+			fillg (fi, x, y, g, fg, bg)
+		}
+
+	return rend
+}
+
+if (__name__ == __main__)
+{
+	USAGE = "psf <file.psf[u]>
+dump all glyphs with ascii art"
+	p = PSF (sys.argp.filename_ex ())
+	print p.num, "glyphs  %ix%i"% (p.width, p.height)
+	for (i in *p.num) {
+		print "Glyph:", i, p.idx2uni (i)
+		print p.dump_glyph (i)
+	}
+}

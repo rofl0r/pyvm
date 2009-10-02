@@ -1,0 +1,315 @@
+##  Audio player
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# mp3 = Anything that can be opened with ffmpeg
+
+__autosem__
+
+from av import libav as C
+from audio.dev import stereo2mono
+import thread, time, random
+
+pts = array ("d", 1)
+
+class AudioFile
+{
+	method __init__ ($filename, $mono=False)
+	{
+		$av = _buffer (C.sizeof_av)
+		err = C.open_av ($av, filename)
+
+		if (err) raise Error ("ffmpeg error %i" %err)
+
+		$duration = C.duration ($av)
+		if (!C.has_audio ($av) or C.has_video ($av))
+			raise ("Not an audio mp3")
+		$sample_rate = C.asample_rate ($av)
+		$channels    = C.achannels ($av)
+		if ($channels == 2 and mono)
+			$channels = 1
+		else $mono = False
+		$audiobuf = _buffer (C.max_audio_frame_size)
+	}
+
+	method get_frame ()
+	{
+		n = C.next_frame ($av, 0, $audiobuf, pts)
+		if (n == -2) return ""
+		data = $audiobuf [:n]
+		if (!$mono)
+			return data
+		# one speaker dead? play mono
+		return stereo2mono (data)
+	}
+
+	method seek (ts)
+		return C.ffseek ($av, ts * 1.0 / $duration)
+
+	method __del__ ()
+		C.close_av ($av)
+
+	# buffered mode
+
+	method start_buffering ()
+	{
+		$fifo = thread.fifo ()
+		$s1 = thread.sem ()
+		for (i in *15) $s1.up ()
+		thread.start_new ($queuer)
+	}
+
+	method queuer ()
+		while (1) {
+			$s1.down ()
+			$fifo.put ($get_frame ())
+			thread.sched_yield ()
+		}
+
+	method get_frame_buffered ()
+	{
+		$s1.up ()
+		return $fifo.get ()
+	}
+
+	method seek_buffered (ts)
+	{
+		while ($fifo) $fifo.get ()
+		$seek (ts)
+		for (i in *15) $s1.up ()
+	}
+}
+
+# A player does buffering of data so it can play smoothly under heavier
+# load.
+
+class player
+{
+	method __init__ ($mono=@sysconfig.GETCONF ("nostereo"))
+	{
+		$tpos = 0.0
+		$cmds = []
+		$queue = []
+		$s1 = thread.sem ()
+		$s2 = thread.sem ()
+		$qid = thread.start_new ($queuer)
+	}
+
+	BUFFER_FRAMES = 46
+
+	method open (filename)
+	{
+		$drop_queue ()
+		$mp3 = AudioFile (filename, $mono)
+		$tpos = 0
+		$channels = $mp3.channels
+		$sample_rate = $mp3.sample_rate
+		$duration = $mp3.duration
+		$bytes_per_sec = $sample_rate * $channels * 2
+		$fill_queue ()
+		$filename = filename
+	}
+
+	method putcmd (c)
+	{
+		$cmds.append (c)
+		$s1.up ()
+	}
+
+	method fill_queue ()
+		for (i in *$BUFFER_FRAMES)
+			$putcmd ("getframe")
+
+	method drop_queue ()
+		while ($queue) {
+			$queue.pop (0)
+			$s2.down ()
+		}
+
+	method queuer ()
+	{
+		while (1) {
+			$s1.down ()
+			c = $cmds.pop (0)
+			if (c == "getframe") {
+				$queue.append ($mp3.get_frame ())
+				$s2.up ()
+				thread.sched_yield ()
+			}
+		}
+	}
+
+	method seek (t)
+	{
+		t = max (t, 0)
+		if ($mp3.seek (t) == 0) {
+			$drop_queue ()
+			$fill_queue ()
+			$buffer = ""
+			$tpos = t
+		}
+	}
+
+	method get_data ()
+	{
+		$putcmd ("getframe")
+		$s2.down ()
+		data = $queue.pop (0)
+		n = len (data)
+		dt = n / (1.0 * $bytes_per_sec)
+		$tpos += dt
+		return data
+	}
+
+	method get_pos ()
+		return fmttime ($tpos)
+
+	method fpos ()
+		return $tpos
+
+	buffer = ""
+
+	method get_samples (n=0)
+	{
+		if (!n) {
+			if ($buffer) {
+				r, $buffer = $buffer, ""
+				return r
+			}
+			return $get_data ()
+		}
+
+		n *= 2 * $channels
+		while (len ($buffer) < n) {
+			d = $get_data ()
+			if (not d)
+				if ($buffer) {
+					d = $buffer + "\0" * (n - len ($buffer))
+					$buffer = ""
+					return d
+				} else return ""
+			$buffer += d
+		}
+		d = $buffer [:n]
+		$buffer = $buffer [n:]
+		return d
+	}
+}
+
+# Player
+
+def fmttime (td)
+{
+	i = ti = int (td)
+	secs = ti % 60
+	ti /= 60
+	return "%i:%02i:%02i (%i%%)" %(ti / 60, ti % 60, secs, VOL)
+}
+
+USAGE = """usage: mp3 [-r][-l][-m] <mp3-file> ....
+
+Play the specified mp3s.  `-r` for shuffle.  `-l` loop.  `-m` for mono.
+Use `UP/DOWN` to change the volume, `space` to pause, `><` to jump to the next
+previous track. `q` to quit.
+
+TODO: playlists
+"""
+
+if (__name__ == __main__)
+{
+	loop, randomize, mono = sys.argp.check_switches ("-l", "-r", "-m")
+	if (@sysconfig.GETCONF ("nostereo"))
+		mono = True
+
+	FileList = []
+	for (x in sys.argp.nargs (1, 10000))
+		if (havefile (x)) FileList<< x
+		else print "Not found:", x
+	if (!FileList)
+		sys.argp.help ()
+
+	if (randomize)
+		random.shuffle (FileList)
+
+	dev = @audio.dev.AudioDev ()
+
+	# text mode player
+	from misc import fprint
+	from ttycolor import color, coltext
+	from readline import readline
+
+	sys.pty_stdin (True)
+	inkey = thread.fifo ()
+	def getchars ()
+	{
+		global VOL
+		while (1) {
+			c = sys.pty_getchar ()
+			if (c == "\x1b\x5b\x41")
+				VOL = @audio.dev.dvol (1)
+			else if (c == "\x1b\x5b\x42")
+				VOL = @audio.dev.dvol (-1)
+			else inkey.put (c)
+			fprint ("\r" + p.get_pos ())
+		}
+	}
+
+	thread.start_new (getchars)
+
+	class Next { }
+
+	VOL = @audio.dev.get_volume ()
+	print "mp3/audio player.  (c) 2008 the pyvm project."
+	print "using ffmpeg backend, http://ffmpeg.org"
+	print "`q` to quit\n"
+	while (1) {
+		i = 0;
+		pp = None
+		while (i < len (FileList)) {
+			p = player (mono)
+			p.open (FileList [i])
+			print "\nPlaying: ", p.mp3.filename, fmttime (p.mp3.duration)
+			while (1)
+				if (!dev.grab (p.sample_rate, p.channels)) {
+					fprint ("\nCan't grab audio device. Press any key\n")
+					if (inkey.get () == "q")
+						exit ()
+				} else break
+			try while (data = p.get_data ()) {
+				dev.play (data)
+	##			dev.play_sync (data)
+				pos = p.get_pos ()
+				if (pos != pp)
+					fprint ("\r" + (pp = pos))
+				while (inkey) {
+					c = inkey.get ()
+					if (c in "q\x03") {
+						print 
+						exit (0)
+					}
+					if (c in "n>") {
+						i += 1
+						raise Next
+					}
+					if (c in "p<") {
+						i = i ? i - 1 : len (FileList) - 1
+						raise Next
+					}
+					if (c == " ") {
+						dev.release ()
+						fprint ("\nPaused. Press any key\n")
+						inkey.get ()
+						dev.grab (p.sample_rate, p.channels)
+					}
+				}
+			} else i += 1
+			except (Next) { }
+			dev.release ()
+		}
+		if (!loop) break
+	}
+	print
+}

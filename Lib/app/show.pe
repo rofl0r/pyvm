@@ -1,0 +1,131 @@
+#
+# Mini script to display an image
+#
+
+__autosem__
+from graphics import ImageFile, isImageFile
+import os, misc, gui
+
+USAGE = """usage: show [-f][-e][-sm][-ss n] <file-or-directory>+
+Display images. In case of directory, show all images therein.
+-f	: fit to screen (if larger).
+-F	: fit to screen. expand or shrink to do that
+-ss x	: slideshow with delay x seconds
+-m	: in the case of a directory, normally only files with image extensions are
+	  opened (".jpg", ".gif", ".png", etc). With this flag all files are studied
+	  for whether they are images.
+-e	: exit after the last image shown (otherwise loop)
+-sm	: small
+
+if only filename is specified and it has the extension '.lst', it's
+taken as a "playlist" and the files are its lines.
+"""
+#TODO: cat thumbnail of image to vt console without getting into graphics
+
+Fit, fit, xit, sm, mstudy = sys.argp.check_switches ("-F", "-f", "-e", "-sm", "-m")
+
+ss = sys.argp.opts ("ss")
+SlideShow = float (ss ["ss"]) ?? None
+
+print 'calculating image sizes..'
+
+isdir = os.path.isdir
+
+ilist = sys.argp.argv
+if (len (ilist) == 1 and ilist [0].ew (".lst"))
+	ilist = readfile (ilist [0]).split ("\n")
+
+I = []
+for (x in ilist)
+	if (isdir (x)) {
+		if (mstudy) {
+			for (x in os.listdir_fullpath (x))
+				try if (!isdir (x) and isImageFile (x))
+					try I<< ImageFile (x)
+					except print "Coulnd' load:", x, sys.exc_info ()
+		} else {
+			for (x in os.listdir_fullpath (x))
+				if (isdir (x) or "." not in x) continue
+				else {
+					ext = x.rpartition (".")[2].lower ()
+					if (ext not in ("jpg", "jpeg", "gif", "png", "ppm"))
+						continue
+					try I<< ImageFile (x)
+					except print "Coulnd' load:", x, sys.exc_info ()
+				}
+		}
+	} else {
+		try I<< ImageFile (x)
+		except print "Coulnd' load:", x, sys.exc_info ()
+	}
+
+if (!I)
+	sys.argp.help ()
+
+if (Fit) W = H = 0
+else {
+	W = max ([i.size ()[0] for (i in I)])
+	H = max ([i.size ()[1] for (i in I)])
+	if (sm) {
+		fit = True
+		W = min (W, 400)
+		H = min (H, 400)
+	}
+	W += 1
+	H += 4
+}
+
+wm = gui.Wm (W, H, sys.argp.argv [0], exit_at_esc=True)
+if (Fit)
+	W, H = wm.width - 1, wm.height - 4
+wm.avtheme ()
+
+N = 0
+
+if (SlideShow) {
+	def SS ()
+		while (1) {
+			sleep (SlideShow)
+			GoNext ()
+		}
+	@thread.start_new (SS)
+}
+
+def GoNext ()
+{
+	global.N += 1
+	if (N >= len (I))
+		if (xit)
+			return wm.exit ()
+		else
+			N = 0
+	f = I [N].fnm
+	if (STT)
+		STT.setmsg (f)
+	IW.load (f, fit=fit or Fit, expand=Fit)
+	wm.async (wm.Draw)
+	wm.async (wm.set_title, f)
+}
+
+def onSpace (k)
+	if (k == " ")
+		if (!SlideShow)
+			GoNext ()
+		else ; #pause
+
+STT = None
+with (C = gui.vcontainer (onKey=onSpace)) {
+	if (len (I) > 1 and !SlideShow)
+		with (gui.hcontainer ()) {
+			gui.button ("Next", Action=GoNext)
+			STT = gui.status ()
+		}
+	IW = gui.image (w=min (W, wm.width), h=min (H, wm.height), elastic=False)
+	if (STT)
+		STT.setmsg (sys.argp.argv [0])
+	IW.load (I [0].fnm, fit=fit or Fit, expand=Fit)
+}
+C.setKeyWidget ()
+
+wm.Start ()
+print

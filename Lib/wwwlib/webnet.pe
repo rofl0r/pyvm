@@ -1,0 +1,1456 @@
+##  Network mechanics for web browsing
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# All the networking required for a web browser, abstracted in here.
+# Two things are basically exported:
+# 1) The URL class, which basically starts from an url and in the
+#    process can be "fetched" (using/updating the webcache and visited db)
+#    and then it can be parsed containing even more info. Generally,
+#    the URL is a very basic element and we attach various things to
+#    it during the entire application. So perhaps it should be in
+#    its own module...
+# 2) The "fetcher". The main browser loop gives urls to the fetcher
+#    and it does keep-alive site connections, pipelining, redirections
+#    and resuming in order to get the stuff and then callback to the mbl.
+
+import re, thread, os, time, misc, zlib
+from misc import fprint
+from md5 import digest as MD5
+from wwwlib import wcache, cookies, lex
+from wwwlib.lex import valid_charset
+from net import http, resolv
+
+from socket import socket
+
+socket.DoNetStats = True
+
+DebugNet      = 0
+DebugRedirect = 0
+PrintProgress = 0
+Report404     = True
+HttpTimeout   = 24 	#seconds
+MAX_PIPELINE  = 8
+ALWAYS_RELOAD = False	#fetch stuff w/o if-modified checks, yo
+SLOW_NET      = False	#on purpose insert a 1 second delay for every page element (debug)
+
+URLRe    = re.re ("(https|http|ftp|file)://([^?:/]*)(?::(\d+))?([^#]*)(.*)", re.I)
+FTPURLRe = re.re ("(ftp)://([^:/]*)(?::(\d+))?(.*)", re.I)
+HASPROTO = re.re ("(?:http|https|ftp|file)://", re.I)
+GETPROTO = re.re (r"(\w*?)://")
+CHARSET  = re.re (r'\S+/\S+\s*;\s*charset=(".*?"|[^ ;]+)')
+
+# Many sites refuse to give content if the browser does not identify
+# with standard Mozilla/IE strings.  Even other mainstream browsers
+# like Konqueror, IE and Opera, pretend to be Moz in order for web
+# browsing to be possible.  So the user-agent string has completely
+# lost its purpose.
+
+USER_AGENT = "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0)"
+# (this one kinda works)
+#USER_AGENT = "Mozilla/5.0 (compatible; Konqueror/4.2; Linux; X11; i686)"
+
+TRUE_USER_AGENT = "pyvm"
+
+# Yet, for some "good" sites, identify as pyvm browser of the web, to
+# allow gathering of statistics.
+TRUE_SITES = ("lwn.net", "www.theregister.co.uk")
+
+DefaultPort =
+{
+	"ftp":21,
+	"http":80,
+	"file":0,
+	"https":443,
+}
+
+# Cannonicalize a string wrt the urlencode percent escapes.
+# Two things.  If unsafe characters in the string, encode them.
+# If safe characters are encoded, decode them.
+# The goal is to be able to compare two urls
+
+def safeesc (x)
+{
+	x = x.group (0)
+	o = int (x [1:], 16)
+	c = chr (o)
+	if (32 < o < 127 and (c.isalpha () or c.isdigit () or c in "_-."))
+		return c
+	return x
+}
+
+PERESC = re.replace (r"%[a-fA-F0-9][a-fA-F0-9]", safeesc)
+UNPRINT = re.compile (r"[\x00-\x20\x7f-\xff]").search
+
+def canon (s, eslash=False)
+{
+	# In the queries part (the part after a '?'), slashes are encoded in
+	# this canonicalization schema.  So the canonical url can be stored
+	# in the filesystem with the cache/web tree
+
+#	s = PERESC (s)
+	if (eslash)
+		s = s.replace ("/", "%2f")
+	return s
+#	if (!UNPRINT (s))
+#		return s
+#	return "".join ([(32 < ord (c) < 127) ? c : "%%%02x"%ord(c) for (c in s)])
+}
+
+# encode a dictionary of key/values for the form submit via GET
+
+def percent_enc (x)
+	return "%%%02x" % ord (x.group (0))
+
+VENC = re.replace (r"[\x00-\x20\x7f-\xff&=; %@]", percent_enc)
+
+def urlencodev (vals)
+	return "&".join (["%s=%s" %(VENC (k), VENC (v)) for (k, v in vals.items ())])
+
+# URL, a centric element of the browser
+# The url, for one is a resource locator (or file path).
+# The method `generate` can create new URLs from this URL (for example
+#  convert the links of a page to absolute URLs)
+#
+# A method of the URL is `download` which gets the resource.  In the
+# case of networking, the function to get the url from the network is
+# supplied by the caller.
+# After 'download` the attributes `Status`, `Headers` and `File` are
+# set.
+#
+# This class also takes care of working with the cache and the "visited"
+# databases.  Depending on the arguments to download the content is
+# looked-up in the cache and stored into it afterwards.
+
+def parse_charset (ct)
+{
+	if (!ct) return ""
+	M = CHARSET (ct)
+	if (!M) return ""
+	v = M [1]
+	return v [0] == '"' ? v [1:-1] : v
+}
+
+class BASEURL
+{
+	nredir = 0
+	Charset = ""
+	css = None
+	label = ""
+	Incomplete = 0
+	Status = "N/A"
+	xy = None
+	protocol = "none"
+	# webcache pointers
+	_filecache = _weblink = None
+
+	method charset ()
+		return ""
+
+	method is_visited ()
+		return wcache.is_visited ($vuid)# in wcache.visited
+
+	method mark_visited ()
+		wcache.mark_visited ($vuid)
+
+	method same_resource (url)
+		return $protocol == url.protocol and $same (url)
+
+	# cached and (not-expired or recently-downloaded)
+	WARMSECS = 200
+	method warm ()
+		return False
+
+	# Link a filename in the "download area" to the file in the webcache
+	method link_downloaded (save_as="")
+		wcache.downloaded (self, save_as)
+
+	method paramless ()
+		return $url.partition ("?")[0]
+
+	# If a page, store the sizes of images that do not specify it (useful when
+	# we go "back" to layout once correctly). Done by the layout code.
+
+	image_size_cache = None
+
+	method add_size_hint (url, WxH)
+	{
+		if ($image_size_cache is None)
+			$image_size_cache = {}
+		$image_size_cache [url.uid] = WxH
+	}
+
+	method get_size_hint (url)
+		try return $image_size_cache [url.uid]
+
+	method size_hint (src)
+		try return $image_size_cache [$generate (src).uid]
+
+	# xxx: should also serialize referer, cookies, postdata, etc.
+	method serialize ()
+		return $url
+
+	method is_html ()
+	{
+		ct = $content_type ().lower ()
+		return ct.sw ("text/html") or ct.sw ("application/xhtml")
+	}
+
+	method generate (url, postdata=None, referer=True)
+		return START_URL (url, postdata=postdata)
+
+	# high level fetcher interface. op can be:
+	#	offline		: only use what's in webcache. No network
+	#	usecache	: download only if not in webcache
+	#	ifmodified	: do a fetch with If-Modified
+	#	reload		: force a fetch.
+	#	head		: just get the HEAD headers
+	method get_it (op="ifmodified", nredir=0, progress=None, tmpfile=None, head=False)
+	{
+		if (progress == "stdout")
+			progress = stdout_progress ()
+		else if (progress == "stdoutkb")
+			progress = stdout_progress (True)
+
+		if (op in ("usecache", "offline")) {
+			if (u = $load_cached ())
+				return u
+			if (op == "offline")
+				return self
+		}
+
+		$download (caching=op == "reload" ? 0 : 1, progress=progress, tmpfile=tmpfile, head=head)
+		if ($Status == "redirect") {
+			if (nredir > 10)
+				raise Error ("Too many redirections")
+			return $redirection ().get_it (op, nredir+1, progress, tmpfile, head)
+		}
+		# attempt resume
+		if ($Status == "resume" and tmpfile)
+			return $get_it (op, nredir+1, progress, tmpfile, head)
+		return self
+	}
+
+	remove_from_cache = void
+}
+
+class stdout_progress
+{
+	method __init__ ($kb=False) { }
+	method init ()
+		$have = 0
+	have_head = void
+	method have_bytes (n, tot)
+	{
+		$have += n
+		if ($kb)
+			fprint ("%ik/%ik   \r" %($have/1024, tot/1024))
+		else
+			fprint ("%i/%i   \r" %($have, tot))
+	}
+	method finished ()
+		print "FINISHED"
+}
+
+class URL (**BASEURL)
+{
+	protocol = "http"
+	Base = None
+	Local = False
+	File = None
+	Redirector = None
+	Progress = 0, 0
+	Primary = True
+	PostData = None
+	Headers = {}
+	HTMLTitle = None	# set by the DOM parser from the <title>..</title>
+
+	method __init__ ($url, $referer=None, $PostData=None)
+	{
+		if (" " in url)
+			url = $url = url.replace (" ", "%20")
+
+		try protocol, host, port, path, label = URLRe (url).groups ()
+		except {
+			print "Cannot parse url [%s]" %url
+			raise
+		}
+
+		$protocol = protocol.lower ()
+		$host = host.lower ()
+		$port = port ? int (port) : DefaultPort [$protocol]
+		if (!path.sw ("/"))
+			path = "/" + path
+		$path = path
+
+# is this teh right?
+#if (" " in $path)
+#$path = $path.replace (" ", "%20")
+
+		$label = label ? label [1:] : ""
+
+		$netloc = $protocol + "://" + $host
+		if ($port != DefaultPort [$protocol])
+			$netloc += ":%i" %$port
+
+		# Canonical
+		canon_path, None, query = $path.partition ("?")
+		canon_path = canon (canon_path)
+		if (query)
+			canon_path += "?" + canon (query, True)
+		$canon_path = canon_path
+
+		# Resource ID (for cache)
+		$canon_url = $netloc + $canon_path
+		ustr = $canon_url
+		if ($PostData)
+			ustr += "\n" + PostData
+		$uid = MD5 (ustr).hexlify ()
+		$vuid = MD5 (ustr + $label)
+	}
+
+	method Title ()
+		return $HTMLTitle or $url
+
+	method same (url)
+		return $uid == url.uid
+
+	method content_type ()
+		return $Headers.get ("content-type", "unknown")
+
+	method charset ()
+	{
+		ct = $Headers.get ("content-type", "").lower ()
+		if ("charset" in ct) {
+			ct = parse_charset (ct)
+			if (ct and valid_charset (ct))
+				return ct
+		}
+		return parse_charset (lex.find_content_type ($readfile (8000)))
+	}
+
+	method referer_url ()
+		return $referer ? $referer.url.partition ("#")[0] : ""
+
+	method set_base (base)
+		$Base = $generate (base)
+
+	method generate (url, postdata=None, referer=True)
+	{
+		url = url.strip ()
+
+		if ($Base) {
+			u = $Base.generate (url, postdata, referer=referer)
+			u.referer = referer ? self : None
+			return u
+		}
+
+		if (url.sw ("#"))
+			url = ($label ? $url [:-len ($label)] : $url) + url
+		else if (url.sw ("//"))
+			url = $protocol + ":" + url
+		else if (url and url [0] == "/")
+			url = $netloc + url
+		else if (!HASPROTO (url))
+			url = $netloc + make_path ($path, url)
+		u = START_URL (url, postdata=postdata)
+		u.referer = referer ? self : None
+		return u
+	}
+
+	method redirection ()
+	{
+		u = $generate ($Headers ["location"])
+		u.nredir = $nredir + 1
+		u.Redirector = self
+		# xxx: is the referer carried over redirects?
+		u.referer = $referer
+		#u.referer = self
+		return u
+	}
+
+	method original ()
+	{
+		p = self
+		while (p.Redirector)
+			p = p.Redirector
+		return p
+	}
+
+	method http_connection (multiple=True)
+	{
+		if ($protocol == "https")
+			print "Using secure connection for:", self
+		return http.Connection ($host, $port, secure=$protocol=="https",
+					keep_alive=multiple, timeout=HttpTimeout)
+	}
+
+	method server_date ()
+		try return time.datestr_to_secs ($Headers ["date"])
+		except return now ()
+
+	method make_request ()
+	{
+		# There are some sites that expect these headers and if they
+		# do not get them, the assume a bot and block the IP for
+		# further requests.
+		Host = $netloc.partition ("://")[2]
+		Headers = {
+			"Host":			Host,
+			"Accept":		"*/*",
+			"Accept-Charset":	"ISO-9959-1,utf-8,*",
+			"Accept-Encoding":	"deflate,gzip",
+			"User-Agent":		(Host in TRUE_SITES ? TRUE_USER_AGENT : USER_AGENT),
+		}
+
+		if ($referer)
+			Headers ["Referer"] = $referer_url ()
+
+		cookie = cookies.get_cookies (self)
+		if (cookie)
+			Headers ["Cookie"] = cookie
+
+		if ($PostData) {
+			Headers ["Content-Type"] = "application/x-www-form-urlencoded"
+			Headers ["Content-Length"] = "%i" %len ($PostData)
+		}
+
+		return Headers
+	}
+
+	method last_modified (headers)
+	{
+		try if (headers ["last-modified"] != "now")
+			return headers ["last-modified"]
+		return headers.get ("date", None)
+	}
+
+	method expired (headers, warmok=False)
+	{
+		# given some http headers return True if a resource has expired.
+		# To do this we study "Expires" and "Cache-Control" headers;
+		# the default is "Expired unless otherwise stated", and proceed
+		# with If-Modified-Since request.
+
+		# "warm" resources are fresh if downloaded less than 3 minutes ago.
+		if (warmok) {
+			if ("local-date" in headers) {
+				try if (now () - time.datestr_to_secs (headers ["local-date"])<$WARMSECS)
+					return False
+			} else if ("date" in headers)
+				try if (now () - time.datestr_to_secs (headers ["date"]) < $WARMSECS)
+					return False
+		}
+
+		if ("cache-control" in headers) {
+			cc = [x.strip ().lower () for (x in headers ["cache-control"].split (","))]
+			if ("no-cache" in cc or "must-revalidate" in cc)
+				return True
+			for (c in cc)
+				if (c.sw ("max-age")) {
+					try d = time.datestr_to_secs (headers ["date"])
+					except {
+						print "Max-age but Date failed"
+						return True
+					}
+					try secs = int (c.partition ("=")[2].strip ())
+					except {
+						print "Bad max-age:", c
+						return True
+					}
+					if (secs <= 0)
+						return True
+					if (d + secs > now ())
+						return False
+				}
+		}
+
+		if ("expires" in headers) {
+			expires = headers ["expires"]
+			if (expires in ("-1", "0"))
+				return True
+			try e = time.datestr_to_secs (expires)
+			except {
+				print "Unknown date format:", expires
+				return True
+			}
+			if (e > now ())
+				return False
+		}
+
+		return True
+	}
+
+	method set_status ($HTTPStatus, $Headers, $File=None)
+		if (HTTPStatus == "200")
+			$Status = "OK"
+		else if (HTTPStatus in ("301", "302", "303", "307"))
+			$Status = "redirect"
+		else {
+			if (!HTTPStatus.sw ("5") and HTTPStatus != "404")
+				print "strange status [%s]" %HTTPStatus, self
+			$Status = "N/A"
+		}
+
+	method warm ()
+	{
+		if !(cached = wcache.in_cache ($uid))
+			return False
+		return not $expired (cached [1], True)
+	}
+
+	method remove_from_cache ()
+		wcache.remove ($uid)
+
+	method enable_cached (cached_data, $Cached=True)
+	{
+		# load the download status from the cached data
+		wcache.use_cached (self)
+		$set_status (*cached_data)
+	}
+
+	# use cached stuff. follows cached redirections, return final url
+	method load_cached (redir=0)
+	{
+		if !(cached = wcache.in_cache ($uid))
+			return False
+		$enable_cached (cached)
+		if ($Status == "redirect") {
+			if (redir > 20) {
+				print "too many redirections", self
+				return False
+			}
+			return $redirection ().load_cached (redir+1)
+		}
+		return self
+	}
+
+	# The `download` function does a lot of things.  In the end if everything
+	# goes well, it saves the file to the webcache and $Status describes
+	# what happened.  The function always sets $Status.
+	#
+	# The result is an url *returned* by this method. Usually the returned
+	# value is the url itself, unless we have redirections. So the correct
+	# use is:
+	#	downloaded = url.download ()
+	#	print downloaded.Status
+	#
+	# Possible values for $Status are:
+	#	"OK"		: all ok
+	#	"N/A"		: some error
+	#	"redirect"	: signals a redirection. the caller should do something.
+	#	"resume"	: error. premature connection close. may attempt resume.
+	#
+	# The argument `caching` means:
+	#	0: force reload
+	#	1: if modified since or network down
+	#	2: always use the cache if there
+	# $Cached is set to true if we are using the cached page (but *not* because
+	# of Not-Modified.  "Not-Modified" makes download use the cached page but
+	# report that it doesn't).
+	#
+	# if the `tmpfile` is specified and it exists, it will be used to resume.
+	#  note that if `tmpfile` is not specified a temporary is generated by the
+	#  `http-connection.get()` which will not be available to anybody else.
+	# if `QoS` is a function and it returns True that will be detected by the
+	#  http connection to give a lower priority to itself. the function is polled
+	#  on every network packet.
+	# the connection is normally passed by the keep-alive site connection handler,
+	#  but if not supplied, `download` will initiate a non-keepalive connection.
+
+	method download (caching=1, connection=None, QoS=None, tmpfile=None, progress=None, head=False)
+	{
+		if (ALWAYS_RELOAD)
+			caching = 0
+
+		# Build request header dict
+		req = $make_request ()
+
+		# caching: 0-force reload, 1-if modified since, 2-use cached
+		if ($PostData and caching == 1)
+			caching = 0
+		$Cached = False
+		cached = !caching ? None : wcache.in_cache ($uid)
+
+		# prepare an If-Modified-Since request if the url exists in the cache or
+		# check if it's expired.
+		if (cached) {
+			if (caching >= 2 or !$expired (cached [1])) {
+				$enable_cached (cached, caching >= 2)
+				return
+			}
+			mdtm = $last_modified (cached [1])
+			if (mdtm) req ["If-Modified-Since"] = mdtm
+			if ("etag" in cached [1])
+				req ["If-None-Match"] = cached [1]["etag"]
+		}
+
+		# Get from net
+		try {
+			if (DebugNet) {
+				print "The Query", $path, req
+				if ($PostData)
+					print "Post Data [%s]"%$PostData
+			}
+
+			# The progress can be a supplied instance or the
+			# default one that's harvested by the browser
+			progress = progress or $progress_control
+
+			progress.init ()
+			$Incomplete = 0
+
+			if (!connection)
+				connection = $http_connection (False)
+
+			rez = connection.get (Headers=req, path=$path,
+						progress=progress, head=head,
+						post=$PostData, QoS=QoS,
+						filename=tmpfile, resume=bool (tmpfile))
+		}
+		except (PipeLineStep1) return PipeLineStep1
+		except (thread.Interrupt) raise
+		except (http.InterruptedTransfer) {
+			if (DebugNet)
+				print "Transfer interrupted. May resume", self
+			I = sys.exc_info ()[1]
+			$Incomplete = True
+			$HTTPStatus, $Headers = "200", I.hdr
+			$Status = "resume"
+			$TMPFile = I.out
+			return
+		} except {
+			# unexpected failure
+			print "Fetch Failed for:", self
+			print sys.exc_info ()
+			$set_status ("500", {})
+			return
+		}
+
+		# connection to server failed
+		if (rez == 0) {
+			if (DebugNet)
+				print "Network error:", self, cached, sys.exc_info ()
+			if (cached) {
+				$enable_cached (cached)
+				return
+			}
+			$set_status ("500", {})
+			return
+		}
+		# could not get the data after some retries
+		if (rez == 404) {
+			$set_status ("504", {})
+			return
+		}
+
+		# OK, have something from the network
+		status, headers, pagetmp = rez
+
+		if (DebugNet) print "---------->", status, headers
+
+		# decode encoded content and remove "Content-Encoding" header
+		if ("content-encoding" in headers and not head) {
+			try r = content_decoding ($path, headers, pagetmp)
+			except {
+				print "* * * * * Content decoding FAILED"
+				$set_status ("500", {})
+				return
+			}
+			if (!r) {
+				# really interrupted transfer
+				$Incomplete = True
+				$HTTPStatus, $Headers = "500", {}
+				$Status = "resume"
+				return
+			}
+		}
+
+		if (status == "304") {
+			# Not Modified
+			$enable_cached (cached, False)
+		} else {
+			if (Report404 and status == "404")
+				print "404", self
+			# Real new stuff
+			adjust_dates (headers)
+			$Status = "OK"
+			if (!head)
+				File = wcache.save (req, status, headers, pagetmp, self)
+			else File = None
+			$set_status (status, headers, File)
+		}
+
+		if ("set-cookie" in headers)
+			cookies.add_cookies ($host, $server_date (), headers ["set-cookie"], $Primary)
+		if ("set-cookie2" in headers)
+			print 50*"##", "COOKIE2", headers
+	}
+
+	method readfile (n=None)
+		return n ? readfile ($File, n) : readfile ($File)
+
+	namespace progress_control
+	{
+		# naturally, the progress is [bytes_downloaded, bytes_total_expected]
+		# however, if the server does not give us content-length, the number
+		# of bytes expected is zero. So zero, is a valid value for this field
+		# and it means just that.
+
+		method init ()
+			$Progress = [0, 0]
+		have_head = void
+		method have_bytes (n, total)
+		{
+			$Progress [0] += n
+			$Progress [1] = total
+		}
+		method finished ()
+			if (!$Progress [1])  # make it look right
+				$Progress [1] = $Progress [0]
+	}
+
+	method __str__ ()
+		return "HyperLink <%s>" %$url
+}
+
+def adjust_dates (headers)
+{
+	headers ["local-date"] = time.rfc1123 (now ())
+	# The server may send various dates, like in "Date", "Expires", etc.
+	# "expires" which is a date relative to the "Date" header, is converted
+	# to be relative to the local host time.
+	if ("date" in headers) try {
+		server_date = time.datestr_to_secs (headers ["date"])
+		local_date = int (time.time ())
+		if (abs (server_date - local_date) < 5)
+			return
+		try expires = time.datestr_to_secs (headers ["expires"])
+		except return
+		local_expires = expires + (local_date - server_date)
+		headers ["expires"] = time.rfc1123 (local_expires)
+	} except print "ERROR:", sys.exc_info ()
+}
+
+def content_decoding (filename, headers, pagetmp)
+{
+	# convert "content-encoding" content to original form.  A problem sometimes is
+	# that when one downloads a tar.gz file some crap servers set content-encoding to
+	# "gzip" (which is completely wrong) and that leads to saving a tar file with tar.gz extension.
+	# Another problem is that some times the server sends content-length as the
+	# length of the uncompressed data and this is the time to figure out if this
+	# happened or we had an interrupted/timedout transfer.
+
+	ce = headers ["content-encoding"].lower ().strip ()
+
+	size_mismatch = False
+	if ("content-length" in headers)
+		try {
+			# see net/http.pe for details.
+			cl = int (headers ["content-length"])
+			size_mismatch = cl > pagetmp.getsize ()
+		}
+
+	if (ce == "none")
+		return True
+
+	# try to fix this crap here. The user requested a 'tar.gz' and shall get something
+	# of type 'gzip'.
+	ct = headers.get ("content-type", "").lower ().strip ()
+	if (ct.sw ("application/x-tar") or ct.sw ("application/gzip"))
+		if (ce in ("x-gzip", "gzip") and !size_mismatch) {
+			del headers ["content-encoding"]
+			headers ["content-type"] = "x-gzip"
+			return True
+		}
+
+	encoded = pagetmp.read ()
+	if (encoded) {
+		if (ce == "gzip") {
+			try pagetmp.write (zlib.gunzip (encoded))
+			except {
+				if (size_mismatch) return False
+				raise
+			}
+		} else if (ce == "deflate") {
+			try pagetmp.write (zlib.decompress (encoded, raw=1))
+			except {
+				# can happen some times
+				if (encoded.sw ("\x78\x9c"))
+				pagetmp.write (zlib.decompress (encoded, raw=0))
+				else raise
+			}
+		} else raise Error ("Unexpected content-encoding")
+	}
+	return True
+}
+
+# Ftp is currently stateless.  It re-connects for each request
+
+class FTP_URL (**BASEURL)
+{
+	protocol = "ftp"
+	Local = False
+	Status = "N/A"
+	Cached = False
+
+	method __init__ ($url)
+	{
+		$canon_url = $url
+		try protocol, host, port, path = FTPURLRe (url).groups ()
+		except {
+			print "Cannot parse url [%s]" %url
+			raise
+		}
+
+		$protocol = protocol.lower ()
+		$host = host.lower ()
+		$port = port ? int (port) : DefaultPort [$protocol]
+		$path = path or "/"
+
+		$netloc = $protocol + "://" + $host
+		if ($port != DefaultPort [$protocol])
+			$netloc += ":%i" %$port
+
+		md = MD5 ($url)
+		$uid = md.hexlify ()
+		$vuid = md
+	}
+
+	method Title ()
+		return $url
+
+	method same (url)
+		return $url == url.url
+
+	method content_type ()
+		return $Headers.get ("content-type", "unknown")
+
+	method readfile (n=None)
+		return n ? readfile ($File, n) : readfile ($File)
+
+	method Connection ()
+	{
+		from net.ftp import ftp
+		return ftp ($host, $port)
+	}
+
+	method download (caching, QoS=None, tmpfile=None, Connection=None, progress=None)
+	{
+		cached = !caching ? None : wcache.in_cache ($uid)
+		if (cached) {
+			None, $Headers, $File = cached
+			$Status = "OK"
+			wcache.use_cached (self)
+			return self
+		}
+		print "Initiating FTP transfer..."
+		F = Connection or $Connection ()
+		tmp = misc.tmpfile ()
+		# check if directory
+		if ($path [-1] == "/") {
+			listing = []
+			for (f in F.LIST ($path)) {
+				ff = f.split ()
+				name = ff [-1]
+				if (ff [0][0] == "d" and name [-1] != "/")
+					name += "/"
+				listing.append ("<a href=%s%s%s>%s</a>" %($netloc, $path, name, f))
+			}
+			p = "<html><body><H1>Directory Listing of %s</H1><pre>"%$url +
+				 "\n".join (listing) + "</html>"
+			tmp.write (p)
+			$Headers = {"content-type":"text/html"}
+			$Status = "OK"
+			$File = wcache.save ({}, "200", $Headers, tmp, self)
+		} else {
+			F.RETR ($path, tmp.open ("w").write, QoS=QoS)
+			$Headers = {"content-type":"unknown"}
+			$Status = "OK"
+			$File = wcache.save ({}, "200", $Headers, tmp, self)
+		}
+		return self
+	}
+
+	# for the case of a directory listing
+	method generate (url, referer=True)
+	{
+		if (url.sw ("//"))
+			url = $protocol + ":" + url
+		else if (url [0] == "/")
+			url = $netloc + url
+		else if (!HASPROTO (url))
+			url = $netloc + make_path ($path, url)
+		u = START_URL (url)
+		return u
+	}
+}
+
+class FILE_URL (**BASEURL)
+{
+	protocol = "file"
+	Local = True
+	Status = "OK"
+	Headers = {}
+	Cached = True
+	netloc = "local"
+	HTMLTitle = None
+
+	method __init__ ($url)
+	{
+		url, None, label = url.partition ("#")
+		$label = label or ""
+		$File = url [7:]
+		if (!os.access ($File))
+			$Status = "N/A"
+		else $isdir = os.path.isdir ($File)
+		$uid = MD5 (url).hexlify ()
+		$vuid = MD5 (url + $label)
+	}
+
+	method Title ()
+		return $HTMLTitle or $url
+
+	method download (caching, QoS=None, tmpfile=None, progress=None)
+		return self
+
+	method load_cached ()
+		return self
+
+	method warm ()
+		return True
+
+	method same (url)
+		return $File == url.File
+
+	exts = {
+		"html":"text/html",
+		"htm":"text/html",
+		"txt":"text/plain",
+		"jpg":"image/jpeg",
+		"png":"image/png",
+		"gif":"image/gif",
+	}
+
+	method content_type ()
+	{
+		ext = "." in $File ? $File.rpartition (".")[2].lower () : ""
+		if ($Status != "OK") return "unknown"
+		if ($isdir)
+			return "text/html"
+		try return $exts [ext]
+		return "unknown"
+	}
+
+	method charset ()
+		return $content_type () == "text/html" ? 
+			parse_charset (lex.find_content_type ($readfile (8000))) : ""
+
+	method readfile (n=None)
+	{
+		# unocmment to mark visited *all* stuff
+		#$mark_visited ()
+		if (os.path.isdir ($File)) {
+			t = []
+			for (f in os.listdir ($File))
+				t.append ("<A href=%s/%s>%s</a><br>" %($File, f, f))
+			return "<html>%s</html" %"".join (t)
+		}
+		return n ? readfile ($File, n) : readfile ($File)
+	}
+
+	Base = None
+
+	method set_base (base)
+		$Base = $generate (base)
+
+	method generate (url, postdata=None, referer=True)
+	{
+		if ($Base) {
+			u = $Base.generate (url, postdata, referer=referer)
+			u.referer = self
+			return u
+		}
+
+		p = GETPROTO (url)
+		if (p) {
+			p = p [1].lower ()
+			return START_URL (url, postdata=postdata)
+		} else if (url.sw ("//")) {
+			return URL ("http:" + url)
+		} else if (url [0] == "#") {
+			return FILE_URL ("file://" + $File + url)
+		} else if (url [0] != "/") {
+			return FILE_URL ("file://" + os.abspath (os.dirname ($File) + "/" + url))
+		} else return FILE_URL ("file://" + os.abspath (url))
+	}
+
+	method original ()
+		return self
+
+	method __str__ ()
+		return "Local HyperLink <%s>" %$url
+}
+
+def START_URL (u, postdata=None)
+{
+	try proto = GETPROTO (u) [1].lower ()
+	except {
+		print "BAD URL [%s]" %u
+		raise
+	}
+
+	if (proto in ("http", "https"))
+		return URL (u, PostData=postdata)
+	if (proto == "ftp")
+		return FTP_URL (u)
+	if (proto == "file")
+		return FILE_URL (u)
+	raise Error ("Protocol unknown [%s]" %u)
+}
+
+# make an absolute path from a generator absolute path and a relative path
+
+def make_path (ab, rel="")
+{
+	abf, None, abp = ab.partition ("?")
+	relf, None, relp = rel.partition ("?")
+
+	if (!relf and relp)
+		return abf + "?" + relp
+
+	components = abf.split ("/") [:-1]
+	components.extend (relf.split ("/"))
+
+	path = []
+	for (c in components)
+		if (!c or c == ".") continue
+		else if (c == "..") { if (path) path.pop (); }
+		else (path.append (c))
+
+	p = "/" + "/".join (path)
+	if (relf and relf [-1] == "/")
+		p += "/"
+	if (relp)
+		p += "?" + relp
+
+	return p
+}
+
+# Network Agent.
+# The agent works for a specific host/port.
+# Initially it sits idle and waits for requests to get stuff
+# from it's assigned host/port.  By default, for http, it
+# uses a Keep-Alive connection.
+#
+# The keepalive site pipe is passed to the url's download() method.
+#
+# `shutdown()` is used to cancel all the queued requests for the
+# agent and shutdown the agent permanently.
+#
+# `nworkers` specifies how many connections it will make to the site
+# for parallel transfers.
+
+class AgentInterrupt { }
+class PipeLineStep1 { }
+
+class Agent
+{
+	method __init__ (url, caching, $HQ, nworkers=1)
+	{
+nworkers = 1
+		$fifo = thread.fifo ()
+		$get = $fifo.put
+		$get_high_pri = $fifo.put_first
+		$pipeline_left = 0
+		$killed = False
+
+		$D = {}
+		for (i in *nworkers) {
+			$D [i] = {
+				"downloading":None,
+				"connection":url.http_connection (),
+				"state":0
+			}
+			$D [i]["th"] = thread.start_new ($bg, i)
+		}
+
+		$Bytes = 0
+		$netloc = url.netloc
+		$get (url, caching)
+	}
+
+	method shutdown ()
+	{
+		$killed = True
+		$fifo.drop ()
+		for (v in $D.values ()) {
+			if (v ["state"] == 1) {
+				try thread.interrupt (v ["th"], thread.Interrupt, 1)
+				except print "FAILETH:", sys.exc_info ()
+			} else v ["state"] = 0
+			$fifo.put (None)
+		}
+		del $D
+	}
+
+	method bg (nth)
+	{
+		do_pipeline = MAX_PIPELINE > 0 and not SLOW_NET
+		d = $D [nth]
+		while (1)
+		try {
+			d ["state"] = 0
+
+			$fifo.ack ()
+			sleep (0.001)
+			args = $fifo.getn (MAX_PIPELINE)
+
+			if (None in args)
+				break
+
+			d ["state"] = 1
+
+			# pipelined modifies the 'args' list, everything left in it
+			# after the attempt to pipeline is downloaded with the traditional
+			# method
+			if (do_pipeline and len (args) > 1 and d ["connection"].can_pipeline ()) {
+				before_ppl = len (args)
+
+				try $pipelined (args, d)
+				except (thread.Interrupt) raise
+				except { }	# retry normally
+
+				$pipeline_left = len (args)
+				after_ppl = len (args)
+				ppld = before_ppl - after_ppl
+				# if only one element was retreived from the pipelining
+				# assume server is not capable and don't try this again.
+				if (ppld == 1)
+					do_pipeline = False
+				print $netloc, "pipelined %i/%i:" %(ppld, before_ppl)
+			}
+
+			for (url, caching in args) {
+				if ($killed)
+					break
+
+				d ["downloading"] = url
+
+				url.download (caching, d ["connection"])
+				$pipeline_left -= 1
+
+				d ["downloading"] = None
+				$Bytes += url.Progress [1]
+
+				if (d ["state"]) {
+					d ["state"] = 2
+					$HQ.have (url)
+				}
+
+				if (SLOW_NET)
+					sleep (1)
+			}
+		} except (thread.Interrupt) {
+			# interrupted #
+			d ["downloading"] = None
+			$pipeline_left = 0
+		} except {
+			print "ABNORMAL AGENT TERMINATION ERROR", sys.exc_info ()
+			d ["downloading"] = None
+			del $D [nth]
+			if (!$D)
+				$HQ.Remove (self)
+			break
+		}
+	}
+
+	# return items left, total bytes downloaded so far, total bytes expected so far
+	method get_progress ()
+	{
+		hb = tb = $Bytes
+		in_progress = max ($fifo.len () + $pipeline_left, 0)
+		for (downloading in [x ["downloading"] for (x in $D.values ())])
+			if (downloading) try {
+				hb += downloading.Progress [0]
+				tb += downloading.Progress [1]
+				in_progress += 1
+			}
+#		print 'gpg', in_progress, hb, tb
+		return in_progress, hb, tb
+	}
+
+	# HTTP Pipelining: send all the requests at once in one packet, demultiplex the replies.
+	#
+	# Pipelining is currently used to fetch a page's images. If it works the result is
+	# very impressive, especially when a page has many images many of which are Not-Modified.
+	# In this case it can load up with one packet!
+	#
+	# The implementation here has an "extremely smart hack" alert. It's done by intercepting
+	# two fake http connections. Once `download` is called to gather up the requests. The
+	# second time it is used to demultiplex them from the HTTP stream.
+	namespace pipeline
+	{
+		method get (**kw)
+		{
+			$pel = kw
+			raise PipeLineStep1
+		}
+	}
+
+	namespace pipeline2
+	{
+		method get (**kw)
+			return $pel
+	}
+
+	method pipelined (requests, d)
+	{
+		# Things that are considered "Not-expired" or for which the pipelining
+		# works are removed from `requests`. The remains are fetched with the
+		# traditional sequential method.
+		plist = []
+		for (url, caching in list (requests)) {
+			if (url.download (caching, $pipeline) is PipeLineStep1)
+				plist.append ($pel)
+			else {
+				# Not expired -- not requested
+				requests.remove ((url, caching))
+				$HQ.have (url)
+			}
+		}
+		if (len (plist) <= 1)
+			return
+
+		$pipeline_left = len (requests)
+		for (bytes, got in d ["connection"].get_pipelined (plist)) {
+			if ($killed)
+				return
+			url, caching = requests [0]
+			$pel = got
+			url.download (caching, $pipeline2)
+			requests.pop (0)
+			$Bytes += bytes
+			$pipeline_left -= 1
+			$HQ.have (url)
+		}
+	}
+}
+
+class FTP_Agent
+{
+	Con = None
+	Running = True
+
+	method __init__ ($HQ, url, caching)
+		$th = thread.start_new ($download, url, caching)
+
+	method download (url, caching)
+	{
+		try {
+			$Con = url.Connection ()
+			url.download (caching, Connection=$Con)
+		} except (thread.Interrupt) {
+		} except {
+			print "FTP FAILED:", sys.exc_info ()
+		} else $HQ.have (url)
+		$HQ.Remove (self)
+		$Con = None
+		$Running = False
+	}
+
+	method shutdown ()
+		if ($Con)
+			try thread.interrupt ($th, AgentInterrupt)
+
+	method get_progress ()
+		if (!$Running) return 0, 0, 0
+		else if (!$Con) return 1, 0, 0
+		else return 1, $Con.have, $Con.have + $Con.want
+}
+
+class ShutDown { }
+
+# A Fetcher is the core API for getting the data (from the network, filesystem,
+# cache, etc).
+#
+# Requests are made by using the method `get (url, callback, caching)`
+# When an url is downloaded, the callback method is called.
+# `interrupt` is the reset operation that cancels all the downloads that have
+# started from the specific fetcher.
+
+FAVSET = set ()
+
+class Fetcher
+{
+	Active = False
+
+	method __init__ ($report_back, $report_active)
+	{
+		$progress_lock = thread.xlock (False)
+		$agent_lock = thread.xlock ()
+		$pcID = thread.start_new ($progress_collect)
+		$agents = {}
+		$ftp_agents = []
+		$waiting4 = {}
+	}
+
+	method shutdown ()
+	{
+		try thread.interrupt ($pcID, ShutDown)
+		del $agents, $waiting4, $report_back, $report_active
+	}
+
+	method progress_collect ()
+	{
+		last = None
+		# the progress collector "harvests" the stats.
+		while (1) try {
+			$progress_lock.acquire ()
+
+			bytes_downloaded = bytes_total = in_progress = 0
+			with ($agent_lock)
+				for (g in ($agents.values (), $ftp_agents))
+					for (a in g) {
+						i, bd, bt = a.get_progress ()
+						in_progress += i
+						bytes_downloaded += bd
+						bytes_total += bt
+					}
+
+			progress = in_progress, bytes_downloaded, bytes_total
+			if (progress != last) {
+				if (PrintProgress)
+					print "Progress report:", in_progress, bytes_downloaded, bytes_total
+				$report_back (in_progress, bytes_downloaded, bytes_total)
+				last = progress
+			}
+
+			oldActive = $Active
+			$Active = bool (in_progress or bytes_downloaded != bytes_total)
+			if ($Active)
+				$progress_lock.release ()
+
+			if (oldActive != $Active)
+				$report_active ($Active)
+
+			sleep (0.2)
+		} except (ShutDown) {
+		} except {
+			print "SOMETHING'S WRONG WITH THE PROGRESS COLLECTOR", sys.exc_info ()
+		}
+	}
+
+	# Interrupt is the "reset" operation. whether the fetcher has active agents
+	# or not, it is used to cleanup the state.
+
+	method interrupt ()
+		with ($agent_lock) {
+			for (a in $agents.values ())
+				try a.shutdown ()
+			$agents = {}
+			$waiting4 = {}
+			for (a in $ftp_agents)
+				try a.shutdown ()
+			$ftp_agents = []
+		}
+
+	method Remove (a)
+		with ($agent_lock)  {
+			for (k, v in $agents.items ())
+				if (v is a) {
+					try del $agents [k]
+					try del $waiting4 [k]
+					break
+				}
+			try $ftp_agents.remove (a)
+		}
+
+	method doget (url, callback, caching=1, main_page=False, high_pri=False)
+	{
+		if (url.Local) {
+			callback (url)
+			return
+		}
+
+		if (url.protocol == "ftp") {
+			with ($agent_lock) {
+				$ftp_agents.append (FTP_Agent (self, url, caching))
+				$waiting4 [url] = callback, caching
+			}
+			$progress_lock.release ()
+			return
+		}
+
+		if (caching == 2)
+			# avoid summoning an agent of request for cached and in-cache
+			if (result = url.load_cached ()) {
+				callback (result)
+				return
+			}
+
+		if (url.protocol in ("http", "https")) with ($agent_lock) {
+			for (a in $agents)
+				if.break (a == url.netloc)
+					$agents [a].(high_pri ? "get_high_pri" : "get") (url, caching)
+			else.for
+				$agents [url.netloc] = Agent (url, caching, self, main_page ? 2 : 1)
+			$waiting4 [url] = callback, caching
+		}
+
+		$progress_lock.release ()
+	}
+
+	method get_main (url, callback, caching)
+		$doget (url, callback, caching, main_page=True)
+
+	method have (url)
+	{
+		if (url not in $waiting4) {
+			print "webnet agent: Obsolete url:", url
+			return
+		}
+
+		if (url.Status == "redirect") {
+			if (url.nredir < 3) {
+				cb, caching = $waiting4.pop (url)
+				if (DebugRedirect) {
+					print 'from:', url.nredir, url
+					print ">>>>>>>>>>>>>redirected to:", url.redirection ()
+				}
+				$get_main (url.redirection (), cb, caching)
+			} else print "Too many redirections"
+			return
+		}
+
+		with ($agent_lock) {
+			if (url not in $waiting4)
+				return
+			$waiting4 [url][0] (url)
+			del $waiting4 [url]
+		}
+	}
+
+	method get_images (urls, callback, caching)
+		for (u in urls) {
+			u.Primary = False
+			$doget (u, callback, caching)
+		}
+}
+
+if (__name__ == __main__)
+{
+	USAGE = "webnet <url>
+Get the url and save to out.tmp. Testing webnet's operation. A lot of todos"
+	s = URL(sys.argp.one ())
+	print "Getting:", s
+	s.get_it ("reload", progress="stdout")
+	print "GOT IT"
+	open ("out.tmp", "w").write (s.readfile ())
+	print "Saved to out.tmp"
+}

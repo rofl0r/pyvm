@@ -1,0 +1,31 @@
+__autosem__
+# (Is this used anymore?)
+from misc import fprint
+
+def bytes (b)
+	return b < 1024 ? "%ib"%b : b < (1024*1024) ? "%.1fK" %(b / 1024.0) : "%.2fM" %(b / (1024*1024.0))
+
+class progress
+{
+	method __init__ ()
+	{
+		$total = 0
+		$have = 0
+	}
+
+	method reset_total ($total)
+	{
+		$have = 0
+		print
+	}
+
+	method advance (x)
+	{
+		$have += x
+		if ($total) fprint ("   \r%s/%s" %(bytes ($have), bytes ($total)))
+		else fprint ("    \r%s" % bytes ($have))
+	}
+
+	method done ()
+		print
+}

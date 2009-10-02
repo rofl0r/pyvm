@@ -1,0 +1,432 @@
+##  MIME reader / multipart-splitter
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+#
+# Not much tolerance for Malformed MIME messages!
+#
+# MIME: A text-based file format which has some headers
+#   and then the body.  MIME can contain binary data in
+#   base64 encoding.  MIME has information about the
+#   content-type.  MIME can be a multi-part message where
+#   the various parts are MIME messages themselves.
+#   e-mails and newsgroups messages are MIME.
+#
+
+__autosem__
+import re
+from base64 import a2b as uudecode
+
+MIMEHDRe   = re.re (r'(.*?):\s*(.*)')
+MULTIPARTe = re.re (r'multipart/.*?\s*boundary=(\S+)', re.I)
+FILENAMEe  = re.re (r'.*?filename\s*=\s*"(.*?)"', re.I)
+PARTNAMEe  = re.re (r'.*?name\s*=\s*"(.*?)"', re.I)
+CHARSETRe  = re.re (r'.*?charset=(.*)', re.I)
+
+class Mime
+{
+	method __init__ (txt, $pno="1")
+	{
+		# Useful for PGP/Mime
+		$text = txt
+
+		nn = txt.find ('\n\n')
+		$H = None
+		if (nn == -1) {
+			# theoretically invalid but has been seen
+			print "Message without body"
+			try parse_headers (txt [:nn])
+			except $H = []
+		}
+
+		if ($H is None)
+			$H = parse_headers (txt [:nn])
+		$HD = dict ($H)
+
+		ctp, cdt = rfc822.parse_header ($HD.get ("content-type", "text/plain"))
+		$content_type = ctp = ctp.lower ()
+		$charset = cdt.get ("charset", "us-ascii")
+
+		$bodytext = $body = txt [nn + 2:]
+		if ($multipart = ctp.sw ("multipart/")) {
+			boundary = cdt.get ("boundary")
+			if (boundary and boundary [0] == '"')
+				boundary = boundary [1:-1]
+			if (boundary) {
+				$body = b = []
+				for (s, e in mimesplit (txt, nn, boundary)) {
+					n = len (b) + 1
+					m = Mime (txt [s+1:e], pno + ".%i"%n)
+					b<< m
+				}
+			} else $multipart = False
+		}
+
+		cdp = lfind0 ($H, 'content-disposition')
+		if (cdp and (m = FILENAMEe (cdp)))
+			$filename = m [1]
+		else if (m = PARTNAMEe (ctp))
+			$filename = m [1]
+		else $filename = ''
+	}
+
+	method rprint (s="")
+	{
+		x = s + "Part %s: %s" %($pno, $content_type)
+		if ($filename) x += " (filename=%s)"%$filename
+		print x
+		if ($multipart)
+			for (b in $body)
+				b.rprint (" " + s)
+	}
+
+	method parts ()
+		return $body -> str ? 1 : len ($body)
+
+	method firstpart ()
+		return $body -> str ? $decoded () : $body [0].firstpart ()
+
+	method decoded ()
+	{
+		trenc = lfind0 ($H, 'content-transfer-encoding').lower ()
+		if (trenc == 'base64')
+			return uudecode ($bodytext)
+		if (trenc == 'quoted-printable')
+			return qpdecode ($bodytext)
+		if (trenc and trenc not in ("7bit", "8bit", "binary"))
+			raise Error ("Don't know how to decode [%s]"%trenc)
+		return $bodytext
+	}
+
+	method decode2utf ()
+	{
+		body = $decoded ()
+		if ($content_type.sw ("text/"))
+			body = to_utf ($charset, body)
+		return body
+	}
+
+	method flatten ()
+		if (!$multipart)
+			return [self]
+		else {
+			f = []
+			for (p in $body)
+				f.extend (p.flatten ())
+			return f
+		}
+
+	# yield all digitally signed parts
+	method get_signed ()
+	{
+		if ($content_type == "multipart/signed")
+			yield self
+		if ($multipart)
+			for (m in $body)
+				for (m in m.get_signed ())
+					yield m
+	}
+
+	method is_signed ()
+		return [x for (x in $get_signed ())]
+
+	method prnt (x=0)
+	{
+		s = ' ' * x
+		if ($multipart) {
+			print s+"multipart (%i parts)" %len ($body)
+			for (i in $body)
+				i.prnt (x+4)
+		} else print s+"%i bytes" % len ($body)
+		print s+"Content-type:", $content_type
+		print s+"Filename:", $filename
+	}
+}
+
+gen mimesplit (txt, s, boundary)
+{
+	b = "\n--" + boundary
+	lb = len (b)
+	s = txt.find (b, s) + lb
+	while ((e = txt.find (b, s)) != -1) {
+		yield s, e
+		s = e + lb
+	}
+}
+
+def parse_header (l)
+{
+	h, v = MIMEHDRe (l).groups ()
+	return h.lower (), v
+}
+
+def parse_headers (txt)
+{
+	if (!txt) return []
+
+	H = []
+	l = ''
+	if (txt [0] != '\n')
+		for (i in txt.split ('\n'))	# as generator...
+			if (i [0] in ' \t')
+				l += ' ' + i.lstrip ()
+			else {
+				if (l) H.append (parse_header (l))
+				l = i
+
+			}
+	if (l) H.append (parse_header (l))
+	return H
+}
+
+def lfind0 (lst, f0)
+	for (i, j in lst) {
+		if (i == f0)
+			return j
+	} else return ''
+
+def lchg (lst, f0, v)
+	for (n, i in enumerate (lst))
+		if (i [0] == f0) {
+			lst [n] = f0, v
+			break
+		}
+
+# Make mime
+def make_message (headers, body)
+{
+	s = ""
+	for (k, v in headers) {
+		h = k [0].upper () + k [1:] + ": " + v
+		while (len (h) > 78) {
+			h0, None, h1 = h [:78].rpartition (" ")
+			s += h0 + "\n"
+			h = "  " + h1 + h [78:]
+		}
+		s += h + "\n"
+	}
+	return s + "\n" + body
+}
+
+##############################################################################
+# rfc822 header
+#
+# Given: 'text/plain; charset="utf-8"'
+# Return: ["text/plain", {"charset":"utf-8"}
+##############################################################################
+
+import re
+Randstr = @random.hrandstr (8)
+
+namespace rfc822
+{
+	r1 = re.compile (r'".*?"')
+	r2 = re.compile (Randstr + "..")
+	r3 = re.compile (r"\(.*?\)").subwith ("")
+
+	def split (h, sep)
+	{
+		if (sep not in h)
+			return [h]
+
+		L = []
+		def f (M)
+		{
+			L<<M[0]
+			return Randstr + "%02x" %(len (L) - 1)
+		}
+		def f2 (M)
+			return L [int (M [0][-2:], 16)]
+		h = rfc822.r3 (rfc822.r1.sub (f, h))
+		S = [rfc822.r2.sub (f2, s.strip ()) for (s in h.split (sep))]
+		
+		return S
+	}
+
+	def parse_header (h, sep=";")
+	{
+		if (sep not in h)
+			return h, {}
+
+		s = rfc822.split (h, sep)
+		d = {}
+		for (x in s [1:])
+			if ("=" not in x)
+				print "rfc822 BAD header?:", h
+			else {
+				k, None, v = x.partition ("=")
+				v = v.strip ()
+				if (v [0] == v [-1] == '"')
+					v = v [1:-1]
+				d [k.strip ().lower ()] = v
+			}
+		return s [0], d
+	}
+}
+
+#print rfc822.parse_header ('text/plain; charset="asasdsad"')
+#exit ()
+
+##############################################################################
+# Decode Quoted-Printable transfer encoding (rfc2045)
+#
+# Bug: A line ending with '=20' is supposed to have a 'space' and be
+# a soft break. We don't do that. Is the standard clear?
+##############################################################################
+
+QPRCHAR = re.compile ('=[0123456789ABCDEF][0123456789ABCDEF]').sub
+QSOFTBR = re.compile (r'=[\t ]*\n').sub
+
+def qpdecode (txt)
+{
+	def charrepl (m) return chr (int (m [0][1:], 16))
+
+	return QPRCHAR (charrepl, QSOFTBR ('', txt))
+}
+
+##############################################################################
+# RFC 2047 sais how to encode weird characters in email headers.
+#
+# That when you see some people from northern europe insisting to
+# use 'o' with two little dots above it in their name.
+##############################################################################
+
+from base64 import dec as decb64
+from fonts.unicode import to_utf
+
+namespace rfc2047
+{
+	EWS = re.compile (r"\?=\s+=\?").sub
+	EWORDe = re.compile (r'=\?(.*?)\?(.)\?(.*?)\?=').sub
+	CHARRe = re.compile ('=..').sub
+
+	# Decode to ascii.
+
+	def charsub (x)
+	{
+		try {
+			n = int (x [0][1:], 16)
+			return (32 <= n < 255) ? chr (n) : n in (9, 10, 13) ? " " : '?'
+		}
+		return '?'
+	}
+
+	def decodeword (m)
+	{
+		e = m [2]
+		txt = m [3]
+		if (e in "qQ")
+			t = rfc2047.CHARRe (rfc2047.charsub, txt).replace ('_', ' ')
+		else if (e in "bB")
+			t = decb64 (txt)
+		else {
+			print 'unknown 2047 encoding'
+			return ""
+		}
+
+		return to_utf (m [1], t)
+	}
+
+	# convert to utf-8 string
+
+	def decode (t)
+	{
+		t = rfc2047.EWS ("?==?", t)
+		return rfc2047.EWORDe (rfc2047.decodeword, t) or t
+	}
+}
+
+#
+# Get the name from an email address
+# Not 100% correct according to the RFC	
+#
+
+NAMERe = re.re ("(.*)<.*?>") # "Name <email@address>"
+PNAMERe = re.re (r"\s*\S*@\S*\s*\((.*)\)") # "email@address (Name)"
+PARRe = re.replace (r"\(.*\)", "")
+ADDRRe = re.compile (r"[^ <()]*@[^ >]*").search
+
+def NameFromAddr (n)
+{
+	# given a string: "Jim User" <jusr@provider.net>,
+	# extract the name
+	if ('=?' in n)
+		n = rfc2047.decode (n)
+	if (r = NAMERe (n)) {
+		nn = r [1].strip ()
+		if ("(" in nn)
+			try nn = PARRe (nn).strip ()
+	} else if (r = PNAMERe (n))
+		nn = r [1].strip ()
+	else return n
+	if (!nn) return n
+	if (nn [0] == '"' == nn [-1])
+		nn = nn [1:-1]
+	return nn or n
+}
+
+def AddrFromAddr (n)
+{
+	# given a string: "Jim User" <jusr@provider.net>,
+	# extract the address
+	try return ADDRRe (n)[0]
+	return n
+}
+
+def addrcmp (a1, a2)
+{
+	n1, a1 = NameFromAddr (a1), AddrFromAddr (a1)
+	n2, a2 = NameFromAddr (a2), AddrFromAddr (a2)
+	return n1.lower () == n2.lower () and a1 == a2
+}
+
+del re
+
+USAGE = "usage:
+
+ mime <file>+		: show info on file
+ mime -e <file>		: extract all attachments with a filename in the cwd
+ mime -E <file>		: extract all attachments in the cwd
+"
+# TODO: message construction. attach files/PGPsign
+
+Extensions = {
+	"text/html":".html",
+	"text/plain":".txt",
+	"image/gif":".gif",
+	"image/jpeg":".jpg",
+	"image/png":".png"
+}
+
+if (__name__ == '__main__') {
+	method Mime.gen_filename ()
+		# xxx: text/plain; charset=... consfuses this
+		return $pno + Extensions.get ($content_type, "")
+
+	extract = sys.argp.check_switch ("-e")
+	Extract = sys.argp.check_switch ("-E")
+	if (extract or Extract) {
+		M = Mime (sys.argp.Readfile ())
+		for (m in M.flatten ()) {
+			if !(f = m.filename)
+				if (!Extract) continue
+				else f = m.gen_filename ()
+			else f = rfc2047.decode (m.filename).replace ("/", "_")
+			print "saving part %s to: %s" %(m.pno, f)
+			open (f, "w").write (m.decoded ())
+		}
+	} else {
+		for (i in sys.argp.argv) {
+			print i 
+			M = Mime (readfile (i))
+			for (k in ["from", "subject"])
+				if (k in M.HD)
+					print k+": "+M.HD [k]
+			M.rprint (": ")
+			print
+		}
+	}
+}

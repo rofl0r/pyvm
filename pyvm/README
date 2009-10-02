@@ -1,0 +1,65 @@
+GENERAL:
+
+pyvm needs a base level of compatibility with Python in order to -initially-
+test the vm for bugs and speed, and secondarily, bootstrap the compiler.
+There is a lot of cruft for that; this is not a brand new dynamic vm
+implementation. At the start this was a "black box" that works like Python
+and this is why it is somewhat kludgy.
+
+WARNING:
+
+The Makefile is kinda broken. If you modify any structures in dynlib.h
+you gotta type "make cclean; make" to be sure that all the .c files will
+be regenerated.  "make o3" for optimized vm.
+
+
+SHORT INSTRUCTIONS:
+
+pyvm is written in lwc. That's a preprocessor that takes a C++-like language
+and generates C. The C files are in objdir.
+
+All the files that end in *.c+.h are included with #include into main.c+
+We do that to take advantage of extreme inlining and let the compiler analyse
+the side-effects of functions and also because lwc generates code that depends
+on such optimizations.
+
+Description of the files:
+
+	dynlib.h		: main header file
+	seg-malloc.*		: fast segmented allocator
+	module.*		: the hardcoded modules
+	lib*			: C libraries
+	IO.*			: our own IO library, replacement of fstdio
+	threading.*		: theoretically this could be a mini library for
+				   the threading of stackless vms. But tightly related to pyvm.
+	poller.*		: polling library
+
+Almost everything else is very chaotic.
+Usually functions aren't groupped "by object".
+
+In cold.c+ we put various functions that are supposed to be rare and we compile
+that with -Os.
+
+If you are looking for a specific function it can be anywhere!
+Refactoring is welcome.
+
+- In lwc class members don't need to be declared in the class.
+
+
+LONGER TERM GOAL:
+
+When pyvm was started, we didn't know how much of Python would be implemented,
+to what degree of compatibility and what the vm would look like. Now, 5 years
+later the core vm is more or less settled: we want a basic level of compatibility
+to bootstrap the pyc compiler and besides that the dynamic language is somewhat
+abstracting in the features of whitespaceless.
+
+The longer term goal is to:
+	- start removing features that exist from the old times when we were
+	  trying to implement Python.
+	- remove features that can be implemented in python or as Clibs.
+	- further simplify the pyc compiler to reduce features of the vm
+	- remove a lot of unused stuff
+
+in the end, the pyvm directory should become minimal and then we may try
+to rewrite stuff in plain C.

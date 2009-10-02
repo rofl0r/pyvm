@@ -1,0 +1,104 @@
+# Clocky, one of the most amazing games ever
+# Can be used to test xterm too!
+
+__autosem__
+from misc import fprint
+from time import sleep
+from math import log
+
+def scorep (i)
+	return pow (7 - log (i+1)/log(2.3), 2.9)
+
+def points (x)
+{
+	x -= int (x)
+	if (x > 0.5) x = 1.0 - x
+	if (x > 0.2) return 0
+	x *= 1000
+	return max (scorep (x), 0)
+}
+
+SF = USERHOME + "highscores/clocky"
+
+print "Welcome to clocky!\n"
+
+while (1)
+{
+	try c = raw_input ("press ENTER to play, 'q' tp quit, 'h' for help, 's' for scores: ").strip ()
+	except break
+
+	if (c == 'q') break
+
+	if.continue (c == 's')
+		if (havefile (SF)) {
+			hs = [[int (x) for (x in l.split ())] for (l in open (SF))]
+			print "Best scores"
+			for (s, d in hs.sort ().reverse () [:15])
+				print " %i\t\t%s" %(s, @time.ltime (d))
+			print "The great zen master can achieve the perfect score at will."
+			print
+		}
+
+	if.continue (c)
+		print """
+You can press ENTER 10 times.  A counter counts up to 10.5 and the goal is to press
+ENTER as near as possible to integer numbers; in the perfect score you would manage
+to press ENTER at 1.0, 2.0, 3.0, etc.  The closer you are to an integer, the higher
+the score.
+
+Press 's' for the highscores.
+"""
+
+	print
+	I = 0
+	Done = 0
+
+	scores = []
+
+	TIMES = 10
+	def inkey ()
+	try {
+		global Done
+		sleep (0.24)
+		for (i in *TIMES) {
+			if (sys.pty_getchar () == "q")
+				break
+			scores.append (I)
+			print "\r%.3f"% I
+			sleep (0.24)
+		}
+		Done = 1
+	}
+
+	sys.pty_stdin (True)
+	tid = @thread.start_new (inkey)
+
+	M = TIMES + 0.6
+	DT = 0.005
+	while (I < M and !Done) {
+		fprint ("\r%.3f" %I)
+		I += 0.001
+		sleep (DT)
+	}
+	print
+
+	try @thread.interrupt (tid)
+	sys.pty_stdin (False)
+
+	if (!scores)
+		continue
+
+	score = int (sum ([points (x) for (x in scores)]))
+
+	print "SCORE:", score
+	if (havefile (SF)) {
+		highscore = max ([int (l.partition (" ")[0]) for (l in open (SF))])
+		if (score > highscore)
+			print "* * * NEW HIGH SCORE! * * *"
+		if (score == highscore)
+			print "HIGHSCORE DUPED!"
+	}
+
+	if (score > 200)
+		open (SF, "a").write ("%i %i\n" %(score, int (now ())))
+}

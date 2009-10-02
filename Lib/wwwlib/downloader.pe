@@ -1,0 +1,183 @@
+__autosem__
+
+# background downloader thing -- needs rewrite
+
+import thread, os, socket, misc
+from wwwlib.wcache import WCACHE_HOME as WHOME, mkdir2
+
+TMPDIR = mkdir2 ("bg_downloads_tmp")
+
+class Interrupt;
+
+class downloader
+{
+	method __init__ ()
+	{
+		$lock = thread.xlock ()
+		$urls2go = {}			# url.uid: url, (target)
+		$urls_in_progress = {}		# url.uid: thread_id, url
+		$sites_in_progress = set ()	# url.netloc
+		$gotten = []			# url
+		$gottens = set ()		# url.uid
+
+		# if true, lower the priority for background downloads
+		$QoS = 0
+	}
+
+	activity = void
+
+	method setQoS (v)
+		$QoS += v ? 1 : -1
+	method getQoS ()
+		return $QoS
+
+	method add_url (url)
+	{
+		with ($lock) {
+			uid = url.uid
+			if (uid in $urls2go or uid in $urls_in_progress or uid in $gotten)
+				return
+			$urls2go [uid] = url
+		}
+		$start_downloads ()
+	}
+
+	method add_urls (urls)
+	{
+		with ($lock)
+			for (url in urls) {
+				uid = url.uid
+				if (uid in $urls2go or uid in $urls_in_progress or uid in $gotten)
+					return
+				$urls2go [uid] = url
+			}
+		$start_downloads ()
+	}
+
+	method start_downloads ()
+		with ($lock) {
+			for (url in $urls2go.values ())
+				if (url.netloc not in $sites_in_progress) {
+					$sites_in_progress.add (url.netloc)
+					$urls_in_progress [url.uid] =
+						 [thread.start_new ($start, url), url]
+					del $urls2go [url.uid]
+				}
+
+			if (!$urls2go and !$sites_in_progress) {
+				$activity (False)
+				print "Downloader: ***** Background downloader Done ******"
+			} else $activity (True)
+		}
+
+	method redirects (url)
+		$add_url (url.redirection ())
+
+	method start (url)
+	try {
+		# (xxx: max redirections)
+		if (url.protocol == "file")
+			return
+
+		print "Downloader: bg start download:", url
+
+		tmpf = TMPDIR + url.uid
+		if (os.access (tmpf))
+			os.remove (tmpf)
+		tmpxxx = misc.tmpfile (fnm=tmpf)
+
+		# The thing to remember here is that, upon successful download
+		# the method `url.download` will move the file in the webcache
+		# and remove the temporary.  The file then can be accessed by
+		# `url.File`.
+
+		url.download (1, QoS=$getQoS, tmpfile=tmpf)
+		if (url.Status == "redirect")
+			return $redirects (url)
+
+		if (url.Status != "OK" and tmpxxx.getsize ())
+			if (url.Status != "resume") {
+				# if not resumable, try 3 times to get it
+				n = 3
+				while (n) {
+					url.download (1, QoS=$getQoS)
+					if (url.Status == "redirect")
+						return $redirects (url)
+					if (url.Status == "OK")
+						break
+					n -= 1
+				}
+			} else {
+				# if resumable try forever, as long as we have more than before
+				have = tmpxxx.getsize ()
+				n = 3
+				n2 = 40
+				while (n and n2) {
+					print "Downloader: resuming from:", have
+					url.download (1, QoS=$getQoS, tmpfile=tmpf)
+					if (url.Status == "redirect")
+						return $redirects (url)
+					if (url.Status == "OK")
+						break
+					if (url.Status != "resume") {
+						print "WTF?? can't resume any more?"
+						os.remove (tmpf)
+					}
+					if (tmpxxx.getsize () <= have) n -= 1
+					else n = 3
+					n2 -= 1
+					have = tmpxxx.getsize ()
+				}
+			}
+
+		if (url.Status != "OK")
+			print "Downloader: download failed for", url
+		else
+			print "Downloader: got it boss:", url.File
+
+		if (url.Status == "OK")
+			url.link_downloaded ()
+
+		with ($lock) {
+			$gotten.append (url)
+			$gottens.add (url.uid)
+		}
+	} finally {
+		with ($lock) {
+			try del $urls_in_progress [url.uid]
+			try del $sites_in_progress [url.netloc]
+		}
+		$start_downloads ()
+	}
+
+	# main loop wants something
+	method want (url)
+		with ($lock)
+			if (url.uid in $urls2go)
+				del $urls2go [url.uid]
+			else if (url.uid in $urls_in_progress)
+				return True
+
+	# Get a list of all the active downloads
+	method get_listing ()
+		with ($lock)
+			return [x [1] for (x in $urls_in_progress.values ())], $urls2go.values ()
+
+#	method cancel_download (url)
+#		with ($lock)
+#			if (url in $sites_in_progress)
+#				thread.interrupt ($sites_in_progress [url][0], Interrupt)
+#			else try del $urls [url.uid]
+}
+
+Downloader = downloader ()
+
+"""
+	There are 7 downloads in progress.
+
+	Cancel the exit?
+	Stop them all?
+	Run until the incomplete downloads are finished and abort the rest?
+	Run in the background until they're all done?
+	Pause them and resume when the browser is restarted?
+"""

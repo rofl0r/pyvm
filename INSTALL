@@ -1,0 +1,142 @@
+Build
+=====
+
+on x86/linux just type (without any '-j'):
+
+	make
+
+64-bit systems need a 32bit userspace (-m32).
+On anything else, type 'make' and try to fix it :)
+
+"make" will invoke `pyvm/configure` without any parameters.
+If you want to specify an alternative compiler or change
+the defaults, run `configure` before "make".
+
+In order to compile pyvm you'll need a recent version of
+gcc. Probably something in the 4.x series.
+
+
+Install
+=======
+
+At the current state pyvm does not install. 
+Everything will remain in this directory (the "pyvm home
+directory").  Once bytecode files have been generated
+it's not a good idea to move this directory around.
+
+So before 'make', be sure you like the current location
+of this directory.  A good place is $HOME/pyvm
+
+Only the executable "pyvm" will be copied to ~/bin
+when the installation is done. (~/bin MUST be in the $PATH
+therefore)
+
+using pyvm means hacking it and this is the most convenient
+installation for developers.
+
+
+External libraries
+==================
+
+These are not required for the core vm but may be useful in
+other modules:
+
+ * ffmpeg:
+	required for audio/video play, mp3, soundlab, etc
+
+ * libjpeg:
+	probably already installed. pyvm has a builtin jpeg
+	decoder but it doesn't support progressive jpegs yet.
+	(may use ffmpeg for it alternatively in the future)
+
+ * freetype:
+	pyvm has its own font rasterizer. However, PDFs can
+	contain their own fonts and pyvm's rasterizer will
+	certainly fail in some cases. freetype will be used
+	if pyvm fails.
+
+ * Python 2.4:
+	Python is required if you wish to hack the pyc compiler
+	(or generally break the bootstrap). Python 2.4 is the
+	suggested version although variants from the 2.5 series
+	are known to work.
+
+ * SDL:
+	for the SDL backend. Completely optional.
+
+Note that any of the above can be installed at any later time.
+
+
+Fonts
+=====
+
+The pyvm tarball includes the "builtin PDF fonts" which is a nice
+family that contains only Latin characters.  In order to browse
+the web you'll probably need proper international webfonts. See
+the files under Lib/FontFiles for some solutions.
+
+
+Run
+===
+
+For a test run, you can just type:
+
+	pyvm
+
+and be greeted with the version number.
+
+The first times you run pyvm, there may be crashes.
+pyvm compiles and links mini C libraries at runtime
+and some systems may not allow that.
+The toolchain is supposed to work flawlessly on
+x86/linux/glibc/x11 without paranoid security settings.
+To see if linking those libraries works you can type
+
+	pyvm md5
+
+which tests and times the correct operation of MD5.
+
+For something more exotic try:
+
+	pyvm www http://website
+
+or for even more fun
+
+	pyvm windows
+
+from the framebuffer console (but read Doc/linuxfb first)
+
+
+Porting
+=======
+
+FreeBSD/OpenBSD may have issues but porting should
+be possible.
+
+For Windows the standard way is to download the VMWare
+image (~10MB) that contains a linux kernel, libc, gcc-core
+and pyvm.  Cygwin is not supported.  pyvm is a program for
+programmers and programmers are better working inside
+linux.
+
+Exotic flavors of UNIX from 1980 do not work. (yes,
+all the five people who still use them, would better
+go buy a PC; here are $100)
+
+Big Endian systems, will probably have little
+endian graphics. To be fixed after feedback.
+
+64-bit systems at 64-bit mode, do not work. pyvm uses
+the flag -m32 to create 32-bit executables (which use
+1/2 of the memory for pointers, but miss the extra
+registers of the architecture). pyvm *can* be compiled
+for x86_64 if you edit 'configure' and make it not
+exit in the sizeof(int) test. The vm will be compiled
+and the Lib bootstrapped, but then it will fail right
+after that because the DLL linker isn't ported to
+the x86_64 ABI (module-DLL.txt/module.JIT.c+).
+An interesting thing is that it is possible to run
+the Dejavu benchmark suite and observe that the speed
+of 64bit programs is more or less the same as the
+32bit programs; and that leaves us with the "half
+memory -- double cache" goodie.

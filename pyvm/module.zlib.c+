@@ -1,0 +1,123 @@
+/*
+ *  zlib module
+ * 
+ *  Copyright (c) 2008 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+extern "zlib.h" {
+#include <zlib.h>
+}
+#include "dynlib.h"
+
+/*
+ This file implements the core decompression functions (inflate).
+ zlib has an API where both the input and output can be progressive.
+ in pyvm progressive input is not used/implemented anywhere yet.
+
+ With this API, the entire compressed data must exist in memory.
+ Decompressed data is extracted progrssively by requesting chunks
+ of specific size.  If the size of the uncompressed data is known
+ in advance, decompression will happen in one step.
+*/
+
+static void *mymalloc (void *op, unsigned items, unsigned size)
+{
+	return dlmalloc (size*items);
+}
+
+static void myfree (void *op, void *p)
+{
+	dlfree (p);
+}
+
+static void initz (z_stream *z, char *data, int len, int raw)
+{
+	z->zalloc = mymalloc;
+	z->opaque = 0;
+	z->zfree = myfree;
+
+	z->next_in = (unsigned char*) data;
+	z->avail_in = len;
+
+	inflateInit2 (z, raw ? -15 : 15);
+}
+
+static int decompress (z_stream *z, char *out, unsigned int outlen)
+{
+	unsigned int have = z->total_out;
+	z->next_out = (unsigned char*) out;
+	z->avail_out = outlen;
+
+	int rez = inflate (z, Z_NO_FLUSH);//Z_FINISH);
+
+	if (rez == Z_OK)
+		return outlen;
+
+	if (rez == Z_STREAM_END)
+		return z->total_out - have;
+
+	return -1;
+}
+
+/* */
+
+_module __object__ *init_z (REFPTR argv[])
+{
+	char *indata = argv [0].CheckString ()->str;
+	int len = argv [1].CheckInt ()->i;
+	int offset = argv [2].CheckInt ()->i;
+	int raw = argv [3].CheckInt ()->i;
+	indata += offset;
+
+	char *z = seg_alloc (sizeof (z_stream));
+	initz ((z_stream*) z, indata, len, raw);
+
+	return new StringObj allocated (z, sizeof (z_stream));
+}
+
+_module __object__ *unzip_z (REFPTR argv[])
+{
+	z_stream *z = (z_stream*) argv [0].CheckString ()->str;
+	char *outdata = argv [1].CheckString ()->str;
+	int outlen = argv [2].CheckInt ()->i;
+
+	return newIntObj (decompress (z, outdata, outlen));
+}
+
+_module __object__ *zavail_in (REFPTR argv[])
+{
+	z_stream *z = (z_stream*) argv [0].CheckString ()->str;
+	return newIntObj (z->avail_in);
+}
+
+_module __object__ *end_z (REFPTR argv[])
+{
+	z_stream *z = (z_stream*) argv [0].CheckString ()->str;
+	inflateEnd (z);
+	return &None;
+}
+
+/* module */
+
+static bltinfunc funcs [] = {
+	{ "init",	SETARGC (4, 4), init_z },
+	{ "unzip",	SETARGC (3, 3), unzip_z },
+	{ "zavail_in",	SETARGC (1, 1), zavail_in },
+	{ "end",	SETARGC (1, 1), end_z },
+	BENDITEM
+};
+
+slowcold __object__ *import__zlib ()
+{
+	varval values [] = {
+		{"sizeof_z", newIntObj (sizeof (z_stream))},
+		VENDITEM
+	};
+
+	return new ModuleObj BltinModule ("_zlib", funcs, 0, values);
+}

@@ -1,0 +1,123 @@
+##  GIF Image
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+if (1) C = @DLL.Import ('gif', '-O3', pelf=1)
+else C = @DLL.Import ('gif', '-O1 -g', pelf=0)
+
+#
+# Basically, gif is a very simple format which converts the image from RGB
+# to a colormap+palettized image and then lzw compresses the image.
+# But with the various extensions, gif can be a container format for
+# mutliple images of varying sizes/offsets/stuff.
+#
+# This class parses all this information and decodes the nth image (by default 0)
+# on demand.
+#
+# XXX: read size and parse, at once for the web
+#
+
+class gif
+{
+	method __init__ ($filename)
+	{
+		d = @datastream.data_parser (readfile (filename))
+
+		def d.rdata ()
+		{
+			s = ""
+			while (1) {
+				n = d.r8 ()
+				if (!n) return s
+				s += d.rn (n)
+			}
+		}
+
+		if (d.rn (6) not in ("GIF87a", "GIF89a"))
+			raise Error ("Header mismatch")
+
+		$swidth, $sheight, c, $background, None = d.unpack_le ('HHBBb')
+		if ($swidth * $sheight > 5000000)
+			raise Error ("Gif too big")
+
+		$global_cmap = c & 0x80 ? d.rn (3 * (2 << (c & 7))) : ""
+
+		cmap = ""
+		ext = None, None, None, None
+		$L = []
+		# at the moment, decode only the first image of an animated gif and
+		# then exit the loop...
+		while (!$L) {
+			try x = d.rbyte ()
+			except break
+			if (x == '!') {
+				# extensions: comments, stuff
+				x = d.r8 ()
+				try
+				 	s = d.rdata ()
+				except break
+				if (x == 249) {
+					s0 = ord (s [0])
+					disposal = (s0 >> 2) & 7
+					inputflag = s0 & 2
+					delay = ord16l (s [1:3])
+					transparent = (s0 & 1) ? ord (s [3]) : None
+					ext = disposal, inputflag, delay, transparent
+				}
+			} else if (x == ',') {
+				# image data
+				xoffs, yoffs, width, height, c = d.unpack_le ('HHHHB')
+
+				# If the width of the current image != global width,
+				# abort for now.
+				if (width > $swidth or height > $sheight)
+					raise Error ("bad width %i,%i .. %i,%i" %(width, height,	
+										 $swidth, $sheight))
+				if (c & 0x80)
+					cmap = d.rn (3 * (1 << ((c & 7) + 1)))
+				rgb = _buffer (width * height)
+				nn = C.decode (d.data, d.offset, d.left (), rgb, width, height, c&0x40)
+				$L.append ((xoffs, yoffs, width, height, cmap, c&0x40, d.offset,
+					    nn, ext))
+				d.skip (nn)
+				cmap = ""
+				ext = None, None, None, None
+			} else if (x == ';') break
+		}
+	}
+
+	method read (imgno=0)
+	{
+		x, y, w, h, cmap, il, offset, nn, (None, None, None, tr) = $L [imgno]
+		cmap = cmap or $global_cmap
+		alpha = None
+		f = open ($filename)
+		f.seek (offset)
+		nn += 1
+		decoded = _buffer (w * h, 0)
+		C.decode (f.read (nn), 0, nn, decoded, w, h, il)
+		rgb = _buffer (w * h * 3)
+		C.expand (decoded, rgb, cmap, w*h)
+		if (tr is not None) {
+			c = chr (tr)
+			alpha = "".join ([x == c ? '\xff' : '\x00' for (x in decoded)]), False
+		}
+		return x, y, w, h, rgb, alpha
+	}
+}
+
+if (__name__ == '__main__') {
+	g = gif (sys.argv [1])
+	for (i in g.L)
+		print i
+	x, y, w, h, data, ck = g.read ()
+#	print x, y, w, h, ck
+	from graphics import image
+	i = image (data, w, h, 3)
+	i.save_as_ppm ("WOOT.ppm")
+}

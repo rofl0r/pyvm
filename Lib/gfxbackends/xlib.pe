@@ -1,0 +1,705 @@
+##  xlib bindings
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+# Wrapper for the X11R6. Binary compatibility is required.
+# We try depend only on libX11 and not the header files.
+
+# --- This file was used initially, when the X11 backend called
+#	the X functions XDrawLine, XFillRect, XDrawString, etc
+#	for the ops.  Later this entire thing was changed and
+#	we map the entire window with XShm and use or own
+#	drawing/rendering functions which are common for all the
+#	other backends.  This is the right thing.
+# "Removing redundant lines is equivalent to adding useful lines"
+
+from common import straight_struct, int_array
+
+class Error
+{ }
+
+# Xlib structures as arrays
+
+XSetWindowAttributes = straight_struct (
+	'background_pixmap',
+	'background_pixel',
+	'border_pixmap',
+	'border_pixel',
+	'bit-gravity',
+	'win_gravity',
+	'backing_store',
+	'backing_planes',
+	'backing_pixel',
+	'save_under',
+	'event_mask',
+	'do_not_propagate_mask',
+	'override_redirect',
+	'colormap',
+	'cursor'
+);
+
+XSizeHints = straight_struct (
+	'flags',
+	'x', 'y',
+	'width', 'height',
+	'min_width', 'min_height',
+	'max_width', 'max_height',
+	'width_inc', 'height_inc',
+		# nested structure. cannot use member!
+		'min_ascpect.x',
+		'min_ascpect.y',
+		'max_ascpect.x',
+		'max_ascpect.y',
+	'base_width', 'base_height',
+	'win_gravity'
+);
+
+XGCValues = straight_struct (
+	'function',
+	'plane_mask',
+	'foreground',
+	'background',
+	'line_width',
+	'line_style',
+	'cap_style',
+	'join_style',
+	'fill_style',
+	'fill_rule',
+	'arc_mode',
+	'tile',
+	'stipple',
+	'ts_x_origin',
+	'ts_y_origin',
+	'font',
+	'subwindow_mode',
+	'graphics_exposures',
+	'clip_x_origin',
+	'clip_y_origin',
+	'clip_mask',
+	'dash_offset',
+	'dashes'	# xxx: this is a char really. 
+);
+
+XFontStruct = straight_struct (
+	'ext_data',
+	'fid',
+	'direction',
+	'min_char_or_byte2',
+	'max_char_or_byte2',
+	'min_byte1',
+	'max_byte1',
+	'all_chars_exist',
+	'default_char',
+	'n_properties',
+	'properties',
+		# nested structures with short int members
+		'min_bounds.lbearing/rbearing',
+		'min_bounds.width/ascent',
+		'min_bounds.descent/attributes',
+		'max_bounds.lbearing/rbearing',
+		'max_bounds.width/ascent',
+		'max_bounds.descent/attributes',
+	'per_char',
+	'ascent',
+	'descent'
+);
+
+XKeyEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'root',
+	'subwindow',
+	'time',
+	'x', 'y',
+	'x_root', 'y_root',
+	'state',
+	'keycode',
+	'same_screen'
+);
+
+XButtonEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'root',
+	'subwindow',
+	'time',
+	'x', 'y',
+	'x_root', 'y_root',
+	'state',
+	'button',
+	'same_screen'
+);
+
+XMotionEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'root',
+	'subwindow',
+	'time',
+	'x', 'y',
+	'x_root', 'y_root',
+	'state',
+	'is_hint',
+	'same_screen'
+);
+
+XCrossingEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'root',
+	'subwindow',
+	'time',
+	'x', 'y',
+	'x_root', 'y_root',
+	'mode',
+	'detail',
+	'same_screen',
+	'focus',
+	'state'
+);
+
+XFocusChangeEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'mode',
+	'detail'
+);
+
+XExposeEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'x', 'y',
+	'width', 'height',
+	'count'
+);
+
+XGraphicsExposeEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'drawable',
+	'x', 'y',
+	'width', 'height',
+	'count',
+	'major_code',
+	'minor_code'
+);
+
+XNoExposeEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'drawable',
+	'major_code',
+	'minor_code'
+);
+
+XVisibilityEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'state'
+);
+
+XCreateWindowEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'parent',
+	'window',
+	'x', 'y',
+	'width, height',
+	'border_width',
+	'override_redirect'
+);
+
+XDestroyWindowEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window'
+);
+
+XUnmapEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'from_configure'
+);
+
+XMapEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'override_redirect'
+);
+
+XMapRequestEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'parent',
+	'window'
+);
+
+XReparentEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'parent',
+	'x', 'y',
+	'override_redirect'
+);
+
+XConfigureEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'x', 'y',
+	'width, height',
+	'border_width',
+	'above',
+	'override_redirect'
+);
+
+XGravityEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'x', 'y'
+);
+
+XResizeRequestEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'width', 'height'
+);
+
+XConfigureRequestEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'parent',
+	'window',
+	'x', 'y',
+	'width', 'height',
+	'border_width',
+	'above',
+	'detail',
+	'value_mask'
+);
+
+XCirculateEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'event',
+	'window',
+	'place'
+);
+
+XCirculateRequestEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'parent',
+	'window',
+	'place'
+);
+
+XPropertyEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'atom',
+	'time',
+	'state'
+);
+
+XSelectionClearEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'selection',
+	'time'
+);
+
+XSelectionRequestEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'owner',
+	'requestor',
+	'selection',
+	'target',
+	'property',
+	'time'
+);
+
+XSelectionEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'requestor',
+	'selection',
+	'target',
+	'property',
+	'time'
+);
+
+XColormapEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window',
+	'colormap',
+	'new',
+	'state'
+);
+
+XAnyEvent = straight_struct (
+	'type',
+	'serial',
+	'send_event',
+	'display',
+	'window'
+);
+
+XShmSegmentInfo = straight_struct (
+	'shmseg',
+	'shmid',
+	'shmaddr',
+	'readOnly'
+);
+
+# XEvent should be big enough for the biggest event
+# structure. That's 24 ints at 32 bit.
+XEvent = straight_struct (*(24 * ('type',)));
+
+# Xlib constants
+
+namespace XConst
+{
+	# grep from /usr/X11R6/include/X11/*.h
+	Always         = 2
+	CopyFromParent = 0
+	CWBackingStore = 1<<6
+	PMinSize       = 1<<4
+	PMaxSize       = 1<<5
+	FillSolid      = 0
+	AllPlanes      = ~0
+
+	GCFillStyle  = 1<<8
+	GCForeground = 1<<2
+	GCBackground = 1<<3
+	GCFont       = 1<<14
+
+	QueuedAfterFlush = 2
+
+	NoEventMask		= 0
+	KeyPressMask		= 1<<0
+	KeyReleaseMask		= 1<<1
+	ButtonPressMask		= 1<<2
+	ButtonReleaseMask	= 1<<3
+	PointerMotionMask	= 1<<6
+	KeymapStateMask		= 1<<14
+	ExposureMask		= 1<<15
+	StructureNotifyMask	= 1<<17
+	ResizeRedirectMask	= 1<<18
+
+	KeyPress	= 2
+	KeyRelease	= 3
+	ButtonPress	= 4
+	ButtonRelease	= 5
+	MotionNotify 	= 6
+	KeymapNotify	= 11
+	Expose		= 12
+	ConfigureNotify	= 22
+	ResizeRequest	= 25
+
+	ShiftMask	= 1<<0
+	LockMask	= 1<<1
+	ControlMask	= 1<<2
+	Mod1Mask	= 1<<3
+
+	ZPixmap = 2
+
+	# for xshm
+	IPC_PRIVATE = 0
+	IPC_CREAT   = 01000
+	IPC_RMID    = 0
+}
+
+# Xlib functions
+
+XFuncSpec = """
+i XAllocColor iis
+i XChangeGC iiip32
+i XCloseDisplay i
+i XCreateGC iiip32
+i XCreateImage iiiiisiiii
+i XCreatePixmap iiiii
+i XCreateWindow iiiiiiiiiiip32
+i XDefaultColormap ii
+i XDefaultDepthOfScreen i
+i XDefaultRootWindow i
+i XDefaultScreen i
+i XDefaultScreenOfDisplay i
+i XDefaultVisualOfScreen i
+i XDestroyImage i
+i XDestroyWindow ii
+i XDoesBackingStore i
+i XDrawImageString iiiiisi
+i XDrawString iiiiisi
+i XDrawLine iiiiiii
+i XDrawPoint iiiii
+i XEventsQueued ii
+i XFillRectangle iiiiiii
+i XFlush i
+i XFreeGC ii
+i XFreePixmap ii
+i XGetImage iiiiiiii
+i XHeightOfScreen i
+i XLoadQueryFont is
+i XLookupString p32p8ip32i
+i XMapWindow ii
+i XMoveWindow iiii
+i XNextEvent ip32
+i XOpenDisplay z
+i XPutImage iiiiiiiiii
+i XQueryPointer iip32p32p32p32p32p32p32
+i XResizeWindow iiii
+i XWarpPointer iiiiiiiii
+i XResizeWindow iiii
+i XSelectInput iii
+i XSetNormalHints iip32
+i XStoreName iis
+i XTextWidth isi
+i XTranslateCoordinates iiiiip32p32p32
+i XUnloadFont ii
+i XUnmapWindow ii
+i XWithdrawWindow iii
+i XWidthOfScreen i
+""";
+
+# load functions from libX11
+
+import DLL;
+Xlib = DLL.dllopen ('libX11.so');
+__DirectMemSetInt = DLL.DirectMemSetInt;
+
+namespace XFunc
+{ }
+
+for (i in XFuncSpec.split ('\n')[1:-1]) {
+	n = tuple (i.split (' '));
+	setattr (XFunc, n [1], Xlib.link (n));
+}
+
+XFunc.XPeekEvent = Xlib.link (('i', 'XPeekEvent', 'ip32'), True); # blocking
+
+del Xlib;
+
+# X-Shared memory extension
+
+try
+{
+	Xext = DLL.dllopen ('libXext.so');
+	XFunc.XShmQueryExtension = Xext.link (('i', 'XShmQueryExtension', 'i'));
+	XFunc.XShmCreateImage = Xext.link (('i', 'XShmCreateImage', 'iiiivp32ii'));
+	XFunc.XShmAttach = Xext.link (('i', 'XShmAttach', 'ip32'));
+	XFunc.XShmDetach = Xext.link (('i', 'XShmDetach', 'ip32'));
+	XFunc.XShmPutImage = Xext.link (('i', 'XShmPutImage', 'iiiiiiiiiii'));
+	# these are from libc but available through Xext
+	namespace XShm {
+		shmget = Xext.link (('i', 'shmget', 'iii'));
+		shmat  = Xext.link (('i', 'shmat',  'iii'));
+		shmdt  = Xext.link (('i', 'shmdt',  'i'));
+		shmctl = Xext.link (('i', 'shmctl', 'iii'));
+	}
+	del Xext;
+} except 
+	print "No XShm", sys.exc_info ();
+
+del DLL;
+
+# power functions
+
+def XOpenDisplay (d=None)
+{
+	dpy = XFunc.XOpenDisplay (d);
+	if (not dpy) {
+		print "Can't open display.  No Graphics.";
+		raise SystemExit;
+	}
+	return dpy;
+}
+
+def XCreateWindow (display, parent, x, y, width, height, border_width,
+		   depth, class_, visual, valuemask, attributes)
+	return XFunc.XCreateWindow (display, parent, x, y, width,
+				    height, border_width, depth, class_,
+				    visual, valuemask,
+				    attributes is not None ? attributes.getbuffer () : 0);
+
+def XSetNormalHints (display, w, hints)
+	return XFunc.XSetNormalHints (display, w, hints.getbuffer ());
+
+def XAllocColor (display, colormap, screen_in_out)
+	return XFunc.XAllocColor (display, colormap, screen_in_out.getbuffer ());
+
+def XCreateGC (display, d, valuemask, values)
+	return XFunc.XCreateGC (display, d, valuemask, values.getbuffer ());
+
+def XChangeGC (display, d, valuemask, values)
+	return XFunc.XChangeGC (display, d, valuemask, values.getbuffer ());
+
+def XNextEvent (display, event_return)
+	return XFunc.XNextEvent (display, event_return.getbuffer ());
+
+def XQueryPointer (display, d)
+{
+	unused, x, y = int_array (1), int_array (1), int_array (1);
+	XFunc.XQueryPointer (display, d, unused, unused, unused, unused, x, y, unused);
+	return x [0], y [0];
+}
+
+def XWarpPointer (display, window, x, y)
+	XFunc.XWarpPointer (display, 0, window, 0, 0, 0, 0, x, y);
+
+def XDestroyImage (ximage, stuff)
+{
+	# Extreme Hack. XDestroyImage will free() its data which
+	# is very wrong because it has been allocated by a different
+	# memory allocator. To avoid this, we set the `data` field
+	# to NULL. According to X11 ABI, this is the fifth field of
+	# the XImage struct.
+	if (stuff is not None)
+		__DirectMemSetInt (ximage, 4, 0);
+	XFunc.XDestroyImage (ximage);
+}
+
+def XLookupString (event)
+{
+	# this is special. we return obtained ch, and keysym
+	ch = _buffer (2);
+	keysym = int_array (1);
+	XFunc.XLookupString (event.getbuffer (), ch, 2, keysym, 0);
+	return ch, keysym [0];
+}
+
+def XTranslateCoordinates (display, src_w, dest_w, src_x, src_y)
+{
+	dest_x, dest_y, dest_win = int_array (1), int_array (1), int_array (1);
+	XFunc.XTranslateCoordinates (display, src_w, dest_w, src_x, src_y,
+					dest_x, dest_y, dest_win);
+	return dest_x [0], dest_y [0];
+}
+
+for (n, f in XFunc.__dict__.items ())
+	if (n [0] == 'X' and n not in globals ())
+		globals ()[n] = f;
+
+xxx = globals ().keys ();
+__all__ = [k for (k in xxx) if (k [0] == 'X')];
+
+#
+# basic testing
+#
+
+if (__name__ == '__main__')
+{
+	width, height = 640, 480;
+	D = XOpenDisplay ();
+	attr = XSetWindowAttributes ();
+	attr.backing_store = XConst.Always;
+	W = XCreateWindow (D, XDefaultRootWindow (D),
+				 0, 0, width, height, 1, 0, 0, 0,
+				 XConst.CWBackingStore, attr);
+	sh = XSizeHints ();
+	sh.min_width = sh.max_width = width;
+	sh.min_height = sh.max_height = height;
+	sh.flags = XConst.PMinSize | XConst.PMaxSize;
+	XSetNormalHints (D, W, sh);
+	XMapWindow (D, W);
+	XFlush (D);
+	XStoreName (D, W, 'xxxx');
+	v = XGCValues ();
+	v.foreground = 65535;
+	stdGC = XCreateGC (D, W, XConst.GCForeground, v);
+	XDrawLine (D, W, stdGC, 0, 0, 640, 480);
+	XFillRectangle (D, W, stdGC, 0, 0, 640, 200);
+	XFlush (D);
+	from time import sleep;
+
+XSelectInput (D, W, XConst.KeyPressMask|XConst.KeyReleaseMask);
+while (1) {
+
+	if (XEventsQueued (D, 2)) {
+		E = XEvent ();
+		XNextEvent (D, E);
+		print "EVENT:", E.type;
+	}
+	sleep (0.001);
+}
+
+}

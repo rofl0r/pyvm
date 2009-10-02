@@ -1,0 +1,165 @@
+__autosem__
+from widget import widget, domain, kwget
+
+class basecontainer (widget)
+{
+	DrawBackground = None
+
+	method Init (autocon=True, **kw)
+	{
+		$DrawBackground = kwget (kw, "DrawBg", None)
+		$tabgroup = kwget (kw, "tabgroup", False)
+		if ($tabgroup)
+			$prevtabgroup, domain.data.tabgroup = domain.data.tabgroup, []
+
+		if ("onKey" in kw)
+			$cOnKey = kw.pop ("onKey")
+
+		$widget_init (**kw)
+		if (autocon)
+			domain.add_packer (self)
+		$keyw = None
+	}
+
+	base_init = Init
+		
+	method add_child (w)
+	{
+		$c.append (w)
+		w.p = self
+	}
+
+	# with context
+	method __context__ () return self
+	__enter__ = void
+	method __exit__ (*args) if (args [0] is None) $pack ()
+	#
+
+	arrage = void
+
+	method pack ()
+	{
+		if ($tabgroup) {
+			d, domain.data.tabgroup = domain.data.tabgroup, $prevtabgroup
+			if (d) {
+				p = d [-1]
+				for (w in d)
+					p = p.Tnext = w
+			}
+		}
+		domain.pop_packer (self)
+		$arrange ()
+	}
+
+	method children ()
+		for (i in $c)
+			yield i
+
+	method hide ()
+		for (i in $children ())
+			i.hide ()
+
+	method unhide ()
+		for (i in $children ())
+			i.unhide ()
+
+	method set_enable (x)
+		for (i in $children ())
+			i.set_enable (x)
+
+	# propagate
+
+	method DrawOutline ()
+		return
+
+	method Draw ()
+	{
+		if ($DrawBackground is not None)
+			$draw_blank ($DrawBackground)
+		for (i in $children ()) {
+			i.Draw ()
+			if (i.Outline)
+				if (i.Outline -> tuple or i.Outline -> list)
+					i.outline (*i.Outline)
+				else i.outline ()
+		}
+		$DrawOutline ()
+	}
+
+	method onRedraw (x, y, w, h)
+	{
+		if ($DrawBackground is not None)
+			$fill_rect (x, y, w, h, $DrawBackground)
+		for (i in $children ())
+			if (t = i.intersection (x, y, w, h)) {
+				i.onRedraw (*t)
+				if (i.Outline)
+					if (i.Outline -> tuple or i.Outline -> list)
+						i.outline (*i.Outline)
+					else i.outline ()
+			}
+		$DrawOutline ()
+	}
+
+	preOnClick = postOnClick = void
+
+	method onClick (x, y)
+	{
+		if ($preOnClick (x, y))
+			return True
+		for (c in $children ())
+			if (c.xy_in (x, y))
+				return c.onClick (x - c.x, y - c.y)
+		$leaveKeyWidget ()
+		$postOnClick (x, y)
+	}
+
+	method onRightClick (x, y)
+		for (c in $children ())
+			if (c.xy_in (x, y))
+				return c.onRightClick (x - c.x, y - c.y)
+
+	method onWheel (x)
+		for (c in $children ())
+			if (c.onWheel (x))
+				return True
+
+	# key transmission
+
+	method setKeyWidget (w=None)
+	{
+		if (w is not $keyw) {
+			if ($keyw is not None) {
+				k, $keyw = $keyw, None
+				k.leaveKeyWidget ()
+			}
+			$keyw = w
+			if (w is not None)
+				w.enterKeyWidget ()
+		}
+		$p.setKeyWidget (self)
+	}
+
+	method enterKeyWidget ()
+		return
+
+	method leaveKeyWidget ()
+		if ($keyw) {
+			$keyw.leaveKeyWidget ()
+			$keyw = None
+		}
+
+	method KeyWidget ()
+		return $keyw ? $keyw.KeyWidget () : None
+
+	# override onKey for a container.  If this function
+	# returns false, then the active key widget is used.
+	cOnKey = void
+	# If the key is not processed by the children widget
+	# use cOnKey2, if defined
+	cOnKey2 = void
+
+	method onKey (k)
+		return $cOnKey (k) or ($keyw ? ($keyw.preOnKey (k) or $keyw.onKey (k)) : False) or
+			 $cOnKey2 (k)
+}

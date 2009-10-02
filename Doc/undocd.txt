@@ -1,0 +1,334 @@
+This doc lists several extensions and new additions to the
+standard library, object methods, etc.
+
+Note that lot of this stuff is still EXPERIMENTAL. This means
+that we are allowed to change it, remove it, rename it, etc.
+As long as we modify all the places that use it.
+
+Some of these features will remain and evolve and some will extinct.
+Questionable features have a `?`.
+
+=============================================================================
+string.sw, string.ew
+====================
+
+string objects have two methods `sw` and `ew` which are synonyms for
+`startswith` and `endswith`.
+
+=============================================================================
+int-int dict
+============
+
+`iidict` is a new builtin type. It is a dictionary where all the keys
+and the values are all integers.  This is a memory-efficient object.
+It is basically useful for expressing relations in our data module,
+but it can be used outside that. 
+Not all methods of dictionaries have been implemented.
+
+=============================================================================
+dict.key	?
+========
+
+dictionaries have a member `key` which returns the key object of a slot.
+This may seem redundant, but it is useful for making intern dictionaries.
+
+=============================================================================
+__sigbit__
+==========
+
+In pyvm every builtin type has its own special bit which can be
+acquired through the `__sigbit__` attribute.  For example:
+
+	print int.__sigbit__, str.__sigbit__;
+
+The same bit for the type of an object can be acquired through
+the `__sigbit__()` builtin function.  So this is a use case:
+
+	x = 1;
+	print __sigbit__ (x) & (int.__sigbit__ | float.__sigbit__)
+
+To test whether `x` is `int` or `float`.
+A `__sigbit__` of zero is possible for some special objects.
+
+=============================================================================
+list.pops
+=========
+
+Lists have a member `.pops(x)` which takes an integer `x` and pops `x`
+elements from the end of the list as a new list.  FI:
+
+	L = range (10);
+	x, y, z = L.pops (3);
+	print L;
+
+=============================================================================
+list.sort returns the list
+=========
+
+So in pyvm we can say:
+
+	return L.sort ();
+
+where `L` is a list.
+
+=============================================================================
+packing fmt
+===========
+
+The functionality of the struct.pack function can be achieved with the "%"
+operator for strings with special specifiers.  The first is "%a", which must
+be followed by a character with the struct.pack format, like 'bBhHiI', etc.
+For example:
+
+	"%aI%aH" %(123, 1020300) == struct.pack ("IH", 123, 1020300)
+
+with "%a", the string is made in Host-Endian form.
+The modifier "%M" is used to do the same in Big-Endian form and "%m" in Little.
+
+Similarily, the functions `ord16b()` and `ord32b()`, can perform the
+
+	struct.unpack ("!H", x) [0] = ord16b (x);
+	struct.unpack ("!I", x) [0] = ord32b (x);
+
+only faster.
+
+=============================================================================
+string.hexlify
+==============
+
+The hexlify() method from binascii, is a method of strings.
+
+	x.hexlify () == binascii.hexlify (x);
+
+Useful for dumping strings in network protocols, etc.
+
+=============================================================================
+dict.count_inc
+dict.count_dec
+==============
+
+Dictionaries have two methods, `count_inc` and `count_dec`. Both take
+one argument.
+
+	D.count_inc (x);
+
+is the same as:
+
+	if (x in D) D [x] += 1;
+	else D [x] = 1;
+
+and
+
+	D.count_dec (x);
+
+is the same as:
+
+	D [x] -= 1;
+	if (D [x] == 0) del D [x];
+
+These methods can be used for counting the occurences of things, which
+is something generally useful for various algorithms.
+
+=============================================================================
+_buffer (size)
+==============
+
+The function `_buffer` creates a new string of `size` length.  This function
+is useful to C libraries and codecs which want to place their output to a
+buffer.
+
+Typically, this is a string object.  However, in python, string objects are
+immutable, so `_buffer` makes little sense in python.  In C, strings are
+mutable.  The usual usage is:
+
+	x = _buffer (1000);
+	C.decode (input, len (input), x);
+
+where decode is used to fill in the string object.  Just don't use buffers
+as dictionary keys.
+
+=============================================================================
+dict.update ()
+==============
+
+returns the dictionary. So we can say
+
+	x = dict (d1).update (d2);
+
+=============================================================================
+setdefault
+==========
+
+If a second argument is not supplied, the first argument is used.
+So
+	d.setdefault (x)
+is the same as
+	d.setdefault (x, x)
+
+This is useful for creating an interning dictionary.
+
+=============================================================================
+__SET_ITER__
+=============
+
+__SET_ITER__ is a useful function.  It works in `for()` loops and will
+"store at the iterator".  "store at the iterator" depends on the iterator.
+This action is defined only for lists and dictionaries.
+For lists it will replace the current element, for dictionaries it will
+store at the *value* of the current iteration, whether we're iterating
+normally or through `itervalues()` or `iteritems ()`.
+
+For instance:
+
+	L = range (10);
+	for (i in L)
+		if (L % 1)
+			__SET_ITER__ (-i);
+
+will negate all the odd numbers in the list.  This feature is useful
+because python doesn't have such a thing and we have to use `enumerate`
+for lists or getting the keys in dictionaries, in order to change stuff,
+iow we have to zip the reference key.
+
+For other iterators, __SET_ITER__ will raise an exception.
+
+__SET_ITER__ works on the innermost `for` loop only.
+
+=============================================================================
+dict.gather
+===========
+
+This is the other application of python's defaultdicts.  It gathers elements
+in lists.
+
+	d.gather (x, y)
+
+is the same as:
+
+	try d [x].append (y)
+	except d [x] = [y]
+
+If an item already exists, it *must* be a list.  Not any object with an
+`append` method.
+
+=============================================================================
+ords()
+======
+
+`ords` is a function defined at the BIOS as:
+
+	def ords (x):
+		return [ord (x) for x in x]
+
+Useful for dumping strings while debugging
+=============================================================================
+List << value
+=============
+
+Left shifting a list and a value is the append operation.  For example:
+
+	L = []
+	# these two are the same
+	L.append (1)
+	L << 1
+
+"append" is a *very* common operation in almost all algorithms. An extra
+operator is definitelly worth it.  We'd love to use "+=" for that but that
+is reserved by Python as the "extend" operation (which is far more rare).
+Using "+=" would break existing code seriously.  So, for now "<<" is used.
+=============================================================================
+mutable keys
+============
+
+Lists, dictionaries and sets can be keys in dictionaries.  However, their
+comparison works like the comparison of instances: only the object `id`
+is compared.  So for example:
+
+	L1 = [1,2,3]
+	L2 = [1,2,3]
+	D = {}
+	D [L1] = 0
+	# prints ok
+	print L1 in D
+	# L2 not int D
+	print L2 in D
+	L1.append (4)
+	# still in D!
+	print L1 in D
+
+This feature is sometimes useful and a few other times it has resulted
+in bugs (actually a dict that was supposed to be used as a uniquer of
+its keys did not work as such).
+
+We have left this on with the possibility to remove.
+=============================================================================
+tuple_or ()
+===========
+
+Is the same as:
+
+	def tuple_or (t1, t2)
+		return tuple ([x2 is None ? x1 : x2 for (x1, x2 in zip (t1, t2))])
+
+only much faster and it may return t1 if t2 is full of Nones.
+(might we assign the || operator to this?)
+=============================================================================
+_list2tuple ()
+==============
+
+_list2tuple takes a list and returns a tuple with the list's elements
+while at the same time it empties the list.  It is faster than calling the
+tuple() function on a list because, knowing that the list will destruct the
+object references are moved to the tuple
+=============================================================================
+__bind__ directive
+==================
+
+This is a feature of the pyc compiler.  If somewhere in the global scope we
+declare a variable:
+
+	__bind__ = ["f"]
+
+that will mean that the global symbol `f` is not supposed to be changed
+and any functions that use it will try to make it part of the function's
+constants at the time of the function creation.  For example:
+
+	__bind__ = ["f", "X"]
+	X = 1
+	def f (x)
+		return 2 * x
+	def foo (x)
+		return X + f (x)
+
+if you compile the above one with `pyvm -cc file.pe` and then disassemble
+it with `pyvm disasm file.pyc`, you'll see that the function `foo` does
+not use the LOAD_GLOBAL opcode for `f` and `X`.  Instead it uses the
+LOAD_DEREF opcode and the names `f` and `X` are bound to the function
+with the MAKE_CLOSURE opcode.
+
+The code will simply not run for recursive bound functions that attempt
+to bind a name before its definition.
+=============================================================================
+weak references
+===============
+
+pyvm has only weak reference dictionaries.  In order to make a weak reference
+dictionary, create a normal dictionary and append it to the __weakrefs__ list
+(part of the builtins).
+
+In every garbage collection, all the dictionaries that are in __weakrefs__
+will be cleaned.  That is, values that have a reference count of 1 (and in
+other words are referenced only by the weakref dictionary) are deleted.
+
+	class A
+		method __del__ ()
+			print "released"
+	D = { "a":A () }
+	__weakrefs__.append (D)
+	sys.gc.collect ()
+	print D
+	# fyi: the message "released" may be printed a little latter, during the
+	# invokation of pending __del__ methods by the vm scheduler...
+
+Generally, it is preferrable to try to avoid weak references.  They are useful
+in some specific cases of caching.

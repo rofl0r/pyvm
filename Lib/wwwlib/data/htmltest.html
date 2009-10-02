@@ -1,0 +1,163 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+  <HEAD>
+     <title>The Python-list November 2008 Archive by thread</title>
+     <META NAME="robots" CONTENT="noindex,follow">
+     <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+<style>
+/* THIS
+ * IS A COMMENT
+ */
+td { border: medium solid }
+// comment
+.ms { font-family: monospace }
+.ww { width: 11em }
+.ff1 { font: 170% serif }
+.ffbad { font: 170% }
+.ff2 { font-size: 170% }
+.ff10 { font: 1.7em serif}
+.ff20 { font-size: 1.7em}
+.bold { font-weight: bold }
+.box1 { width : 208px; background: red }
+.box2 { width : 100px; background: green }
+.serif { font-family: serif }
+.sansserif { font-family: sans-serif }
+.monospace { font-family: monospace }
+.box3 { width: 20em; background: blue }
+.box4 { width: 320px; background: yellow }
+.box5 { width: 20em; background: purple }
+.box6 { width: 20em; background: orange }
+.spx { font-size: 16px }
+.spt { font-size: 16pt }
+</style>
+  </HEAD>
+  <BODY BGCOLOR="#ffffff">
+
+<h1> font families </h1>
+<div class=box1> 208px </div>
+<span class=serif>The brown fox: serif</span>
+<br>
+<span class=monospace>The brown fox: monospace</span>
+<br>
+<span class=sansserif>The brown fox: sans-serif</span>
+<br>
+<div class=box2> 100px </div>
+
+<br>
+The blue and the yellow boxens should have the same width?
+<pre class=spx>
+<div class=box3>
+20em at 16px
+</div>
+</pre>
+<div class=box4>
+320px
+</div>
+<pre>
+<div class=box5>
+20em at default px
+</div>
+</pre>
+<pre class=spt>
+<div class=box6>
+20em at 16pt
+</div>
+</pre>
+
+<br>
+<hr>
+<h1> font-size:size vs font:size and nested</h1>
+
+<br>
+normal size
+<br>
+<span class=ffbad> broken no family (<span class=ffbad> font: 170% </span>)</span>
+<br>
+<span class=ff1> font: 170% (<span class=ff1> font: 170% </span>)</span>
+<br>
+<span class=ff2> font-size: 170% (<span class=ff2> font-size: 170% </span>)</span>
+<br>
+<span class=ff1> font 170%( <span class=ff2> font-size 170%</span>)</span>
+<br>
+<span class=ff2> font-size: 170% (<span class=ff1> font: 170% </span>)</span>
+<br>
+<span class=ff10> font: 1.7em(<span class=ff10> font: 1.7em</span>)</span>
+<br>
+<span class=ff20> font-size: 1.7em(<span class=ff20> font-size: 1.7em</span>)</span>
+<br>
+<hr>
+
+<p> if the test below fails, then font should reset to initial </p>
+
+<span class=bold> foo <span class=ff1> this not should be bold </span></span>
+<br>
+<span class=bold> foo <span class=ff2> this should be bold </span></span>
+<br>
+<hr>
+
+<h1> font weights </h1>
+<span style="font-weight: 100"> 100 </span>
+<span style="font-weight: 200"> 200 </span>
+<span style="font-weight: 300"> 300 </span>
+<span style="font-weight: 400"> 400 </span>
+<span style="font-weight: 500"> 500 </span>
+<span style="font-weight: 600"> 600 </span>
+<span style="font-weight: 700"> 700 </span>
+<span style="font-weight: 800"> 800 </span>
+<span style="font-weight: 900"> 900 </span>
+
+<hr>
+<table>
+<tr>
+<td><h1>Foo</h1>
+<td><span style="font-size: xx-large"><b>Foo</b></span>
+<td><span style="font-size:2em"><b>Foo</b></span>
+<td><span style="font-size:200%"><b>Foo</b></span>
+
+<tr>
+<td><h2>Foo</h2>
+<td><span style="font-size: x-large"><b>Foo</b></span>
+<td><span style="font-size:1.5em"><b>Foo</b></span>
+<td><span style="font-size:150%"><b>Foo</b></span>
+
+<tr>
+<td><h3>Foo</h3>
+<td><span style="font-size: large"><b>Foo</b></span>
+<td><span style="font-size:1.17em"><b>Foo</b></span>
+<td><span style="font-size:117%"><b>Foo</b></span>
+
+<tr>
+<td><h4>Foo</h4>
+<td><span style="font-size: medium"><b>Foo</b></span>
+<td><span style="font-size:1em"><b>Foo</b></span>
+<td><span style="font-size:100%"><b>Foo</b></span>
+
+<tr>
+<td><h4>Foo</h4>
+<td><span style="font-size: 16px"><b>foo</b></span>
+<td><span style="font-size: 16pt"><b>Foo</b></span>
+<td><span style="font-size:100%"><b>Foo</b></span>
+
+<tr>
+<td><h5>Foo</h5>
+<td><span style="font-size: small"><b>Foo</b></span>
+<td><span style="font-size:.83em"><b>Foo</b></span>
+<td><span style="font-size:83%"><b>Foo</b></span>
+
+<tr>
+<td><h6>Foo</h6>
+<td><span style="font-size: x-small"><b>Foo</b></span>
+<td><span style="font-size:.67em"><b>Foo</b></span>
+<td><span style="font-size:67%"><b>Foo</b></span>
+
+<tr>
+<td>
+<td><span style="font-size: xx-small"><b>Foo</b></span>
+<td><span style="font-size:.58em"><b>Foo</b></span>
+<td><span style="font-size:58%"><b>Foo</b></span>
+</table>
+<pre>
+	int main (int, foo)
+	{
+	}
+</pre>

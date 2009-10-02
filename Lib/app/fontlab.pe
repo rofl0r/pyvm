@@ -1,0 +1,175 @@
+#
+# Font Laboratory.
+#
+# This is the main program for testing/developing/improving our font rasterizers.
+#
+
+__autosem__
+from fonts.raster import Rasterizer
+from fonts.raster.rasterizer import BaseRasterizer as Type1
+from graphics.framebuffer import FrameBuffer
+from graphics import image_from_grayscale
+from fonts import Open
+import gui
+
+namespace G
+{
+	current = "fi"
+	px = 15
+	AA = 1
+	MPP = 16
+}
+
+font = sys.argp.filename_ex ()
+
+def toggle (state)
+{
+	Draw ()
+}
+
+def aatoggle (state)
+{
+	Type1.AUTOHINT = state
+	G.AA = int (state)
+	Draw ()
+	dtext ()
+}
+
+FB = FrameBuffer (100, 100, 1)
+FB2 = FrameBuffer (600, 40, 3)
+F = Rasterizer (font)
+F.info ()
+
+def pxup ()
+{
+	G.px += 1
+	Draw ()
+	dtext ()
+}
+
+def pxdown ()
+{
+	G.px -= 1
+	Draw ()
+	dtext ()
+}
+
+def mppup ()
+{
+	G.MPP += 1
+	Type1.MPP = G.MPP
+	Draw ()
+	dtext ()
+}
+def mppdown ()
+{
+	G.MPP -= 1
+	Type1.MPP = G.MPP
+	Draw ()
+	dtext ()
+}
+
+def getMPP ()
+	return "MPP=%i" %G.MPP
+
+def dtext ()
+{
+	for (ll, bb in [[LL, 1], [LL2, 0]]) {
+		FB2 = FrameBuffer (1000, 40, 3)
+		RF = Open (font, G.px, builtin_raster=bb)
+		FB2.clear (0xffffff)
+		RF.render_to (FB2, 0, 0, "%ipx: The big brown fox jumps swiftly over, the fat lazy hound dog (and its sister too!) increasingly." % G.px, 0)
+		ll.load_fb (FB2)
+		ll.Draw ()
+	}
+}
+
+wm = gui.Wm (0, 0, 'font')
+with (gui.hcontainer ()) {
+	L = gui.List (tw=20)
+	with (gui.vcontainer ()) {
+		S = gui.label (font + " || " + F.FontName + " ")
+		with (gui.hcontainer ()) {
+			AA = gui.togglebutton ("Auto-Hint", onToggle=aatoggle, state=False)
+			gui.button ("px+", Action=pxup)
+			gui.button ("px-", Action=pxdown)
+			gui.button ("MPP+", Action=mppup)
+			gui.button ("MPP-", Action=mppdown)
+			MPL = gui.label (getMPP)
+		}
+		with (gui.hcontainer ()) {
+			I = gui.image (w=600)
+			I2 = gui.image (w=100, h=100)
+		}
+		with (gui.hcontainer ()) {
+			gui.label ("pyvm", w="freetype")
+			LL = gui.image (h=30, w=1000)
+		}
+		with (gui.hcontainer ()) {
+			gui.label ("freetype", w="freetype")
+			LL2 = gui.image (h=30, w=1000)
+		}
+		LL.elastic = False
+		LL2.elastic = False
+	}
+}
+
+#####
+import misc
+n = F.glyph_names ()
+try {
+	int (n [0])
+	n = misc.key_sort (n, int)
+} except n = misc.caseless_sort (n)
+L.setItems (n)
+
+def L.onSelect (i)
+{
+	G.current = L.L [i]
+	Draw ()
+}
+def Draw ()
+{
+	if (!G.current)
+		return
+	FB2 = F.do_raster (F.name2id (G.current), axis=1, grid=1, px=G.px, MPP=G.MPP)
+	I.load_image (image_from_grayscale (FB2.buffer, FB2.w, FB2.h))
+
+		FB.clear (0xffffff)
+		px = G.px
+		g = F.render_glyph (F.name2id (G.current), px)
+		gw = g.cols
+		gh = g.rows
+		nw = 4
+		nh = 4
+		bm = g.bitmap
+		for (i in *len (bm)) {
+			y = i / gw
+			x = i % gw
+			cc = ord (bm [i])
+			FB.fill_rect (x * nw, y * nh, nw - 1, nh - 1, cc|(cc<<8)|(cc<<16))
+		}
+		for (x in *gw)
+			FB.draw_line (x*nw-1,0,x*nw-1,gh*nh,0x888888)
+		for (y in *gh)
+			FB.draw_line (0, y*nh-1, gw*nw, y*nh-1, 0x888888)
+		I2.load_image (image_from_grayscale (FB.buffer, FB.w, FB.h))
+
+	I.Draw ()
+	I2.Draw ()
+	MPL.Draw ()
+}
+
+def L.__setup__ ()
+{
+	if (G.current)
+		try {
+			L.setCurrent (L.L.index (G.current))
+			L.Select (L.L.index (G.current))
+		}
+		except G.current = ""
+	dtext ()
+	L.setKeyWidget ()
+}
+
+wm.Start ()

@@ -1,0 +1,280 @@
+__autosem__
+
+from fonts.unicode import r_transcode
+
+# This class collects all the controls and binds drawable widgets to html nodes from
+# the DOM.  It can collect all the values when the form is to be submitted.
+NOFILES = "pyvm: Uploading Files Is Not Implemented!"
+
+class Form
+{
+	broken = False
+	ntext = 0
+
+	method __init__ ($formnode)
+	{
+		$inputs = []
+		$radios = {}
+		# there are two ways to specify <select>, with a combo box or by converting to radios
+		$selects = {}
+		$sgroups = {}
+	}
+
+	# build
+
+	method add_input (inode, vwidget)
+	{
+		$inputs.append ((inode, vwidget))
+		if (inode.lattr ("type", "text") in ("text", "password"))
+			$ntext += 1
+	}
+
+	method add_selectgroup (name, vwidget)
+		$sgroups [name] = vwidget
+
+	method add_option (ww, select_name)
+		$selects.gather (select_name, ww)
+
+	method bind_stuff (wfb)
+	{
+		for (radios in $radios.values ())
+			wfb.Make.bind_radios (radios)
+		for (radios in $selects.values ())
+			wfb.Make.bind_radios (radios)
+	}
+
+	# submit methods
+
+	method go_image (n)
+	{
+		def f (x, y)
+		{
+			for (i, w in $inputs)
+				if (i.getattr ("name") == n) {
+					w.clickx = str (x)
+					w.clicky = str (y)
+					return $go (w)
+				}
+			if (!n)
+				$go ("")
+			else print "Can't submit form through image :("
+		}
+		return f
+	}
+
+	method go_text (submit)
+		if ($ntext == 1)
+			return $go (submit)
+
+	method go (submit)
+	{
+		if ($broken) {
+			print "Error:", ("Form cannot submit. Unhandled controls")
+			return
+		}
+
+		for (n, w in $inputs)
+			if (w == submit)
+				break
+
+		title = n.dattr ("title", -1)
+		d = {}
+		for (n, w in $inputs) {
+			tp = n.lattr ("type")
+			val = n.dattr ("value", "")
+			if (tp not in ("submit", "image") or w is submit or val == title or n is submit) {
+				# submit only values with a name!
+				name = n.getattr ("name")
+				if (!name) continue
+				value = w and w.has_value ? w.Form.GetValue () : val
+				if (value == NOFILES)
+					value = ""
+				if (value is None)
+					continue
+				if (tp == "image") {
+					d [name + ".x"] = w.clickx
+					d [name + ".y"] = w.clicky
+					del w.clickx, w.clicky
+				} else d [name] = value
+			} else if (1) print "INPUT SKIPPED:", n, w, tp, val, submit
+		}
+
+		for (name, slist in $selects.items ())
+			for (s in slist)
+				if.break (s.Form.isSelected ())
+					d [name] = s.Form.GetValue ()
+
+		for (name, ctrl in $sgroups.items ())
+			if (name and ctrl.Form.hasValue ())
+				d [name] = ctrl.Form.GetValue ()
+
+		print "Successful controls dict:", d
+
+		# in the browser we are always working with UTF-8. If, however, the
+		# page charset is something else like "iso-8859-7" the content to
+		# be submitted must be converted from utf-8 back to iso-8859-7.
+		html = $formnode.root ()
+		if (html.charset_func.need_transcoding ()) {
+			print "Converting values to:", html.original_charset
+			for (k, v in d.items ()) 
+				d [k] = html.charset_func.to_remote (v)
+		}
+
+		$browser.Submit ($formnode.getattr ("action"), d, $formnode.lattr ("method", "get"))
+	}
+}
+
+# inherit this in order to generate widgets from form relevant nodes
+
+class ControlFactory
+{
+	# needs: $wfb, $dom, $browser
+
+	method __init__ ($layout)
+	{
+		$wfb = layout.wfb
+		for (f in layout.dom.forms)
+			f.Form.browser = $layout.browser
+	}
+
+	method complete ()
+		for (f in $layout.dom.forms)
+			f.Form.bind_stuff ($wfb)
+
+	method makeNode (node, gw=None)
+		return (node.tag == "select" ? $makeSelect : node.tag == "input" ? $makeInput :
+			node.tag == "option" ? $makeOption : $makeTextarea) (node, gw)
+
+	method makeSelect (node, gw)
+	{
+		if !(current_form = node.in_form)
+			print "SELECT outside form!"
+		else current_form = current_form.Form
+
+		name = node.dattr ("name", "")
+		V = []
+		selected = None
+		kids = []
+		for (k in node.kids2)
+			if (k.tag == "option") 
+				kids << k
+			else if (k.tag == "optgroup")
+				for (k in k.kids)
+					if (k.tag == "option") 
+						kids << k
+		for (k in kids) {
+			text = k.cdata ()
+			value = k.dattr ("value", text)
+			if (k.hasattr ("selected"))
+				selected = len (V)
+			V << (text, value)
+		}
+		if(!V) return
+		ww = $wfb.Make.select (V, selected)
+		node.attach_widget (ww, current_form)
+		if (current_form)
+			current_form.add_selectgroup (name, ww)
+		return node
+	}
+
+	method makeTextarea (node, gw)
+	{
+		if !(current_form = node.in_form) {
+			print "TEXTAREA outside form!"
+			return
+		} else current_form = current_form.Form
+
+		cols = node.dattr ("cols", "20")
+		try cols = int (cols)
+		except {
+			print "cols percent!"
+			cols = 40
+		}
+
+		ww = $wfb.Make.textarea (cols, node.iattr ("rows", 10), node.textarea_value)
+		node.attach_widget (ww, current_form)
+		current_form.add_input (node, ww)
+		return node
+	}
+
+	method makeOption (node, gw)
+	{
+		select = node.find_parent ("select")
+		if (!select) {
+			print "OPTION outside SELECT"
+			return
+		}
+		if !(current_form = select.in_form) {
+			print "OPTION outside form!"
+			return
+		} else current_form = current_form.Form
+
+		text = node.cdata ()
+		ww = $wfb.Make.radiobox (node.dattr ("value", text), node.hasattr ("selected"), text=text)
+		node.attach_widget (ww, current_form)
+		current_form.add_option (ww, select.dattr ("name", ""))
+		return node
+	}
+
+	method makeInput (node, gw)
+	{
+		if !(current_form = node.in_form) {
+			print "INPUT outside form!", node.attributes
+#			return
+		} else current_form = current_form.Form
+
+		t = node.lattr ("type", "text")
+
+		html = node.root ()
+		w = None
+		ret = None
+		if (t == "text" or t == "password" or t == "file") {
+			# (xxx: handle 'readonly')
+			value = t == "file" ? NOFILES : node.dattr ("value", "")
+			ww = $wfb.Make.textinput (node.iattr ("size", 20), value, gw)
+			node.attach_widget (ww, current_form)
+			if (current_form)
+				current_form.add_input (node, ww)
+			ret = node
+		} else if (t == "submit") {
+			value = node.dattr ("value", "Submit Query")
+			ww = $wfb.Make.button (value)
+			node.attach_widget (ww, current_form)
+			if (current_form)
+				current_form.add_input (node, ww)
+			ret = node
+		} else if (t == "checkbox") {
+			ww = $wfb.Make.checkbox (node.dattr ("value", "on"), node.hasattr ("checked"))
+			node.attach_widget (ww, current_form)
+			if (current_form)
+				current_form.add_input (node, ww)
+			ret = node
+		} else if (t == "radio" and node.dattr ("name", "")) {
+			name = node.dattr ("name")
+			ww = $wfb.Make.radiobox (node.dattr ("value", "on"), node.hasattr ("checked"))
+			if (current_form)
+				current_form.radios.gather (name, ww)
+			node.attach_widget (ww, current_form)
+			if (current_form)
+				current_form.add_input (node, ww)
+			ret = node
+		} else if (t == "image") {
+			C = $layout.Image (node)
+			node.visual = C
+			if (current_form) {
+				current_form.add_input (node, C)
+				C.onclick = current_form.go_image (node.dattr ("name", ""))
+			} else C.onclick = void
+			ret = C
+		} else if (t == "hidden") {
+			if (current_form)
+				current_form.add_input (node, None)
+		} else {
+			print "OTHER KIND OF INPUT [%s]" %t
+			if (current_form and t != "reset")
+				current_form.broken = True
+		}
+
+		return ret
+	}
+}

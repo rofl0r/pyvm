@@ -1,0 +1,54 @@
+##  Combo widget
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from widget import widget
+
+class combo (widget)
+{
+	elastic = False
+
+	# `selected` is the index of the selected item or None
+	method Init ($values, $selected, **kw)
+	{
+		$font = "font" in kw ? kw.pop ("font") : $wm.dfont
+		w = max ([$font.isizeof (x + "   ") for (x in values)])
+
+		$wh = $font.maxw
+		kw ['w'] = w + $wh
+		kw ['h'] = $font.maxh + 2
+		if ("onChange" in kw)
+			$onChange = kw.pop ("onChange")
+		$widget_init (**kw)
+	}
+
+	combo_init = Init
+
+	method Draw ()
+	{
+		$draw_blank (0xffffff)
+		$outline (col=0)
+		s = $selected is None ? " " : $values [$selected]
+		$draw_string (s, 1, 1, 0, $font, 0xffffff)
+		$fill_rect_outlined ($w - ($wh + 1), 1, $wh, $h - 2, $wm.color_bg, 0x777777)
+		dh = $h - 8
+		for (i in *dh)
+			$draw_line_wh ($w - (dh - i) / 2 - ($wh/2 + 1), 3 + i, dh - i, 0, 0)
+	}
+
+	method onClick (x, y)
+		$wm.Run_pulldownlist (self)
+
+	method set_selected ($selected, call_back=True)
+	{
+		$Draw ()
+		if (call_back)
+			$onChange ()
+	}
+
+	onChange = void
+}

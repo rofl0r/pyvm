@@ -1,0 +1,231 @@
+##  Standard, smart, always-imported as sys.argp, option parser.
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This option parser is suitable for the smallest scripts that can use
+# it without having to declare anything and it can be slowly improved
+# for the more complex stuff.
+#
+# For example, sys.argp.filename_ex () expects just one argument in the
+# command line which must be an existing file.
+#
+# This parser also understands the special argument "--help" which
+# makes it print the calling modules USAGE variable and exit.
+
+__autosem__
+import os
+
+class NoValue;
+
+from sys import argv
+
+prog = argv [0] ?? ""
+argv = argv [1:]
+
+def help (msg="")
+{
+	# If the __main__ module defines a string USAGE, it will
+	# be printed.  Otherwise this module reports some simpler
+	# messages.
+
+	try {
+		print sys.modules [__main__].USAGE
+		if (msg)
+			print msg
+	} except print prog, "Usage:", msg
+
+	raise SystemExit
+}
+
+def have_args ()
+{
+	if ("--help" in argv) 
+		help ()
+	return bool (argv)
+}
+
+# When program expects a filename as input
+
+def filename (default=NoValue, must_exist=False)
+{
+	if ("--help" in argv)
+		help ()
+
+	if (len (argv) == 1) {
+		if (must_exist and not os.access (argv [0])) {
+			print "File \"%s\" does not exist" %argv [0]
+			raise SystemExit
+		}
+		return argv.pop (0)
+	}
+
+	if (!argv) {
+		if (default is not NoValue)
+			return default
+		help ("Filename not specified")
+	} else help ()
+
+	raise SystemExit
+}
+
+def filenames (must_exist=False)
+{
+	if ("--help" in argv or not argv)
+		help ()
+
+	if (must_exist)
+		for (a in argv)
+			if (not os.access (a)) {
+				print "File \"%s\" does not exist" %a
+				help ("File not found")
+			}
+
+	a = list (argv)
+	while (argv) argv.pop ()
+	return a
+}
+
+def filename_ex (default=NoValue)
+	return filename (default, True)
+
+def Readfile ()
+	return readfile (filename_ex ())
+
+# When expecting a fixed number of arguments
+
+def nargs (minargs, maxargs=None)
+{
+	if (maxargs is None) maxargs = minargs
+	if ("--help" in argv) 
+		help ()
+	if (minargs <= len (argv) <= maxargs)
+		return argv
+	help ("%i arguments required" %minargs)
+}
+
+# When program expects one argument as input
+
+def one_arg (default=NoValue)
+{
+	if ("--help" in argv) 
+		help ()
+
+	if (len (argv) == 1)
+		return argv [0]
+
+	if (!argv)
+		if (default is not NoValue)
+			return default
+
+	help ("argument expected")
+}
+one = one_arg
+
+# pop one
+
+def pop_one_arg ()
+{
+	if ("--help" in argv or len (argv) < 1) 
+		help ()
+
+	return argv.pop (0)
+}
+
+def pop_command (cmdlist)
+{
+	cmd = pop_one_arg ()
+	if (cmd not in cmdlist.split (","))
+		help ()
+	return cmd
+}
+
+# no more arguments expected
+def nomore ()
+{
+	if (argv)
+		help ()
+}
+
+# Check the existance of an argumentless option (a switch).
+# If found return true and remove from the argument list
+# (the passed argument must include '-' or '--')
+
+def check_switch (sname)
+{
+	if ("--help" in argv) 
+		help ()
+
+	if (sname in argv) {
+		argv.remove (sname)
+		return True
+	}
+
+	return False
+}
+
+def check_switches (*sw)
+	return [check_switch (x) for (x in sw)]
+
+# switch with value
+def check_vswitch (sname)
+{
+	if ("--help" in argv) 
+		help ()
+
+	if (sname not in argv)
+		return False
+
+	i = argv.index (sname)
+	if (i == len (argv))
+		help ()
+
+	argv.pop (i)
+	return argv.pop (i)
+}
+
+# Options with values
+
+def opts (*v)
+{
+	if ("--help" in argv) 
+		help ()
+
+	d = {}
+	opts = {}
+	for (v in v)
+		if (v -> str) d [v] = None
+		else opts [v [0]] = d [v [0]] = v [1]
+
+	r = []
+	i = 0
+	while (i < len (argv)) {
+		a = argv [i]
+		i += 1
+		if (a [0] == "-")
+			if (a [1:] in d) {
+				r.append (i)
+				try val = argv [i]
+				except help ()
+				if (val [1:] in d)
+					help ()
+				opts [a [1:]] = val
+				i += 1
+			} else help ()
+	}
+
+	for (i in reversed (r)) {
+		del argv [i-1]
+		del argv [i-1]
+	}
+
+	return opts
+}
+
+# TODO:
+# parse syntax from USAGE string
+
+if (__name__ == __main__)
+	filename ()

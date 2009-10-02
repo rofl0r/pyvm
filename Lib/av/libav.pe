@@ -1,0 +1,54 @@
+# Load the ffmpg.c driver and link to ffmpeg's libav
+#
+# Just running this script tests if ffmpeg links ok.
+# There may still be inconsistencies due to broken ABI though.
+
+__autosem__
+
+prvdir = "%sffmpeg/usr/"%HOME
+PrivateInstall = @os.access (prvdir + "lib/libavcodec.so")
+if (__name__ == __main__)
+	print "private ffmpeg installation:", PrivateInstall
+
+if (0) {
+	if (__name__ == __main__)
+		print "Using static libs!"
+
+	# Try loading static libs (big pelf test) -- DOESN'T WORK
+	# the init() function has a chance to run but when you go actually
+	# play an mp3 there are some problems.
+	# Update: after some fixes the problems seem to boil down to
+	#	the fact that ffmpeg itself uses libdl.
+	# At least you can time it :)
+
+	#p = [HOME + "ffmpeg/usr/lib/lib%s.a"%l
+	p = ["/usr/local/lib/lib%s.a"%l
+		for (l in ["avutil", "avformat", "avcodec", "swscale"])]
+	fflibs = @pelf.dllopen (p, libs=["z", "dl", "bz2"])
+	ccopts = "-O3"
+	if (PrivateInstall)
+		ccopts += " -I%s/include"% prvdir
+	L = @DLL.Clib ("ffmpg", ccopts, pelf=1, syms=fflibs.D)
+	locals ().update (L)
+} else {
+	# In essense, we are dlopening a shared object file that itself
+	# will need some other shared libraries in order to work. In the
+	# case of private ffmpeg installation those libraries are not
+	# located in some globally known location (like /usr/lib).
+	# The way to specify that the shared object file will use the
+	# specific libraries is by using the "-Wl,-rpath" option when
+	# compiling it. Totally undocumented unix toolchain crap that
+	# may or may not work on your system.
+	ccopts = "-O3 -g -lavutil -lavformat -lavcodec -lavutil -lswscale -lm -lz -Wall"
+	if (PrivateInstall)
+		ccopts += " -I%s/include -Wl,-rpath,%slib"% (prvdir, prvdir)
+
+	locals ().update (@DLL.Clib ("ffmpg", ccopts))
+}
+
+init (-1)
+if (__name__ == __main__)
+{
+	print "ffmpeg links OK"
+	print "avcodec version %i.%i.%i" %(version>>16, (version>>8)&255, 255&version)
+}

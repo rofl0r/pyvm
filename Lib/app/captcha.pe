@@ -1,0 +1,94 @@
+# Fun captcha generation program.
+# This is not fast! It was written to see how can the font rasterizer
+# be used for creation of captchas. More randomness can be included in
+# the rasterizer for more impressive results. A lot of things can be
+# done to make this more random/faster.
+# A captcha breaker may spend 20 days trying to write a captcha breaking
+# program, but within a minute you can change the parameters of this
+# program and the breaker will need an extra 20 days to break the new
+# captcha!
+# So easilly modifiable captcha generation code == bad for bots.
+
+__autosem__
+
+USAGE="""usage: captcha <font-file>
+Generate a captcha image from a word in /usr/share/dict/words using the
+specified font. Captcha is saved in CAPTCHA.ppm"""
+
+from fonts.raster import Rasterizer
+t = Rasterizer (sys.argp.one ())
+t.info ()
+
+# CAPTCHA creation
+from random import random as rand, choice, randint, coin
+w = choice ([x.strip ().lower () for (x in open ("/usr/share/dict/words")) if (3 < len (x) < 11)])
+
+T = @time.Timit ()
+#wf = [t.do_raster (g, aa=0, axis=0, grid=0, px=15+4*rand(), MPP=6+2*rand()) for (g in w)]
+wf = [t.do_raster (t.char2id (g), axis=coin(), grid=coin(), px=11+4*rand(), MPP=7+2*rand()) for (g in w)]
+WW = int (sum ([i.cols * i.MPP for (i in wf)]))
+HH = int (max ([i.rows * i.MPP for (i in wf)]))
+HH = int (1.4 * HH)
+F = @graphics.framebuffer.FrameBuffer (WW, HH, 1)
+F.clear (0xffffff)
+x = 0
+for (i in wf) {
+	y = int (HH - i.rows * i.MPP * (1 + rand () / 4.0))
+	F.put_image (i.as_image (), x, y, int (i.x_start), int (i.y_start),
+		     int (i.cols*i.MPP), int (i.rows*i.MPP))
+	x += int (i.cols * i.MPP)
+}
+I = F.as_image ()
+F.put_image (I, 0, 0)
+
+# distort with lens
+F2 = @graphics.framebuffer.FrameBuffer (2 * WW, 2 * HH, 3)
+from math import hypot
+
+cx = int ((1 + rand ()) * WW / 3)
+cy = int ((0.2 + 1.2 * rand ()) * HH / 3)
+
+	def trans (x, y)
+	{
+		y -= HH / 3
+		dx = x - cx
+		dy = y - cy
+		R = hypot (dx, dy)
+		dx += dx * R / 70.0
+		dy += dy * R/ 110.0
+		x = cx + dx
+		y = cy + dy
+		x = int (x)
+		y = int (y)
+		return x, y
+	}
+	def trans (x, y)
+	{
+		y -= HH / 3
+		dx = x - cx
+		dy = y - cy
+		R = hypot (dx, dy)
+		dx += dx * (R / 70.0 - 1)
+		dy += dy * (R/ 110.0 - 1)
+		x = cx + dx
+		y = cy + dy
+		x = int (x)
+		y = int (y)
+		return x, y
+	}
+
+print T ()
+# very slow, do in C when happy
+for (x in *F2.w)
+	for (y in *F2.h) {
+		try v = F.get_pixel (*trans (x, y))
+		except continue
+		v = v ? 0xf0f0f0 :
+			 (0x222222 | randint (0x50, 0xff));
+		F2.put_pixel (x, y, v)
+	}
+
+F2 = F2.rotate (randint (-6, 8))
+F2.save_as_ppm ("CAPTCHA.ppm")
+print T ()
+print w

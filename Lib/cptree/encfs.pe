@@ -1,0 +1,21 @@
+from crypto import shaenc;
+from fstree import fs;
+
+class fs_crypt (fs)
+{
+	method __init__ ($FS, $password);
+
+	# readonly
+	method stat (f)		return $FS.stat (f);
+	method lstat (f)	return $FS.lstat (f);
+	method readfile (f)	return shaenc.decryptor ($password) (readfile (f));
+	method listdir (d="")	return $FS.listdir (d);
+	method access (f)	return $FS.access (f);
+	method readlink (f)	return $FS.readlink (f);
+
+	# rw
+	method symlink (l, f)	$FS.symlink (l, f);
+	method remove (f)	$FS.remove (f);
+	method mkdir (d)	$FS.mkdir (d);
+	method writefile (f, data) open (f, "w").write (shaenc.encryptor ($password) (data));
+}

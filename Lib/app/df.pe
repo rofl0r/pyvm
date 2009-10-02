@@ -1,0 +1,61 @@
+# Report filesystem disk space usage
+
+__autosem__
+
+from os import statfs
+
+# Kilobytes available at the partition that `path` is in
+def avail_at (path)
+{
+	None, bsize, blocks, None, bavail, None, None, None, None, None = statfs (path)
+	return bavail*(bsize/1024)
+}
+
+if (__name__ == __main__)
+{
+	USAGE = "usage: df [-h]"
+	mb = sys.argp.check_switch ("-h")
+
+	nostdin ()
+	mounts = [x.split ()[:2] for (x in open ("/etc/mtab"))]
+	from misc import strchop
+
+	if (mb) sps = "%-20s %6s %6s %6s %4s %s"
+	else sps = "%-20s %9s %9s %9s %4s %s"
+	print sps %("Filesystem", mb ? "Size" : "1K-blocks",
+			 "Used", mb ? "Avail" : "Available", "Use%", "Mounted on")
+
+	def szf (x)
+	{
+		if (!mb) return str (x)
+		if (!x) return "0"
+		if (x < 1024)
+			return str (x) + "k"
+		x = x / 1024
+		if (x < 1024)
+			return str (x) + "M"
+		s = "%.1fG" % (x / 1024.0)
+		if (s.ew ("0G"))
+			s = s [:-3] + "G"
+		return s
+	}
+
+	if (mb) sps = "%-20s %6s %6s %6s %3d%% %s"
+	else sps = "%-20s %9s %9s %9s %3d%% %s"
+
+	L = []
+	for (dev, mp in mounts) {
+		s = statfs (mp)
+		None, bsize, blocks, bfree, bavail, None, None, None, None, None = s
+		bsize /= 1024
+		if (!blocks)
+			continue
+		L<< (blocks * bsize, sps %(dev, szf (blocks*bsize),
+				 szf (bsize*(blocks-bfree)),
+				 szf (bavail*bsize),
+				 int (100 * (float (blocks) - bfree)/blocks), mp))
+	}
+#	if (mb)
+#		L.sort ()
+	print "\n".join ([l [1] for (l in L)])
+}

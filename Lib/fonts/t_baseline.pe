@@ -1,0 +1,45 @@
+# - - test - -
+
+# Paint available font families for testing vertical positioning
+
+__autosem__
+
+from fonts.render import Open
+
+F = @graphics.framebuffer.FrameBuffer (700, 400, 3)
+F.clear (0xffffff)
+
+SZ = int (sys.argp.one ("20"))
+MSG = "gyHM"
+y = 30
+
+def ptext (ff, x, y)
+{
+	fnt = Open (ff, SZ)
+	print ff, "\t", fnt.maxh
+	w = fnt.isizeof (MSG)
+	F.fill_rect (x, y, w, fnt.maxh, 0x999922)
+	fnt.render_to (F, x, y, MSG, 0)
+	uy = y + fnt.ascent + 1
+	F.draw_line (x, uy, x+w, uy, 0)
+	F.draw_line (x, y, x+w, y, 0xff0000)
+	return w
+}
+
+with (@profile.Profile ())
+for (b in ["corefonts", "lucida", "ms", "urw"]) {
+#	if (b in ["lucida", "suse"]) continue
+if ("urw" in b)
+	continue
+	x = 0
+	for (t in ["sans", "serif", "mono"])
+		for (m in ["", "-i", "-b", "-bi"])
+			x += ptext ("$%s/%s%s" %(b, t, m), x, y)
+	y += 50
+#	break
+}
+
+ptext ("$unicode-8x16.psfu", 0, y)
+
+F.save_as_ppm ("WOOT.ppm")
+print "saved into: WOOT.ppm"

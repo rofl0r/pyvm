@@ -1,0 +1,95 @@
+What is pyvm
+------------
+
+ It's a reimplementation of various userspace programs under a common
+ dynamic language runtime system.  What's special about pyvm is that
+ this dynamic runtime is not a general purpose vm/language; it's not
+ supposed to be used by code outside the project and for that it does
+ not have backwards compatibility.  The various implemented userspace
+ programs are the only testcase that drives the evolution of the vm.
+ Similarily, various libraries do not have fixed public APIs and so
+ it's easier to make termorary implementations that can be used in
+ order to bootstrap something else, and be refactored later.
+
+ The core vm is a cousing of python and can even run small python
+ programs, but 100% compatibility and passing python's test suite is
+ not a goal.  Using a dynamic language offers some very important
+ advantages like: automatic memory managment, no segfaults, exceptions,
+ stackless threading, no need for recompilation, and generally the
+ common runtime object system that can be used for very powerful and
+ flexible inter-library APIs. On the other hand, pyvm likes C and based
+ on the theory that 90% of the time of a program is spent in 10% of the
+ code we try to move that part of the code in C and have the core
+ program control in the scripting language; this has turned out to work
+ very well (and at times even better than Just In Time compilation)
+
+ pyvm does a *lot* of things and it's a tool that makes creating
+ applications easy. However, it's not supposed to actually replace the
+ existing userspace toolchains any time soon. It is more like a
+ half-finished hobby project that may be suitable for people who prefer
+ to use software they have written and can easilly modify.
+
+ Existing userspace systems have some problems. One of them is very
+ often the "dependancy hell" where building the entire system from the
+ sources is nearly impossible and one has to use a prebuilt binary
+ distribution. Another problem is that their source code is several
+ millions of lines of code and thus it's impossible for a programmer to
+ review the entire code; programmers can only focus on a part of the
+ system. Finally, those systems are made with the use of many
+ independant components (although some times programmers are forced to
+ write something as a library because of the fact that there is no
+ standard GUI in UNIX and since they can't master all toolkits, leave
+ the frontend of their program to someone else). With this approach,
+ libraries try to predict everything the user will need in a
+ complicated API, that's both hard to learn and still not always
+ sufficient, not to mention hard to test and a pain to maintain the
+ backwards compatibility.
+
+ Just like UNIX has a well defined "libc" that amongst other things
+ provides the ability to read/write to the terminal, the Next Level
+ should have a standard library to a GUI toolkit (this is almost 2010!).
+ However, for one, standarizing a GUI toolkit is much harder. The C
+ programming language is not good enough for this task and the systen
+ would also have to standarize a higher level object model that makes
+ using the GUI easier. However, standarizing a dynamic runtime system
+ is even harder, because unlike C which was guided by the CPU opcodes,
+ a dynamic language vm is much more vague and we cannot predict what we
+ can expect from it, unless there are many programs that use it.
+
+ pyvm is bootstrapping an experimental "Next Level System" where the
+ dynamic language, the object model, script recompilation, graphical user
+ interface, font engine, etc, are part of the core system. Application
+ not only use it, but also give feeback for the ehnancement of these
+ core components.
+
+ Currently, pyvm is made of about 300 scripting files (python & pe)
+ in 70k lines of code and 12k lines of mini C libraries. The base vm
+ is written in about 30k lines of C. The fact that backwards
+ compatibility can be broken does not mean that it is broken every
+ day; the project is supposed to stabilize and the APIs properly
+ documented.
+
+ This all may sound great and all, but the fact is that it is not so
+ great actually. What's presented above in this document is the theory
+ of the project. In practice the reimplemented userspace programs are
+ far from perfect and their main value the the extreme simplification
+ of things. So it's supposed to interest people who believe that "being
+ a user is boring" or want to play with a miniature of the existing
+ userspace.
+
+ A list of the various userspace prorgams that can be performed by pyvm
+ can be seen in Doc/APP-LIST.txt
+
+The rest
+--------
+
+Initial version of pyvm is Copyright (C) 2005-2009 Stelios Xanthakis
+
+pyvm is distributed under the terms of the GNU GPL
+
+pyvm uses code from various people.
+Please see Doc/CREDITS.txt
+
+Home page: http://students.ceid.upatras.gr/~sxanth/pyvm-2.0/
+Git repo:  http://students.ceid.upatras.gr/~sxanth/pyvm.git
+e-mail:    sxanth@ath.forthnet.gr

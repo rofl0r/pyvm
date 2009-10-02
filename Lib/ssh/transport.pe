@@ -1,0 +1,640 @@
+##  SSH Transport Layer Protocol
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from crypto.cryptorand import randstr
+from crypto.longs import PKCToLong, LongToPKC
+from crypto.hmac import HMAC
+from crypto.RC4 import RC4
+from sha import digest as SHA
+from crypto import AES
+from base import *
+
+#
+# Transport layer
+# (xxx: REKEY not implemented -- hard to test!)
+#
+
+class SSHTransport
+{
+	VersionStr = "SSH-1.99-unknown"
+	block_size = 8
+	outSeqNum = inSeqNum = 0
+	ChanID = 0
+
+	method __init__ ($sock)
+	{
+		$Version ()
+		$Kex ()
+		$SecureLink ()
+	}
+
+	method Version ()
+	{
+		$sock.send ($VersionStr + "\r\n")
+		banner, None, $rest = $sock.recv ().partition ("\n")
+		if (!banner.sw ("SSH-"))
+			raise Error ("Bad welcome version [%s]"%banner)
+		if (banner [-1] == "\r")
+			banner = banner [:-1]
+		$RemoteVersion = banner
+	}
+
+	##
+
+	method recvpacket ()
+	{
+		if ($rest) p, $rest = $rest, ""
+		else {
+			p = $sock.recv ()
+			if (!p) raise Error ("Connection Reset By Peer")
+		}
+		length = ord32b (p [:4])
+		if (len (p) - 4 < length)
+			raise Error ("Bad packet length")
+		if (len (p) - 4 > length)
+			p, $rest = p [:length+4], p [length+4:]
+		padding = ord (p [4])
+		$inSeqNum += 1
+		return padding ? p [5:-padding] : p [5:]
+	}
+
+	method packpacket (p)
+	{
+		padlen = 3 + $block_size - ((len (p) + 8) % $block_size)
+		return "%MI%c" %(len (p) + padlen + 1, padlen) + p + randstr (padlen)
+	}
+
+	method sendpacket (p)
+	{
+		$outSeqNum += 1
+		return $sock.send (p)
+	}
+
+	##
+	##
+
+	method compute_key (id, n)
+	{
+		k = SHA (BuildPacket ($K, ($H + id + $H,)))
+		while (len (k) < n)
+			k += SHA (BuildPacket ($K, ($H + k,)))
+		return k [:n]
+	}
+
+	method SecureLink ()
+	{
+		if ($Cipher == "arcfour") {
+			$block_size = 8
+			key_size = 16
+		} else if ($Cipher == "aes128-cbc") {
+			$block_size = 16
+			key_size = 16
+		}
+
+		IV_out, IV_in, key_out, key_in, mac_out, mac_in =
+			[$compute_key (*i) for (i in
+				zip (list ($KEYLET), [$block_size, $block_size,
+					 key_size, key_size, 20, 20]))]
+
+		if ($Cipher == "arcfour") {
+			$decryptor = RC4 (key_in).decrypt
+			$encryptor = RC4 (key_out).encrypt
+		} else if ($Cipher == "aes128-cbc") {
+			$decryptor = AES.decryptor (key_in,  IV_in)
+			$encryptor = AES.encryptor (key_out, IV_out)
+		}
+
+		$inMAC  = HMAC (mac_in,  SHA)
+		$outMAC = HMAC (mac_out, SHA)
+		$rest = ""
+	}
+
+	# Once Encryption is ON:
+
+	method send (data)
+	{
+		data = $packpacket (data)
+		mac = $outMAC ("%MI" %$outSeqNum + data)
+		cipher = $encryptor (data, data)	# in-place
+		return $sendpacket (cipher + mac)
+	}
+
+	method recv ()
+	{
+		if ($rest) p = $rest
+		else {
+			p = $sock.recv ()
+			if (!p) return ""
+		}
+
+		# read at least block_size to figure out the length of plaintext
+		bs = $block_size
+		while (len (p) < bs)
+			if (d = $sock.recv ()) p += d
+			else raise Error ("Reset by peer in middle of packet")
+
+		hdr = $decryptor (p [:bs])
+		length = ord32b (hdr [:4])
+		if (length < 0 or length > 65536)
+			raise Error ("Bad packet length [%i]. Aborting" %length)
+		hdr = hdr [4:]
+		p = p [bs:]
+		clen = length + 24 - bs
+		while (len (p) < clen)
+			if (d = $sock.recv ()) p += d
+			else raise Error ("Reset by peer in middle of packet")
+
+		p, $rest = p.Break (clen)
+		mac = p [-20:]
+		p = p [:-20]
+		p = hdr + $decryptor (p, p)
+		if (mac != $inMAC ("%MI" %$inSeqNum + "%MI" %length + p))
+			raise Error ("Bad MAC!")
+		$inSeqNum += 1
+
+		return p [1:-ord (p [0])]
+	}
+
+	method send_cmd (cmd, *args)
+		return $send (BuildPacket (Byte (cmd), *args))
+
+}
+
+#
+# Client -------------------------------------------------
+# after an SSHClient instance is created, the connection should
+# be at the state 'ssh-connection', where channels can be opened.
+#
+
+class SSHClient (SSHTransport)
+{
+	ME = "Client"
+	KEYLET = "ABCDEF"
+	# ciphers in order of preference, (aes cbc is insecure??)
+	Ciphers = ["arcfour", "aes128-cbc"]
+	started = False
+
+	method __init__ (sock, userpass=None, $acceptnokey=False, $keydb=None)
+	{
+		SSHTransport.__init__ (self, sock)
+		if (userpass) {
+			user, pass, privkey = userpass
+			$UserAuth ($session_id, user, pass, privkey, "ssh-connection")
+		} else {
+			$send_cmd (MSG.SERVICE_REQUEST, "ssh-connection")
+			p0 = UnpackPacket ("b-s", $recv ())
+			if (p0 [0] != MSG.SERVICE_ACCEPT)
+				raise Error ("ssh-connection without authentication not allowed")
+		}
+	}
+
+	method Kex ()
+	{
+		# get server's list of supported algorithms
+		p0 = $recvpacket ()
+		RemoteKexInit = p0
+		p0 = UnpackPacket ("b-r16-L-L-L-L-L-L-L-L-L-L-b-i", p0)
+
+		for (c in $Ciphers)
+			if.break (c in p0 [4])
+				$Cipher = c
+		else.for raise Error ("Server does not support cipher [%s]" %c)
+
+		# send our own list of selected algorithms
+		p1 = BuildPacket (
+			Byte (MSG.KEXINIT), (randstr (16),),
+			["diffie-hellman-group1-sha1"],
+			["ssh-rsa"], [$Cipher], [$Cipher],
+			["hmac-sha1"], ["hmac-sha1"], ["none"], ["none"], "", "", False, 0
+		)
+		LocalKexInit = p1
+		$sendpacket ($packpacket (p1))
+
+		# send diffie-hellman kex
+		from crypto.DH import SSH_group1
+		DH = SSH_group1 ()
+		p2 = BuildPacket (Byte (MSG.KEXDH_INIT), DH.E)
+		$sendpacket ($packpacket (p2))
+
+		# receive diffie-hellman kex
+		p3 = UnpackPacket ("b-s-s-s", $recvpacket ())
+		tp, hostkey, k1, sig = p3
+		if (tp != MSG.KEX_REPLY)
+			raise Error ("No KEX REPLY")
+
+		# key!
+		DH.received (k1)
+		$K = DH.K
+
+		# hash!
+		hp = BuildPacket (
+			$VersionStr, $RemoteVersion,
+			LocalKexInit, RemoteKexInit,
+			hostkey, DH.E, DH.F, DH.K
+		)
+		$session_id = $H = SHA (hp)
+
+		# verify with ssh-rsa
+		# "nokey" is a special value for the peer mode
+		if (hostkey != "nokey") {
+			from crypto.RSA import PKCS1
+
+			None, exponent, modulo = UnpackPacket ("s-s-s", hostkey)
+			if ($keydb)
+				$keydb (exponent, modulo)
+			sig = UnpackPacket ("s-s", sig) [1]
+			pk = PKCS1 (modulo=modulo, exponent=exponent)
+			if (!pk.verify ($H, sig))
+				raise Error ("Signature FAILED!")
+		} else if (not $acceptnokey)
+			raise Error ("Nokey!")
+
+		# receive and send "NewKeys" to enter encrypted channel.
+		$sendpacket ($packpacket ("\x15"))
+		if ($recvpacket () != "\x15")
+			raise Error ("No NewKeys")
+	}
+}
+
+#
+# Server ------------------------------------------------
+# This is a minimal server for the peer mode.
+# It works without authentication!
+#
+
+class SSHServer (*SSHTransport)
+{
+	ME = "server"
+	KEYLET = "BADCFE"
+
+	method Kex ()
+	{
+		# send what we support
+		p0 = BuildPacket (
+			Byte (MSG.KEXINIT), (randstr (16),),
+			["diffie-hellman-group1-sha1"],
+			["ssh-rsa"], ["aes128-cbc", "arcfour"], ["aes128-cbc", "arcfour"],
+			["hmac-sha1"], ["hmac-sha1"], ["none"], ["none"], "", "", False, 0
+		)
+		LocalKexInit = p0
+		$sendpacket ($packpacket (p0))
+
+		# get choice
+		p1 = $recvpacket ()
+		RemoteKexInit = p1
+		p1 = UnpackPacket ("b-r16-L-L-L-L-L-L-L-L-L-L-b-i", p1)
+		$Cipher = p1 [4][0]
+
+		# get dh
+		from crypto.DH import SSH_group1
+		DH = SSH_group1 ()
+		p2 = UnpackPacket ("b-s", $recvpacket ())
+		if (p2 [0] != MSG.KEXDH_INIT)
+			return False
+
+		# key!
+		DH.received (p2 [1])
+		$K = DH.K
+
+		hostkey = "nokey"
+
+		# hash!
+		hp = BuildPacket (
+			$RemoteVersion, $VersionStr,
+			RemoteKexInit, LocalKexInit,
+			hostkey, DH.F, DH.E, DH.K
+		)
+		$H = SHA (hp)
+
+		# send dh
+		p2 = BuildPacket (Byte (MSG.KEX_REPLY), hostkey, DH.E, "nosig")
+		$sendpacket ($packpacket (p2))
+
+		# receive and send "NewKeys" to enter encrypted channel.
+		$sendpacket ($packpacket ("\x15"))
+		if ($recvpacket () != "\x15")
+			raise Error ("No NewKeys")
+
+		return True
+	}
+}
+
+#
+# userauth
+#
+
+method SSHClient.UserAuth (session_id, username, password, privkey, forservice)
+{
+	$send_cmd (MSG.SERVICE_REQUEST, "ssh-userauth")
+	p0 = UnpackPacket ("b-s", $recv ())
+	if (p0 [0] != MSG.SERVICE_ACCEPT)
+		raise Error ("Userauth Service Denied!")
+
+	# get list of methods
+	$send_cmd (MSG.USERAUTH_REQUEST, username, forservice, "none")
+	p1 = $recv ()
+	if (p1 == "\x34")
+		return
+
+	p1 = UnpackPacket ("b-L-b", p1)
+	meths = p1 [1]
+
+	if ("publickey" in meths and privkey) {
+		rsa = read_priv_key (privkey)
+		blob = BuildPacket ("ssh-rsa", LongToPKC (rsa.E), LongToPKC (rsa.N))
+		$send_cmd (MSG.USERAUTH_REQUEST, username, forservice, "publickey", False,
+			  "ssh-rsa", blob)
+		p1 = $recv ()
+		if (ord (p1 [0]) == 60) {	# USERAUTH_PK_OK
+			p1 = UnpackPacket ("b-s-s", p1)
+			if (p1 [2] == blob) {
+				from crypto.RSA import PKCS1
+				sdata = BuildPacket (session_id, Byte (50), username, forservice,
+						     "publickey", True, "ssh-rsa", blob)
+				k = PKCS1 (rsa.N, rsa.D)
+				##signature = k.sign (sdata)
+				signature = k.fast_sign (sdata, rsa.P, rsa.Q, rsa.DMP, rsa.DMQ, rsa.U)
+
+				signature = BuildPacket ("ssh-rsa", signature)
+				$send_cmd (MSG.USERAUTH_REQUEST, username, forservice, "publickey", True,
+					  "ssh-rsa", blob, signature)
+				p1 = $recv ()
+				if (p1 == "\x34")
+					return
+			}
+		}
+		print "Public key failed login."
+	}
+
+	if (!password)
+		raise Error ("Failed to authenticate")
+
+	if ("password" in meths) {
+		$send_cmd (MSG.USERAUTH_REQUEST, username, forservice, "password", False, password)
+		p1 = $recv ()
+		if (p1 == "\x34")
+			return
+		print "PASSWORD FAILED", ord (p1 [0])
+		print p1
+	}
+
+	# "keyboard-interactive", but automated :)
+	if ("keyboard-interactive" not in meths)
+		raise Error ("Don't know how to authenticate with [%s]" %",".join (meths))
+
+	# Usually, OpenSSH just expects the password
+	$send_cmd (MSG.USERAUTH_REQUEST, username, forservice, "keyboard-interactive", "", "")
+	p1 = $recv ()
+	if (ord (p1 [0]) != MSG.USERAUTH_INFO_REQUEST)
+		raise Error ("keyboard interactive authentication failed (1)")
+	$send_cmd (MSG.USERAUTH_INFO_RESPONSE, 1, password)
+	while (1) {
+		p1 = $recv ()
+		if (p1 == "\x34")
+			return
+		if (ord (p1 [0]) != MSG.USERAUTH_INFO_REQUEST)
+			break
+		$send_cmd (MSG.USERAUTH_INFO_RESPONSE, 0)
+	}
+
+	# xxx
+	raise Error ("keyboard interactive authentication failed (2). What now?")
+}
+
+# ------------------------------------------------------------
+# Channel multiplexing
+#
+# Goal is to have a 'CHANNEL' object with blocking send/recv
+# methods.  The SSHClient has two threads (incoming/outgoing)
+# which work together with recv()/send() using semaphores.
+# ------------------------------------------------------------
+
+thread = @thread
+
+method SSHTransport.Begin ()
+{
+	$started = True
+	$running = True
+	$outsem = thread.sem ()
+	$outQueue = []
+	$Channels = {}
+
+	thread.start_new ($inThread)
+	thread.start_new ($outThread)
+}
+
+method SSHTransport.outThread ()
+{
+	while ($running) {
+		$outsem.down ()
+		$send ($outQueue.pop (0))
+	}
+}
+
+method SSHTransport.inThread ()
+{
+	while ($running) {
+		p = $recv ()
+		if.break (!p) {
+			$running = False
+			for (c in $Channels.values ())
+				c.push ("")
+		}
+		m = ord (p [0])
+#		print ">> GOT:", Descr (m), p [:50]
+		if (isCHANNEL (m)) {
+			chanid = ord32b (p [1:5])
+			if (chanid not in $Channels) continue
+			if (m == MSG.CHANNEL_DATA)
+				$Channels [chanid].push (p [9:])
+			else if (m == MSG.CHANNEL_EOF)
+				$Channels [chanid].push ("")
+			else if (m == MSG.CHANNEL_CLOSE)
+				del $Channels [chanid]
+			else if (m == MSG.CHANNEL_WINDOW_ADJUST) {
+				None, rc, window = UnpackPacket ("b-i-i", p)
+				$Channels [chanid].adjwin (window)
+			} else if (!$domessage (m, p)) {
+#				print ">>", $ME, ": UNHANDLED CHANNEL COMMAND:", Descr (m)
+			}
+		} else if (!$domessage (m, p)) {
+#			print ">>", $ME, ": UNHANDLED CONTROL MESSAGE:", Descr (m)
+		}
+	}
+}
+
+method SSHClient.domessage (m, p)
+{
+	if (m == MSG.CHANNEL_OPEN_CONFIRMATION) {
+		None, rc, sc, ws, ps = UnpackPacket ("b-i-i-i-i", p)
+		$Channels [rc].activate (sc)
+	} else return False
+	return True
+}
+
+method SSHServer.domessage (m, p)
+{
+	# This handles specifically the peer mode, one-channel-only.
+	# For a real SSH Server, much more work is needed in here.
+	if (m == MSG.SERVICE_REQUEST) {
+		$SendCmd (MSG.SERVICE_ACCEPT, "ok")
+		return True
+	}
+	if (m == MSG.CHANNEL_OPEN and !$Channels) {
+		None, kind, cid, w1, w2 = UnpackPacket ("b-s-i-i-i", p)
+		if (kind == "peer") {
+			$peer = $Channels [cid] = CHANNEL (self, 0)
+			$peer.rc = cid
+			$peer.winout = w1
+			$SendCmd (MSG.CHANNEL_OPEN_CONFIRMATION, cid, cid, w1, w2)
+			$got_channel.up ()
+			return True
+		}
+	}
+	return False
+}
+
+method SSHTransport.Send (pak)
+{
+	$outQueue.append (pak)
+	$outsem.up ()
+	return True
+}
+
+method SSHTransport.SendCmd (cmd, *args)
+	return $Send (BuildPacket (Byte (cmd), *args))
+
+method SSHClient.OpenChannel (kind, *params)
+{
+	if (!$started)
+		$Begin ()
+
+	$SendCmd (MSG.CHANNEL_OPEN, kind, $ChanID, 65536, 34816, *params)
+	c = $Channels [$ChanID] = CHANNEL (self, 65536)
+	$ChanID += 1
+	# wait for activation
+	c.wait4ack ()
+	return c
+}
+
+class CHANNEL
+{
+	method __init__ ($ssh, $window)
+	{
+		$sem = thread.sem ()
+		$inQueue = []
+		$ack = thread.sem ()
+		$wsem = thread.sem ()
+		$winout = 0
+		$winadj = 0
+	}
+	# activate channel with other-point id
+	method activate ($rc)
+		$ack.up()
+	method wait4ack ()
+	{
+		$ack.down ()
+		del $ack
+	}
+	# window adjustment
+	method adjwin (x)
+	{
+		if ($winadj) $winadj += x
+		else {
+			$winadj = x
+			$wsem.up ()
+		}
+	}
+	method wait4win ()
+	{
+		$wsem.down ()
+		$winout, $winadj = $winadj, 0
+	}
+	# incoming data
+	method push (data)
+	{
+		$inQueue.append (data)
+		$sem.up ()
+	}
+	# send/recv api
+	method recv ()	 #(xxx: timeout!)
+	{
+		if (!$window) {
+			$window = 65536
+			$ssh.SendCmd (MSG.CHANNEL_WINDOW_ADJUST, $rc, $window)
+		}
+		$sem.down ()
+		$window -= len ($inQueue [0])
+		return $inQueue.pop (0)
+	}
+	method send_request (*args)
+		$ssh.SendCmd (MSG.CHANNEL_REQUEST, $rc, *args)
+	method send (data)
+	{
+		if (!$winout) $wait4win ()
+
+		if (len (data) > 8192) 
+			return $send (data [:8192]) and $send (data [8192:])
+		if (len (data) <= $winout) {
+			$winout -= len (data)
+			return $ssh.SendCmd (MSG.CHANNEL_DATA, $rc, data)
+		}
+		w = $winout
+		return $send (data [:w]) and $send (data [w:])
+	}
+}
+
+method SSHServer.AcceptChannel (k)
+{
+	$got_channel = thread.sem ()
+	$got_channel.down ()
+	del $got_channel
+	return $peer
+}
+
+##
+## peer mode example.
+##
+
+if (__name__ == __main__)
+{
+	import thread
+	from socket import socket
+	from random import randint
+	PP = randint (3000, 4000)
+
+	# It is possible to switch the roles of SSHClient and SSHServer.
+	# It doesn't matter in which way were the sockets connected.
+
+	def cth ()
+	{
+		sleep (0.4)
+		ss = socket ()
+		ss.connect (("127.0.0.1", PP))
+		C = SSHClient (ss, acceptnokey=1)
+		c = C.OpenChannel ("peer")
+		for (i in xrange (10)) {
+			c.send ("PING!")
+			print c.recv ()
+		}
+	}
+	thread.start_new (cth)
+	s = socket ()
+	s.bind (("127.0.0.1", PP))
+	s.listen (5)
+	c, a = s.accept ()
+	C = SSHServer (c)
+	C.Begin ()
+	c = C.AcceptChannel ("peer")
+	for (i in xrange (10)) {
+		print c.recv ()
+		c.send ("PONG!")
+	}
+	sleep (1)
+}

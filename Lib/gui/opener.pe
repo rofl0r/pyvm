@@ -1,0 +1,293 @@
+__autosem__
+
+# File opener. Used, for example, by pdf, avplay and other applications
+# that are viewers for a specific file type.  This is a minimal filesystem
+# navigator, but its more specialized and bound to the application as
+# it can remember history, recently viewed documents, locations, etc.
+
+from widget import widget
+from scrollbarz import vscrollbar
+import os, serialize
+isdir = os.path.isdir
+
+class Opener (widget)
+{
+	elastic = True
+	iconw = 20
+
+	method Init ($items, **kw)
+	{
+		if ("h" not in kw)
+			kw ["h"] = 100
+		$widget_init (**kw)
+		$xbar = vscrollbar (self, w=$w, p=self)
+		$xbar.y = $h - $xbar.h
+		$font = $wm.OpenFont ("sans-b", 0)
+		$dy = $font.maxh
+		$th = ($h - $xbar.h) / $dy
+		$layout ()
+	}
+
+	method layout ()
+	{
+		$bg = $items.bg
+		$nitems = $items.len ()
+		th = $th
+		$ncols = udiv ($nitems, $th)
+		$widths = []
+		for (i in *$ncols) {
+			w =  0
+			for (x in *th)
+				if (i * th + x < $nitems)
+					w = max (w, $font.isizeof ($items.text (i * th + x)))
+			$widths<< w + $iconw
+		}
+		$offset = 0
+	}
+
+	method getTVOv ()
+		return $ncols, 1, $offset
+
+	method setTVOv (d=None, o=None)
+	{
+		# Not implemented
+	}
+
+	method _resize_h (dh)
+	{
+		$h += dh
+		$th = ($h - $xbar.h) / $dy
+		$layout ()
+		$xbar.y = $h - $xbar.h
+	}
+
+	method _resize_w (dw)
+	{
+		$w += dw
+		$xbar.resize_w (dw)
+	}
+
+	method Draw ()
+	{
+		$draw_blank ($bg)
+		i = $offset
+		x = 0
+		do {
+			y = 0
+			n = i * $th
+			for (nn in *$th) {
+				nn += n
+				if (nn >= $nitems)
+					break
+				c = $items.text (nn)
+				fg = $items.color (nn)
+				$draw_string (c, x + $iconw, y, fg=fg, font=$font, bg=$bg)
+				y += $dy
+			}
+			x += $widths [i]
+			i += 1
+			if (i >= len ($widths))
+				break
+			if (x + $widths [i] > $w)
+				break
+		} while (1)
+		$xbar.Draw ()
+	}
+
+	method onKey (k)
+	{
+		o = $offset
+		if (k == "RIGHT")
+			$offset = min ($offset + 1, $ncols - 1)
+		else if (k == "LEFT")
+			$offset = max ($offset - 1, 0)
+		else return False
+		if (o != $offset)
+			$Draw ()
+		return True
+	}
+
+	method onWheel (x)
+		return $onKey (x == "up" ? "LEFT" : "RIGHT")
+
+	method onClick (x, y)
+	{
+		if ($xbar.xy_in (x, y))
+			return $xbar.onClick (x - $xbar.x, y - $xbar.y)
+		if (!$wm.double_click ())
+			return True
+		i = $offset
+		xx = $widths [i]
+		while (x > xx) {
+			i += 1
+			if (i == len ($widths))
+				return True
+			xx += $widths [i]
+		}
+		row = y / $dy
+		item = i * $th + row
+		if (item >= $nitems)
+			return True
+		ww = $font.isizeof ($items.text (item)) + $iconw
+		if (x > ww + xx - $widths [i])
+			return False
+		r = $items.Open (item)
+		if (isinstance (r, items)) {
+			$items = r
+			$layout ()
+			$Draw ()
+		} else if (r is 0)
+			$wm.exit ()
+		return True
+	}
+}
+
+GotIt = None
+
+class items
+{
+	bg = 0
+	method __init__ ($basedir, $back)
+	{
+		$root = $back.root
+		$basedir = ewslash (basedir)
+		$items = L = []
+		if (back)
+			L<< ("<<", None, 0x5566bb)
+		L<< ("..", None, 0x334499)
+		dirs = []
+		files = []
+		bd = $basedir
+		for (f in os.listdir ($basedir).sort ()) {
+			ff = bd + f
+			if (isdir (ff))
+				dirs<< (f, None, 0x334499)
+			else if ($filter (f))
+				files<< (f, None, 0x99aabb)
+		}
+		L.extend (dirs)
+		L.extend (files)
+	}
+
+	method filter (x)
+		return True
+
+	method len ()
+		return len ($items)
+	method text (i)
+		return $items [i][0]
+	method color (i)
+		return $items [i][2]
+	method Open (i)
+	{
+		global GotIt
+		if (i == 0 and $back)
+			return $back
+
+		f = $basedir + $items [i][0]
+		if (isdir (f)) {
+			try return $__class__ (f, self)
+		} else if (havefile (f)) {
+			GotIt = f
+			return 0
+		}
+	}
+}
+
+# filter is done by extension. We could also scan the files for valid
+# magic markers, but that'd take a very long time for dirs with many
+# files.
+
+class pdf_items (items)
+	method filter (x)
+		return x.lower ().ew (".pdf")
+
+class video_items (items)
+	method filter (x)
+	{
+		if ("." not in x)
+			return False
+		ext = x.rpartition (".")[2].lower ()
+		return ext in ("wmv", "mpg", "mpeg", "flv")
+	}
+
+class root_items (items)
+{
+	method __init__ ($type)
+	{
+		$root = self
+		$appd = serialize.appdata2 ("opener", type, {"history":[]})
+		$items = [
+			("Downloads", None, 0x33aa55),
+			("home", None, 0x33aa55),
+			("history", None, 0x994433),
+		]
+	}
+
+	method Open (i)
+		if (i in (0, 1)) {
+			cls = $type == "PDF" ? pdf_items : video_items
+			d = [HOME + "user/wcache/downloads", os.getenv ("HOME")][i]
+			return cls (d, back=self)
+		} else if (i == 2) {
+			if (h = $appd ["history"])
+				return history_items (h, self)
+		}
+
+	method opened (x)
+	{
+		path = x
+		name = x.rpartition ("/")[2]
+		hist = $appd ["history"]
+		x = path, name
+		if (x in hist)
+			hist.remove (x)
+		hist.insert (0, x)
+		$appd.save ()
+	}
+}
+
+class history_items (items)
+{
+	method __init__ ($i, $back)
+	{
+		$root = $back.root
+		$items = [(x [1], None, 0xffffff) for (x in i)]
+		$items.insert (0, ("<<", None, 0x33dd33))
+	}
+
+	method Open (i)
+	{
+		if (!i)
+			return $back
+		i -= 1
+		global GotIt
+		GotIt = $i [i][0]
+		return 0
+	}
+}
+
+def Open (t)
+{
+	R = root_items (t)
+	import gui
+	wm = gui.Wm (1000, 600, "Locate %s" %t)
+	with (gui.vcontainer ()) {
+		with (gui.hcontainer ()) {
+			gui.label ("Locate %s (double click items)" %t)
+			gui.button ("Exit", Action=wm.exit)
+		}
+		o = Opener (R)
+	}
+	o.setKeyWidget ()
+	wm.Start ()
+	if (!GotIt) return
+	r = os.abspath (GotIt)
+	R.opened (r)
+	return r
+}
+
+# Todo
+#	rename, copy, paste, mkdir, link, delete
+#	history, color visited, search subdirs
+#	search & find

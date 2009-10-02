@@ -1,0 +1,275 @@
+##  Git checkout script
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This script can be used to fetch all the files of the HEAD commit
+# of a git url. It does not fetch the entire git database / does not
+# set up a repository.
+
+__autosem__
+
+import os
+from misc import fprint
+
+VERBOSE = 0
+
+USAGE = "usage: git-checkout <git://host/path> <destination-directory>
+       git-checkout -f <git://host/path>
+
+With the first form it fetches the files for the HEAD commit of the
+specified repository. Useful if you just want to download a project
+via git, but not maintain a full repo.
+
+With the second form it just downloads the PACKFILE. After that you
+can use the official git to:
+	git init
+	git unpack-objects < PACK.pack
+and have a nice repo with loose objects
+"
+
+if (fullpack = sys.argp.check_switch ("-f")) url = sys.argp.one ()
+else {
+	url, destdir = sys.argp.nargs (2)
+
+	if (os.access (destdir)) {
+		print "Destination directory %s already exists" % destdir
+		print "Update/overwrite mode not implemented. Use another dir"
+		exit ()
+	}
+
+	if (destdir [-1] != "/")
+		destdir += "/"
+}
+
+def get_packfile (url)
+{
+	if (!url.sw ("git://")) {
+		print "Not a git url"
+		exit ()
+	}
+	url = url [6:]
+	HOST, None, PATH = url.partition ("/")
+	PATH = "/" + PATH
+
+	print  'connecting to ', HOST
+	s = @socket.Connect (HOST, 9418)
+	print "Connected"
+
+	sf = s.socketfile ()
+
+	def get_packet ()
+	{
+		if !(ll = int (sf.read (4), 16))
+			return
+		return sf.read (ll - 4)
+	}
+
+	def pack (data)
+		return "%04x" %(len (data)+4) + data
+
+	print 'Host:', HOST
+	print 'Path:', PATH
+	s.send (pack ("git-upload-pack %s\0host=%s\0" %(PATH, HOST)))
+	master = None
+	print 'scanning branches'
+	while (p = get_packet ())
+		try {
+			h, p = p.split ()
+			if (p == "refs/heads/master")
+				master = h
+		}
+	if (!master) {
+		print "Couldn't find master!"
+		exit ()
+	}
+	print 'ok. found master branch', master
+	if (fullpack) s.send (pack ("want %s\n" %master) + "0000")
+	else s.send (pack ("want %s\n" %master) + pack ("shallow %s" %master) + "0000")
+	s.send (pack ("done\n"))
+	print "flush:", get_packet ()
+	print "Getting packfile"
+	PACK = open ("PACK.pack", "w")
+	ll = 0
+	while (p = sf.recv ()) {
+		ll += len (p)
+		PACK.write (p)
+		fprint (".")
+	}
+	print
+	print "tot:", ll
+	PACK.close ()
+}
+
+get_packfile (url)
+if (fullpack) {
+	print "OK, packfile saved"
+	exit ()
+}
+
+### extract packfile
+import zlib
+from sha import digest as SHA
+from datastream import data_parser
+parse_tree = @scm.'git-core'.parse_tree
+
+dp = data_parser (readfile ("PACK.pack"))
+
+dp.match ("PACK")
+dp.rn(4)
+nobj = dp.r32b()
+print nobj, "objects in pack"
+
+os.mkdir (destdir)
+
+paths = {}
+haves = []
+
+trees = {}
+blobs = {}
+deltas = {}
+
+for (i in *nobj) {
+	c = dp.r8 ()
+	t = (c>>4)&7
+	size = c & 15
+	shift = 4
+	while (c & 0x80) {
+		c = dp.r8 ()
+		size += (c & 0x7f) << shift
+		shift += 7
+	}
+
+	if (t not in (1, 2, 3, 7))
+		raise Error ("t=%i" %t)
+
+	# grr. packfiles mention the size of the *uncompressed* data.
+	# so we have to uncompress that and see how much zlib advanced
+	# in the compressed stream.
+
+	if (t == 7)
+		basesha = dp.read (20).hexlify ()
+	else if (t == 6) {
+		b = dp.r8 ()
+		n = b & 0x7f
+		while (b & 0x80) {
+			b = dp.r8 ()
+			n = ((n + 1) << 7) | (b & 0x7f)
+		}
+	}
+
+	dc = zlib.decompressor (dp.data, dp.offset)
+	p0 = dc.zavail ()
+	data = dc.unzip (size)
+	p1 = dc.zavail ()
+	dp.skip (p0 - p1)
+
+	if (t == 3) {
+		sig = SHA ("blob %i\0"%len (data) + data).hexlify ()
+		blobs [sig] = data
+	} else if (t == 2) {
+		sig = SHA ("tree %i\0"%len (data) + data).hexlify ()
+		trees [sig] = data
+	} else if (t == 1) {
+		paths [data [5:45]] = destdir
+	} else if (t == 7) {
+		deltas.gather (basesha, data)
+	}
+}
+
+dp.kill ()
+
+print "%i\ttrees" %len (trees)
+print "%i\tblobs" %len (blobs)
+print "%i\tdeltas" % (deltas ? sum ([len (x) for (x in deltas.values ())]) : 0)
+
+print 'making trees'
+while (trees)
+	for (sig in trees)
+		if.break (sig in paths) {
+			data = trees.pop (sig)
+			parent = paths [sig]
+			for (name, perm, sig in parse_tree (data)) {
+				perm = int (perm, 8)
+				if (perm & 040000) {
+					os.mkdir (parent + name)
+					if (VERBOSE)
+						print "MKDIR:", parent + name
+					paths [sig] = parent + name + "/"
+				} else paths [sig] = parent + name, perm
+			}
+		}
+
+stored = set ()
+print 'saving blobs'
+for (sig, data in blobs.items ()) {
+	path, mode = paths [sig]
+	stored.add (sig)
+	if (VERBOSE)
+		print "saving", len (data), path
+	open (path, "w").write (data)
+	os.chmod (path, mode)
+	haves<< "%s %s" %(path [len (destdir):], sig)
+}
+
+def parse_le (dp)
+{
+	s = i = 0
+	do {
+		b = dp.r8 ()
+		s = s | (((b & 0x7f)) << i)
+		i += 7
+	} while (b & 0x80)
+	return s
+}
+
+print 'restoring deltas'
+while (deltas)
+	for (sig in deltas)
+		if.break (sig in stored) {
+			for (data in deltas.pop (sig)) {
+				dp = data_parser (data)
+				r8 = dp.r8
+				parse_le (dp)
+				parse_le (dp)
+				src = readfile (paths [sig] [0])
+				out = []
+				while (dp.left ()) {
+					cmd = r8 ()
+					if (cmd & 0x80) {
+						cpoff = cpsz = 0
+						if (cmd & 1) cpoff = r8 ()
+						if (cmd & 2) cpoff |= (r8 ()<<8)
+						if (cmd & 4) cpoff |= (r8 ()<<16)
+						if (cmd & 8) cpoff |= (r8 ()<<24)
+						if (cmd & 0x10) cpsz = r8 ()
+						if (cmd & 0x20) cpsz |= (r8 ()<<8)
+						if (cmd & 0x40) cpsz |= (r8 ()<<16)
+						if (cpsz == 0) raise Error ("PHAK")
+						out += src [cpoff:cpoff+cpsz]
+					} else if (cmd) {
+						out += dp.read (cmd)
+					} else raise Error ("unexpected delta opcode 0")
+				}
+				# we got our data
+				data = "".join (out)
+				newsig = SHA ("blob %i\0"%len (data) + data).hexlify ()
+				path, mode = paths [newsig]
+				stored.add (newsig)
+				if (VERBOSE)
+					print "saving from delta", len (data), path
+				open (path, "w").write (data)
+				os.chmod (path, mode)
+				haves<< "%s %s" %(path [len (destdir):], newsig)
+			}
+		}
+	else.for {
+		print "UNresolved cyclic delta!", deltas.keys ()
+		exit ()
+	}
+
+os.remove ("PACK.pack")
+# GITHAVE is useful for the "update" op, not implemented yet
+open (destdir + "GITHAVE", "w").write ("\n".join (haves))

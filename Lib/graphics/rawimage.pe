@@ -1,0 +1,179 @@
+##  Image class
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from cutil import rgb2depth, nice_resize, gray2rgb, color_change, xresize, repeatx, repeaty, imageneg
+
+# An image is basically, a buffer with pixel data ("data"),
+# width, height and bpp information.
+#
+# Alpha channel, at the moment is stored on a different buffer w*h bytes.
+# The good thing about this is that the image can be converted to 16bpp
+# and keep the alphatab. On the other hand, for 32bpp this space is
+# wasted. We should probably have a flag alpha_in_data for this case.
+
+class image
+{
+	data_is_addr = False
+
+	method __init__ ($data, $w, $h, $bpp=3, conv_to=None, $colorkey=None, $alphatab=None)
+	{
+		if (alphatab)
+			try a, b = alphatab
+			except raise Error ("alphatab must be: array, bool")
+		$transparent = False
+		if (conv_to is not None)
+			$convert_bpp (conv_to)
+	}
+
+	method bg_transparent (bgcol)
+	{
+		if ($colorkey is None)
+			return self
+		if ($bpp != 3)
+			print "Cannot do color change, bpp=", $bpp
+		newdata = _buffer ($w * $h * 3)
+		color_change ($data, newdata, $w, $h, $colorkey, bgcol)
+		# (the colorkey is removed from the new image)
+		return image (newdata, $w, $h)
+	}
+
+	method convert_bpp (bpp)
+	{
+		if (bpp == $bpp)
+			return self
+
+		# inplace!
+		if ($bpp != 3 or bpp not in (2,3,4))
+			raise Error ("Cannot convert %i -> %i" %($bpp, bpp))
+
+		if (bpp == 3)
+			return self
+
+		data = _buffer ($w * $h * bpp)
+##		if ($h*$w > 100000)
+##			print "RGB to", bpp, $w*$h
+		rgb2depth (bpp, $w * $h, $data, data)
+		$data = data
+		$bpp = bpp
+		return self
+	}
+
+	method xresize (w, h)
+	{
+		data = _buffer (w * h * $bpp)
+		xresize ($data, $w, $h, data, w, h, $bpp)
+		if ($alphatab) {
+			alphatab = _buffer (w * h)
+			xresize ($alphatab [0], $w, $h, alphatab, w, h, 1)
+			alphatab = alphatab, $alphatab [1]
+		} else alphatab = None
+		return image (data, w, h, $bpp, alphatab=alphatab)
+	}
+
+	method datawh ()
+		return $data, $w, $h
+
+	method save_as_ppm (filename)
+	{
+		if ($bpp != 3) raise Error ("Error image should be RGB");
+		@graphics.ppm.store (filename, $data, $w, $h)
+	}
+
+	method save_as_png (filename)
+	{
+		if ($bpp != 3) raise Error ("Error image should be RGB");
+		@graphics.png.store (filename, $data, $w, $h)
+	}
+
+	method read_image (resize=None)
+		return self
+
+	method resize (w, h, good=True)
+	{
+		if ($bpp != 3 and good)
+			return $convert_bpp (3).resize (w, h, good)
+
+		newdata = _buffer (w * h * $bpp)
+		if (good)
+			nice_resize ($data, $w, $h, newdata, w, h)
+		else xresize ($data, $w, $h, newdata, w, h, $bpp)
+		return image (newdata, w, h, $bpp)
+	}
+
+	method to_framebuffer ()
+	{
+		import graphics.framebuffer
+		return $to_framebuffer ()
+	}
+
+	method recolor (c1, c2)
+		$to_framebuffer ().recolor (c1, c2)
+
+	method dup ()
+		return image (_buffer ($data), $w, $h, $bpp, colorkey=$colorkey)
+
+	method recolored (c1, c2)
+	{
+		i = $dup ()
+		i.recolor (c1, c2)
+		return i
+	}
+
+	method repeat_x (n)
+	{
+		data = _buffer ($w * $h * n * $bpp)
+		repeatx ($data, $w, $h, data, n, $bpp)
+		if ($alphatab) {
+			alphatab = _buffer ($w * $h * n)
+			repeatx ($alphatab [0], $w, $h, alphatab, n, 1)
+			alphatab = alphatab, $alphatab [1]
+		} else alphatab = None
+		return image (data, n * $w, $h, $bpp, alphatab=alphatab)
+	}
+
+	method repeat_y (n)
+	{
+		data = _buffer ($w * $h * n * $bpp)
+		repeaty ($data, $w, $h, data, n, $bpp)
+		if ($alphatab) {
+			alphatab = _buffer ($w * $h * n)
+			repeaty ($alphatab [0], $w, $h, alphatab, n, 1)
+			alphatab = alphatab, $alphatab [1]
+		} else alphatab = None
+		return image (data, $w, n * $h, $bpp, alphatab=alphatab)
+	}
+
+	# inplace negation of colors
+	method neg ()
+	{
+		imageneg ($data, $w, $h, $bpp)
+		return self
+	}
+
+	# print a hexdump
+	method hexdump (x0=0, y0=0, w=None, h=None)
+	{
+		if (w is None) w = $w
+		if (h is None) h = $h
+		f = $to_framebuffer ()
+		for (y in xrange (y0, y0+h)) {
+			l = []
+			for (x in xrange (x0, x0+w))
+				l << "%7s" %("%x" % f.get_pixel (x, y))
+			print "".join (l)
+		}
+	}
+}
+
+def image_from_grayscale (data, w, h)
+{
+	data2 = _buffer (w * h * 3)
+	gray2rgb (data, data2, w * h)
+	return image (data2, w, h)
+}

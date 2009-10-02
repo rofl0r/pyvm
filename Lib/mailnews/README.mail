@@ -1,0 +1,50 @@
+1. Fetching messages
+--------------------
+
+This implementation implements the POP protocol with the
+ability to optionally, leave the messages on server so that
+they can be seen with your "other" mail client too.
+
+[Although, an excellent anti-spam technique is done when users
+ run their own SMTP server. A user can say "if you want to send
+ an e-mail to me, the message *must* contain the word 'foobar'
+ the first time you use the address". If the SMTP server detects
+ messages from new addresses that do not contain the word it
+ will issue a "No such user" reply. The sender will believe that
+ he typed the address wrong and will visit your home page and
+ see the message that the specific magic word must be used.
+ This is not possible with POP or IMAP because you will have to
+ reply to the address and this can be exploited by spammers
+ to put fake addresses and make you spam innocent people with
+ "message not accepted" messages.
+ Of course, this all works perfectly for single user e-mail
+ correspondance. When people join mailing-lists and use the Cc:
+ mechanism extensively, the above scenario does not work.
+ By definition open mailing lists where anybody can post their
+ crap, are vulnerable to spam and there is nothing that can
+ be done (because spammers can use the filters in their service
+ in order to construct messages that pass the filters, and
+ are garbage although they do not sell anything, just to prove
+ that anti-spamming does not work).
+ In any case, using two addresses, one for private mail and
+ one for participating in mailing lists, may be the way to use
+ this technique
+]
+
+
+Setting up POP:
+
+1. create directory in pyvm/user/mail/account
+2. in this directory create file called `config` with content:
+	type = POP or POPSSL
+	host = pop.address.com
+	username = "user@address.com" or "user", this is the POP username
+	password = password
+	leave_on_server = True or False
+
+That's it
+Then, run
+	pyvm mail -fetch account
+
+Other future possibilities for fetchmail are: IMAP, Connect over SSH and
+rip the mailbox and local SMTP server spool.

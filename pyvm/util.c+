@@ -1,0 +1,64 @@
+/*
+ *  Few utilities
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "hutil.h"
+
+/**
+ ** special version of itoa base 10.
+ **/
+int mytoa10 (char *dest, register int num)
+{
+	char tmp [30];
+	register char *p = tmp + 29;
+	int neg;
+
+	if ((neg = num < 0))
+		if_unlikely ((num =- num) < 0) {
+			strcpy (dest, "-2147483648");
+			return 11;
+		}
+
+	*p-- = 0;
+	if_likely (num) for (; num; num /= 10)
+		*p-- = 48 + num % 10;
+	else *p-- = '0';
+
+	if (neg) *p-- = '-';
+
+	neg = (tmp + 29) - p;
+	memcpy (dest, p + 1, neg);
+	return neg - 1;
+}
+
+int mytoa16 (char *dest, register unsigned int num)
+{
+	char tmp [30];
+	register char *p = tmp + 29;
+	int neg;
+
+	*p-- = 0;
+	if_likely (num) for (; num; num /= 16)
+		*p-- = num % 16 >= 10 ? 65 + (num % 16) - 10 : 48 + num % 16;
+	else *p-- = '0';
+
+	neg = (tmp + 29) - p;
+	memcpy (dest, p + 1, neg);
+	return neg - 1;
+}
+bool internable (const char *s, int l)
+{
+	if (l > 15)
+		return false;
+	while (l--)
+		if (*s++ <= ' ')
+			return false;
+	return true;
+}

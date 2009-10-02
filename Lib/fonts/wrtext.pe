@@ -1,0 +1,23 @@
+__autosem__
+
+USAGE = "wrtext [-f] <font> <size> <text>
+
+render the text with the specified font and save in an image
+WRTEXT.ppm.  The <font> parameter should be something like:
+	ms/sans or urw/mono-bi, etc
+with -f the freetype engine is used.
+Script useful for hunting font bugs
+"
+
+ft = sys.argp.check_switch ("-f")
+f, pt, s = sys.argp.nargs (3)
+
+F = @fonts.Open ("$"+f, float (pt), builtin_raster = !ft)
+w = F.isizeof (s)
+h = F.maxh
+fb = importFB ()(w + 50, 3*h, 2)
+fb.clear (0xeeeeee)
+fb.fill_rect (25, h, w, h, 0xffffff)
+F.render_to (fb, 25, h, s, 0)
+fb.save_as_ppm ("WRTEXT.ppm")
+

@@ -1,0 +1,156 @@
+##  Bittorrent bencode
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import llong
+
+#
+# This is the BitTorrent "bencode" format.
+#
+# It is generally a very nice, well known, cross platform, standard
+# method for marshalling data. It doesn't use XML or anything like
+# JSON. In a few words, this is an excellent format for use in new
+# protocols
+#
+
+class Decoder
+{
+	method __init__ ()
+	{
+		decstring = $decstring
+		$DecTab = {
+			"0":decstring,
+			"1":decstring,
+			"2":decstring,
+			"3":decstring,
+			"4":decstring,
+			"5":decstring,
+			"6":decstring,
+			"7":decstring,
+			"8":decstring,
+			"9":decstring,
+			"i":$decint,
+			"l":$declist,
+			"d":$decdict,
+		}
+	}
+
+	method decstring (S, i)
+	{
+		i -= 1
+		d = ''
+		while (S [i].isdigit ()) {
+			d += S [i]
+			i += 1
+		}
+		if (S [i] != ':')
+			raise "Error ':'"
+		d = int (d) + (i += 1)
+		return S [i:d], d
+	}
+
+	method decint (S, i)
+	{
+		d = ''
+		while (S [i] != 'e') {
+			d += S [i]
+			i += 1
+		}
+		if (len (d) < 10)
+			return int (d), i + 1
+		return llong.strtouil (d), i + 1
+	}
+
+	method declist (S, i)
+	{
+		L = []
+		while (S [i] != 'e') {
+			o, i = $decobj (S, i)
+			L.append (o)
+		}
+		return L, i + 1
+	}
+
+	method decdict (S, i)
+	{
+		D = {}
+		while (S [i] != 'e') {
+			k, i = $decobj (S, i)
+			v, i = $decobj (S, i)
+			D [k] = v
+		}
+		return D, i + 1
+	}
+
+	method decobj (S, i=0)
+		return $DecTab [S [i]] (S, i + 1)
+}
+
+def decode (o)
+	return Decoder ().decobj (o)[0]
+
+################################################
+
+class Encoder
+{
+	method __init__ ()
+		$EncTab = {
+			str : $encstring,
+			int : $encint,
+			list : $enclist,
+			tuple : $enclist,
+			dict : $encdict,
+			Long : $enclong
+		}
+
+	method encstring (s)
+		return '%i:%s' % (len (s), s)
+
+	method encint (i)
+		return 'i%ie' %i
+
+	method enclist (l)
+		return  'l' + ''.join ([$encode (i) for (i in l)]) + 'e'
+
+	method encdict (d)
+	{
+		L = []
+		for (k, v in d.items ().sort ()) {
+			L.append ($encode (k))
+			L.append ($encode (v))
+		}
+		return 'd' + ''.join (L) + 'e'
+	}
+
+	method enclong (l)
+		return "i%se" %llong.tostringnum (l)
+
+	method encode (o)
+		return $EncTab [type (o)] (o)
+}
+
+def encode (o)
+	return Encoder ().encode (o)
+
+#
+#
+#
+
+USAGE = "bencode <file>
+decode and print a bencoded file (like a .torrent file)"
+
+if (__name__ == __main__)
+{
+	# any .torrent file will do
+	STR = readfile (sys.argp.one ())
+	xx = decode (STR)
+	ss = encode (xx)
+	print ss == STR
+	print xx.keys ()
+	print xx
+}

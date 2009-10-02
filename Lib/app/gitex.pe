@@ -1,0 +1,326 @@
+##  git repository explorer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# This is a small crappy explorer. It's supposed to work for projects
+# with linear history, and, like the pyvm's git implementations, it
+# does not understand packed repositories.
+# For trying this with other repositories, you may need to run:
+#	git unpack-objects
+# but be careful and not do that on the linux kernel unless you have
+# a lot of free space on the hard disk!
+
+__autosem__
+
+from time     import monday, rfc1123 as strtime, MMYY
+from scm.git  import repository
+from scm.diff import pydiff as diff
+from misc     import memoizing
+from utfutil  import utf8_len as ulen, utf8_slice
+from mailnews.mime import NameFromAddr
+
+quiet = sys.argp.check_switch ("-q")
+
+try repo = repository ()
+except {
+	print "Not inside a repository, or can't open repository"
+	exit ()
+}
+
+try HEAD = repo.open_commit ()
+except {
+	print "Can't open HEAD commit. Repository probably packed?"
+	exit ()
+}
+
+def sc (t, l)
+{
+	l2 = ulen (t)
+	if (l2 < l)
+		return t + " " * (l - l2)
+	return utf8_slice (t, 0, l)
+}
+
+branches = repo.branches ()
+current = HEAD.sig
+print "reading history... (this may take some time for cold cache)"
+history = list (repo.MainHistory (HEAD, !quiet))
+
+states = [[["shortlog"],0]]
+
+def bold (t, color=None)
+	return t, color, "b", None
+def line (items, bgcolor=None)
+	return bgcolor, items
+def color (t, color, click=None)
+	return t, color, None, click
+
+L = []
+BGs = [0x222222]
+def adl (*args) L.append ((BGs [-1], args))
+def adls (*args) for (a in args) adl (*a)
+def cdate (d)   return sc (d, 6), 0xd48440, None, None
+def cno (d)   return sc (d, 4), None, None, None
+def commiter (o) return sc (NameFromAddr (o.author ()), M), 0xd48440, None, None
+def ctitle (o)  return o.title (), 0xffffff, "bu", ("c", o.sig, 0)
+def tblh (s)    return s, BR, "b", None
+def ctitle2 (o) return o.title (), 0xffffff, "b", None
+def psig (p)    return p.sig, BL, "u", ("c", p.sig, 0)
+def tocd (c, n) return "diffstat", BL, "u", ("c", c, n)
+def ddesc (s)   return s, 0xf0f0f0, "b", None
+def bff (s)     return s, 0xffffff, "b", None
+def vblb (t, f, s) return t, BL, "bu", ("b", f, s)
+def vdf (t, c, p, fb1b2) return t, BL, "u", ("vd", c, p, fb1b2)
+def tbh (s)  return s, None, None, None
+def dl (s)   return bold (s, 0)
+def vtr (s)  return s, BL, None, ("t", s)
+def swbr (b) return b, BL, "bu", ("sb", b)
+def info (s) return s, 0xffff00, "bi", None
+def help (s) return s, 0xffffbb, "bi", None
+def setbg (bg) BGs.append (bg)
+def popbg ()   BGs.pop ()
+
+BR = 0xf4a460
+BL = 0x60a4f4
+BGT = 0x222222
+HL = 0xffffff
+
+gen gen_commits (branch=None)
+{
+	global M, current, history
+
+	setbg (0x050505)
+	adls ([help ("    Welcome to git repository explorer")],
+	      [help ("Hit BACKSPACE or RIGHT CLICK to go back")],
+	      [help ("ESC to exit")], [])
+
+	if (branch) {
+		for (b, sig in branches)
+			if.break (b == branch)
+				current = sig
+		history = list (repo.MainHistory (repo.openobj (current)))
+	}
+
+	adl (info ("Branches"))
+	for (b, sig in branches)
+		adl (" [", sig == current ? b : swbr (b), "]", sig == HEAD.sig ? bold (" HEAD") : "")
+	adl ()
+	M = maun = max ([ulen (NameFromAddr (h.author ())) for (h in history)])
+	N = len (history)
+	mmyy = None
+	for (n, h in enumerate (history)) {
+		if (MMYY (h.date ()) != mmyy) {
+			mmyy = MMYY (h.date ())
+			adl (info (mmyy))
+		}
+		adl (cdate (monday (h.date ())), "  ", cno ("%3i" %(N-n)), " ", commiter (h), " ", ctitle (h))
+	}
+	popbg ()
+}
+
+def diff_trees (tree1, tree2)
+	return repo.diff_trees2 (tree1, tree2)
+diff_trees = memoizing (diff_trees)
+def diffstat_blobs (b1, b2, f)
+{
+	np = nm = 0
+	for (l in diff (repo.openobj (b1).data, repo.openobj (b2).data, f, f).split ("\n") [2:])
+		if (l.sw ("+")) np += 1
+		else if (l.sw ("-")) nm += 1
+	return np, nm
+}
+diffstat_blobs = memoizing (diffstat_blobs)
+
+gen pluses_n_minuses (np, nm)
+{
+	yield " | %4i " %(np+nm)
+	if (np >= 100) yield color ("+"*(np/100), 0xff4444)
+	np = np % 100
+	if (np >= 10) yield color ("+"*(np/10), 0x4444ff)
+	if (np % 10) yield "+" * (np%10)
+	yield "/"
+	if (nm >= 100) yield color ("-"*(nm/100), 0xff4444)
+	nm = nm % 100
+	if (nm >= 10) yield color ("-"*(nm/10), 0x4444ff)
+	if (nm % 10) yield "-" * (nm%10)
+}
+
+def cl (l)
+	return l, 0xcccccc, "b", None
+
+gen gen_commit (c, par=0, fb1b2=None)
+{
+	o = repo.openobj (c)
+	tree = repo.openobj (o.tree)
+	adls ([tbh ("author    "), tblh (o.authorName ())],
+	      [tbh ("committer "), tblh (o.committerName ())],
+	      [tbh ("          "), tblh (strtime (o.date ()))],
+	      [tbh ("commit    "), tblh (o.sig)])
+
+	if (o.parents)
+		for (n, p in enumerate (list (o.Parents ())))
+			if (n == par) adl (tbh ("parent    "), psig (p))
+			else adl (tbh ("parent    "), psig (p), "   [", tocd (c, n), "]")
+	adls ([tbh ("tree      "), vtr (tree.sig)], [])
+	for (l in o.message.split ("\n"))
+		adl (cl (l))
+
+	if (!o.parents)
+		return
+
+	added, removed, renamed, diffed = diff_trees (repo.openobj (o.parents [par]).tree, o.tree)
+
+	if (diffed)
+		adls ([("VIEW DIFF", BR, "bu", ("cd", c, o.parents [par]))], [])
+
+	if (added) {
+		adl (ddesc ("New files"))
+		for (f, sig in added)
+			adl (vblb (f, f, sig))
+	}
+	if (removed) {
+		adl (ddesc ("removed files"))
+		for (f, sig in removed)
+			adl (vblb (f, f, sig))
+	}
+	if (renamed) {
+		adl (ddesc ("renames"))
+		lf1 = max ([len (x) for (x, None, None in renamed)])
+		lf2 = max ([len (x) for (None, x, None in renamed)])
+		for (f1, f2, sig in renamed.sort ())
+			adl (vblb (sc (f1, lf1), f1, sig), " -> ", vblb (sc (f2, lf2), f2, sig))
+	}
+	if (diffed) {
+		adl (ddesc ("diffstat"))
+		fmax = max ([len (f) for (f, None, None in diffed)]) + 1
+		setbg (0)
+		tp = tm = 0
+		for (f, b1, b2 in diffed) {
+			ll = [" ", vdf (f, c, par, (f, b1, b2)), " " * (fmax - len (f))]
+			if.continue ("\0" in b1.data or "\0" in b2.data) {
+				ll<< bold ("binary files differ")
+				adl (*ll)
+			}
+
+			np, nm = diffstat_blobs (b1.sig, b2.sig, f)
+			tp += np
+			tm += nm
+			ll.extend (list (pluses_n_minuses (np, nm)))
+			adl (*ll)
+		}
+		adl (*([" " + "="*fmax] + list (pluses_n_minuses (tp, tm))))
+		adl (" %i files changed, %i insertions (+), %i deletions (-), %+i difference"
+				 %(len (diffed),tp,tm,tp-tm))
+		popbg ()
+	}
+
+	if (fb1b2)
+		gdiff (*fb1b2)
+}
+
+def gen_commitdiff (c1, c2)
+{
+	o = repo.openobj (c1)
+	o2 = repo.openobj (c2)
+	added, removed, renamed, diffed = diff_trees (o2.tree, o.tree)
+
+	setbg (0xeeeeee)
+	for (f, b1, b2 in diffed)  {
+		adl (dl ("Index: " + f))
+		adl (dl (80*"="))
+		for (d in diff (b1.data, b2.data, "a/"+f, "b/"+f).split ("\n"))
+			adl (dl (d.expandtabs ()))
+	}
+	if (len (L) < rt.ny)
+		for (None in *(rt.ny - len (L)))
+			adl ()
+	popbg ()
+}
+
+def gdiff (f, b1, b2)
+{
+	adl (bff ("diff --git "), vblb ("a/"+f, f, b1.sig), " ", vblb ("b/"+f, f, b2.sig))
+	setbg (0)
+	for (d in diff (b1.data, b2.data, "a/"+f, "b/"+f).split ("\n")) {
+		col = 0xcccccc
+		if (d.sw ("+++") or d.sw ("---"))
+			continue
+		if (d.sw ("-")) col = 0xfe6868
+		else if (d.sw ("+")) col = 0x68fe68
+		else if (d.sw ("@")) col = 0xd48440
+		adl (bold (d.expandtabs (), col))
+	}
+	popbg ()
+}
+
+def gen_blob (fnm, sig)
+{
+	adl ("File: "+fnm)
+	adl ("blob: "+sig)
+	adl (("Export to current directory", 0xff1111, "bu", ("e", fnm, sig)))
+	setbg (0)
+	for (l in repo.openobj (sig).data.split ("\n"))
+		adl (bold (l.expandtabs (), 0xdddddd))
+	popbg ()
+}
+
+def genpage ()
+{
+	global Offset
+	s, Offset = states [-1]
+	if (s [0] == "shortlog") gen_commits ()
+	else if (s [0] == "c")   gen_commit (s [1], s [2])
+	else if (s [0] == "cd")  gen_commitdiff (s [1], s [2])
+	else if (s [0] == "b")   gen_blob (*s [1:])
+	else if (s [0] == "vd")  gen_commit (s [1], s [2], s [3])
+	else if (s [0] == "sb")  gen_commits (s [1])
+	else if (s [0] == "e") {
+		fnm = s [1]
+		if ("/" in fnm) fnm = fnm.rpartition ("/")[2]
+		open  (fnm, "w").write (repo.openobj (s [2]).data)
+	} else return True
+}
+
+def go (c)
+{
+	global L, Offset
+	if (c [0] == "back") states.pop ()
+	else {
+		states [-1][1] = rt.offset
+		states.append ([c, 0])
+	}
+	L = []
+	Offset = 0
+	if (!genpage ())
+		rt.load (L, Offset)
+	rt.Draw ()
+}
+
+genpage ()
+
+import gui
+
+wm = gui.Wm ()
+with (gui.vcontainer ()) {
+	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0)
+	rt.setKeyWidget ()
+	rt.doclick = go
+}
+def rt.onkey (k)
+	if (k == "BACKSPACE") {
+		if (len (states) > 1)
+			go (["back"])
+		return True
+	}
+def rt.onRightClick (x, y)
+	if (!rt.__class__.onRightClick (rt, x, y))
+		if (len (states) > 1)
+			go (["back"])
+
+rt.BG = BGT
+rt.FG = 0xf2f2f0
+
+wm.Start ()

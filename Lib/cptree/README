@@ -1,0 +1,44 @@
+cptree is, basically, a program that can copy one directory tree from one
+location to another.
+
+It may overwrite any existing files or not (useful for incremental backups
+of git trees).
+It may copy symbolic links, dereference symbolic links or ignore them.
+(a todo is to convert symbolic links to relative in the destination
+ tree if within the source tree)
+
+The program has an interface which makes it possible to write special
+"tree objects" that can be user either as source or destination.
+Two such tree objects exist:
+
+1) ssh tree, where the tree is read/written from a SSH connection with SFTP.
+2) encrypted tree, where the files are decrypted-from/encrypted-to before
+   reading or writting them.
+
+And there there should be the possibility to pipe those special tree objects,
+for example,
+
+	copy a tree from remote host foo.edu with SFTP and password 'woot',
+	to an encrypted tree with key 'passwordz' to a remote host bar.edu
+	with SFTP and password 'woot2', and do not copy existing files.
+
+Ideas for more tree objects include:
+
+	FTP tree
+	git commit snapshot tree
+	http (for source tree only)
+	ftp through ssh tunneling
+	a POP account as a filesystem (i.e. gmail)
+	a tar archive
+	etc.
+
+So this module is something like FUSE.
+
+In the end there should be a graphical fs tree navigator
+In a more advanced situation, pyvm's readfile/writefile would be aware of
+these tree objects, but that is not to be implemented until we need it.
+
+AT the moment, the command line usage of cptree supports only copying
+files on local directories.
+
+The ssh-tree and enc-tree are supplied for reference.

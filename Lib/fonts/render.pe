@@ -1,0 +1,570 @@
+##  Font Renderer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from graphics.framebuffer import FrameBuffer
+from _unicode import utf8_len, utf8_iter, utf8_iter_getpos, utf8_n
+
+FONTDIR = HOME + 'Lib/FontFiles/'
+
+clib = @DLL.Import ("rend", "-O3 -Wall", pelf=1)
+clib.init_ucs_lookup (__iidict_getitem__)
+csoft_break    = clib.soft_break
+cusoft_break   = clib.usoft_break
+chard_break    = clib.hard_break
+cuhard_break   = clib.uhard_break
+text_width     = clib.text_width
+utf_text_width = clib.utf_text_width
+
+__bind__ = ["clib", "utf8_len", "utf8_iter", "utf8_n", "iceil", "csoft_break", "cusoft_break",
+	    "text_width", "utf_text_width", "chard_break", "cuhard_break"]
+
+FLOCK = @thread.xlock ()
+FontRef = {}
+__weakrefs__.append (FontRef)
+
+# Open a font file and return a Font.
+#
+#	"ffixed" works with monospaced fonts and adjust the ptsize so that
+#	the glyph width is `ffixed` pixels. Also ensures that the advance of
+#	each glyph is an integer. This makes the font usable in widgets with
+#	character cells, etc.
+# 
+def Open (filename, ptsize=None, builtin_raster=@sysconfig.GETCONF ("pyvmRasterizer"),
+	  gamma=1.0, lz=0, ffixed=0)
+with (FLOCK) {
+#builtin_raster = 0
+	key = filename, ptsize, builtin_raster, ffixed
+	try return FontRef [key]
+
+	if (filename [0] == '$')
+		filename = FONTDIR + filename [1:]
+
+	gray = True
+	if (filename.ew (".psfu") or filename.ew (".psf")) {
+		builtin_raster = True
+		gray = False
+	} else {
+		if (ptsize -> int and ptsize < 4 or ptsize > 100)
+			raise Error ("unacceptable font size %i" %ptsize)
+
+		if (ptsize is None)
+			raise Error ("No ptsize")
+	}
+
+	f = Font (filename, ptsize, gamma=gamma,
+		  builtin_raster=builtin_raster, lzline=lz, gray=gray, ffixed=ffixed)
+
+	return FontRef [key] = f
+}
+
+def switch_autohinting (v=None)
+{
+	if (v is None)
+		v = not get_autohinting ()
+	from fonts.raster import rasterizer
+	rasterizer.BaseRasterizer.AUTOHINT = v
+	with (FLOCK)
+		for (F in FontRef.values ())
+			F.clear_cache ()
+}
+
+def get_autohinting ()
+{
+	from fonts.raster import rasterizer
+	return rasterizer.BaseRasterizer.AUTOHINT
+}
+
+class Font
+{
+	fixed = False
+	MonoSpaced = False
+
+	method __init__ ($filename="", $ptsize=0, $maxw=None, $maxh=None, gamma=1.0,
+			builtin_raster=0, $lzline=0, gray=True, $ffixed=0, R=None)
+	{
+		$R = R or Renderer (filename=filename, ptsize=ptsize, gamma=gamma,
+				builtin=builtin_raster, gray=gray, ffixed=ffixed)
+
+		$UTF = $R.UTF
+		if (maxw is None) {
+			$maxw = $R.width
+			$maxh = $R.height
+			if ($lzline) $maxh -= 1
+		}
+		$sizeof = $R.sizeof
+		$isizeof = $R.isizeof
+		$space = $sizeof (" ")
+		$descent = $R.descent
+		# ascent: if we want to render some text in a box [0, 0, $isizeof(text), $maxh]
+		# then the baseline is at $ascent. (confusing names, etc. cleanup)
+		# The bltin_descent is another hack needed because the PSF fonts don't really
+		# have a baseline (also confusing)
+		$ascent = $maxh - $descent - $R.F.bltin_descent
+
+		$ibreak = $R.ibreak
+		$hbreak = $R.hbreak
+	}
+
+	method isizeofsp (text, spacing)
+		return int ($sizeof (text) + spacing * text.count (" "))
+
+	method clear_cache ()
+		$R.clear_cache ()
+
+	method as_utf8 ()
+		return Font (filename=$filename, ptsize=$ptsize, R=$R.as_utf8 (), 
+				lzline=$lzline, ffixed=$ffixed)
+
+	method size ()
+		return $maxw, $maxh
+
+	method FBText (s, fg, bg)
+	{
+		w = $isizeof (s)
+		f = FrameBuffer (w, $maxh, 3)
+		f.clear (bg)
+		by = $ascent
+		if ($lzline) by -= 1
+
+		$R.drawc (s, f, 0, by, fg)
+
+		return f
+	}
+
+	method ImageText (s, fg, bg, bpp=3)
+	{
+		f = $FBText (s, fg, bg)
+		if (bpp == 3)
+			return f.to_image ()
+
+		return f.to_image ().convert_bpp (bpp)
+	}
+
+	ImageChar = ImageText
+
+	# the `y` point in the following render_to() functions
+	# refers to the top box coordinate so that fill_box (x, y, sizeof(text), maxh)
+	# prior to the render will paint a background behind the text.
+	# the underline is thus achieved through draw_line (x, y+ascent+1, x+sizeof(text), y+ascent+1)
+
+	method render_to (fb, x, y, s, col)
+	{
+		f = fb.bpp == 3 ? $R.drawc : fb.bpp == 2 ? $R.drawc16 : $R.drawc32
+		f (s, fb, x, y + $ascent, col)
+	}
+
+	method render_to_ws (fb, x, y, s, col, ws)
+	{
+		f = fb.bpp == 3 ? $R.drawc : fb.bpp == 2 ? $R.drawc16 : $R.drawc32
+		f (s, fb, x, y + $ascent, col, ws)
+	}
+
+	method underline (fb, x, y, s, col)
+		fb.draw_line (x, y + $ascent + 1, x + $isizeof (s.rstrip ()), y + $ascent + 1, col)
+
+	method info ()
+		print self, $filename, $ptsize, $UTF
+}
+
+##
+## Framebuffer renderer.
+## - It uses another library to load glyph bitmaps (freetype or builtin).
+## - It uses the renderer.c to blend the glyphs onto a framebuffer
+##   Use drawc, drawc16 and drawc32 for framebuffers of 24, 16 and 32 bpp.
+## It all works with sub-pixel accuracy.
+##
+
+def Rasterizer (ptsize, filename, mem, encoding, gamma, ffixed)
+{
+	if (mem) hdr = mem
+	else hdr = open (filename).read (2)
+
+	if (hdr.sw ("\x36\x04") or hdr.sw ("\x72\xb5")) {
+		from fonts.psf import PSF
+		return PSF (filename)
+	}
+
+	# type 1
+	from fonts.raster import BuiltinRasterizer
+	return BuiltinRasterizer (ptsize, filename, mem, encoding, gamma, ffixed)
+}
+
+# based on the rglyph structure
+MISSING_GLYPH = 8 * "\0\0\0\0"
+
+def Renderer (ptsize, filename=None, mem=None, encoding=None,
+	      cid=False, gamma=1.0, builtin=1, force_builtin=1, gray=True, ffixed=0)
+{
+	if (filename and filename.ew (".psfu"))
+		builtin=1
+
+	if (filename and filename [0] == "$")
+		filename = HOME + "Lib/FontFiles/" + filename [1:]
+
+	args = ptsize, filename, mem, encoding, gamma, ffixed
+
+	if (force_builtin)
+		if (builtin) 
+			F = Rasterizer (*args)
+		else {
+			from fonts.freetype import FTRasterizer
+			F = FTRasterizer (*args)
+		}
+	else if (builtin) {
+		try F = Rasterizer (*args)
+		except {
+			print "FAILED to use builtin rasterizer"
+			from fonts.freetype import FTRasterizer
+			F = FTRasterizer (*args)
+		}
+	} else {
+		try {
+			from fonts.freetype import FTRasterizer
+			F = FTRasterizer (*args)
+		} except {
+			print "FAILED to use freetype rasterizer"
+			##print sys.exc_info ()
+			raise
+			F = Rasterizer (*args)
+		}
+	}
+
+	####
+
+	if (cid) r = CIDRenderer
+	else r = gray ? ASCIIRenderer : ASCIIRendererNoGray
+	return r (F)
+}
+
+from math import iceil
+ord32 = sys.byteorder == "little" ? ord32l : ord32b
+
+class ASCIIRenderer
+{
+	UTF = False
+	render_col   = clib.render_col
+	render_col16 = clib.render_col16
+	render_col32 = clib.render_col32
+
+	method __init__ ($F)
+	{
+		$glyphs = {}
+		$advances = {}
+		$width = F.width
+		$baseline = F.baseline
+		$height = F.lineskip
+
+		# calculate the descent from glyph "g". It seems that the metrics
+		# in the font files cannot be trusted (lots of weirdness, for example
+		# in the MS corefonts, all the families have the same descent except
+		# the monospace-bold which for some reason has much bigger descent
+		# with the result of bold fixed text being drawn out of line).
+		# Normally, in proper typesetting we would be drawing to the "pen position"
+		# (like in PDF) and the descent would not be relevant.
+		# For the web browser though and the GUI we have to render text into
+		# boxes when we know the boxe's top coord and correct descent is needed.
+		# If 'g' does not exist, approximate as 20% of height.
+		try {
+			xx = F.compute_glyph ("g")
+			a = ord32 (xx [8:12])
+			b = ord32 (xx [12:16])
+			$descent = b + a
+		} except $descent = int ($height * 0.17)
+
+		$init2 ()
+	}
+
+	method clear_cache ()
+		$glyphs = {}
+
+	method as_utf8 ()
+		return $F.ucs ? UTF8Renderer ($F) : self
+
+	method init2 ()
+	{
+		adv = $F.advance
+		# text width & breaking note:
+		#  for fixed width fonts we use the functions ?break_fixed
+		#  which just multiply the number of characters with the
+		#  char width. However, this is not entirely correct as it
+		#  also counts undisplayable characters. This is an optimization
+		#  that makes some sense in the browser and small width
+		#  artifacts may appear as a result.
+		ll = [adv (chr (i)) for (i in *256)]
+		if (max (ll) == min (ll)) {
+			s = ll [0] / 64.0
+			def $sizeof (x)
+				return len (x) * s
+			$fixed_width = s
+			$ibreak = $breaks.ibreak_fixed
+			$hbreak = $breaks.hbreak_fixed
+		} else  {
+			$fadvances = array ('i', ll)
+			fad = $fadvances
+			tw = text_width
+			def $sizeof (s)
+				return tw (fad, s, len (s))
+			$ibreak = $breaks.ibreak
+			$hbreak = $breaks.hbreak
+		}
+	}
+
+	# We create a list which contains rendered glyphs.
+
+	method prepare (s)
+	{
+		glyphs = $glyphs
+		try return [glyphs [i] for (i in s)]
+
+		S = []
+		for (i in s) {
+			try {
+				S.append (glyphs [i])
+				continue
+			}
+
+			g = $F.compute_glyph (i) or MISSING_GLYPH
+			glyphs [i] = g
+			S.append (g)
+		}
+		return S
+	}
+
+	# Used by PDF directly. supply char_spacing, word_spacing. bg=white, fg=black
+	method draw (s, fb, x, y, cS=0, wS=0)
+	{
+		S = $prepare (s)
+		return clib.render (S, len (S), fb.buffer, fb.w, fb.h, x, y, cS, wS)
+	}
+
+	# Used for specific fg color.
+	method drawc (s, fb, x, y, fg, wS=0)
+	{
+		s = $prepare (s)
+		return $render_col (s, len (s), fb.buffer, fb.w, fb.stdclip, x, y, 0, wS, fg)
+	}
+
+	method drawc16 (s, fb, x, y, fg, wS=0)
+	{
+		s = $prepare (s)
+		return $render_col16 (s, len (s), fb.buffer, fb.w, fb.stdclip, x, y, 0, wS, fg)
+	}
+
+	method drawc32 (s, fb, x, y, fg, wS=0)
+	{
+		s = $prepare (s)
+		return $render_col32 (s, len (s), fb.buffer, fb.w, fb.stdclip, x, y, 0, wS, fg)
+	}
+
+	method isizeof (s)
+		return int ($sizeof (s))
+
+	namespace breaks
+	{
+		# break text 's' at a space character so that its width is less than 'w'.
+		method ibreak (s, w)
+		{
+			l = csoft_break ($fadvances, s, len (s), w)
+			if (!l) return None
+			return l
+		}
+
+		method ibreak_fixed (s, w)
+		{
+			tot = iceil (len (s) * $fixed_width)
+			if (tot < w)
+				return tot
+			offs = iceil (w / $fixed_width)
+			try return s.rindex (" ", 0, offs)
+			return None
+		}
+
+		method hbreak (s, w)
+		{
+			l = chard_break ($fadvances, s, len (s), w)
+			if (!l) return None
+			return l
+		}
+
+		method hbreak_fixed (s, w)
+		{
+			tot = iceil (len (s) * $fixed_width)
+			if (tot < w)
+				return tot
+			return iceil (w / $fixed_width) - 1
+		}
+	}
+}
+
+class ASCIIRendererNoGray (**ASCIIRenderer)
+{
+	render_col   = clib.render_mono_col
+	render_col16 = clib.render_mono_col16
+	render_col32 = clib.render_mono_col32
+	method as_utf8 ()
+		return UTF8RendererNoGray ($F)
+}
+
+class UTF8Renderer (**ASCIIRenderer)
+{
+	UTF = True
+
+	method init2 ()
+	{
+		adv = $F.uadvance
+
+		# text width & breaking note:
+		#   same note as the ASCII renderer
+		advances = iidict()
+		ee = None
+		same_size = True
+		for (k in $F.ucs) {
+			v = adv (k)
+			if (same_size)
+				if (ee is None) ee = v
+				else if (v != ee) same_size = False
+			advances [k] = v
+		}
+
+		if (same_size) {
+			width = v / 64.0
+			def $sizeof (s)
+				return width * utf8_len (s)
+			iwidth = iceil (width)
+			def $isizeof (s)
+				return iwidth * utf8_len (s)
+			$fixed_width = width
+			$ibreak = $breaks.ibreak_fixed
+			$hbreak = $breaks.hbreak_fixed
+		} else {
+			$fadvance = advances.get
+			$ucs = advances
+			$fads = array ("i", [advances.get (i, 0) for (i in *128)])
+			$ibreak = $breaks.ibreak
+			$hbreak = $breaks.hbreak
+		}
+	}
+
+	method prepare (s)
+	{
+		glyphs = $glyphs
+		try return [glyphs [i] for (i in utf8_iter (s))]
+
+		S = []
+		for (i in utf8_iter (s)) {
+			if.continue (i in glyphs)
+				S.append (glyphs [i])
+
+			if (i == 0xa0) {
+				g = $F.unicode_glyph (32) or MISSING_GLYPH
+				glyphs [0xa0] = g
+			} else {
+				g = $F.unicode_glyph (i) or MISSING_GLYPH
+				glyphs [i] = g
+			}
+			S.append (g)
+		}
+		return S
+	}
+
+	method sizeof (s)
+		return utf_text_width ($fads, $ucs, s, len (s))
+	method isizeof (s)
+		return int (utf_text_width ($fads, $ucs, s, len (s)))
+
+	# This is used a lot on the HTML layout engine.
+	namespace breaks
+	{
+		method ibreak (s, w)
+		{
+			l = cusoft_break ($fads, $ucs, s, len (s), w)
+			if (!l) return None
+			return l
+		}
+
+		method ibreak_fixed (s, w)
+		{
+			tot = iceil (utf8_len (s) * $fixed_width)
+			if (tot < w)
+				return tot
+			offs = utf8_n (s, 0, iceil (w / $fixed_width))
+			try return s.rindex (" ", 0, offs)
+		}
+
+		method hbreak (s, w)
+		{
+			l = cuhard_break ($fads, $ucs, s, len (s), w)
+			if (!l) return None
+			return l
+		}
+
+		method hbreak_fixed (s, w)
+		{
+			tot = iceil (utf8_len (s) * $fixed_width)
+			if (tot < w)
+				return tot
+			return utf8_n (s, 0, iceil (w / $fixed_width) - 1)
+		}
+	}
+}
+
+class UTF8RendererNoGray (**UTF8Renderer)
+{
+	render_col   = clib.render_mono_col
+	render_col16 = clib.render_mono_col16
+	render_col32 = clib.render_mono_col32
+}
+
+# CID is utf16.  That's used only in PDF.
+
+def u16iter (s)
+{
+	n = None
+	for (i in s)
+		if (n is not None) {
+			yield n | ord (i)
+			n = None
+		} else n = ord (i) << 8
+}
+
+class CIDRenderer (**ASCIIRenderer)
+{
+	method init2 () { }
+
+	method prepare (s)
+	{
+		S = []
+		__prealloc__ (S, len (s))
+
+		# For CID type fonts we do not use font names to
+		# get glyphs, but UTC16 iteration on the string instead.
+		for (i in u16iter (s)) {
+			try {
+				S.append ($glyphs [i])
+				continue
+			}
+
+			g = $F.compute_glyph (i) or MISSING_GLYPH
+			$glyphs [i] = g
+			S.append (g)
+		}
+		return S
+	}
+
+	## adapt sizeof for u16iter
+	method sizeof (s)
+	{
+		advances = $advances
+		try return sum ([advances [c] for (c in u16iter (s))])
+		for (c in u16iter (s))
+			if (c not in advances)
+				advances [c] = $F.advance (c)
+		return sum ([advances [c] for (c in u16iter (s))])
+	}
+}

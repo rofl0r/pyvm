@@ -1,0 +1,765 @@
+##  Sound Laboratory
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+USAGE = """
+usage: soundlab [-m <marker-file>] [-s <slide-show-dir>] [-x]
+	        [-sd <slide-show-delay] [-o <output-prefix] <mp3-file>
+
+The mp3 file is opened for cutting into smaller tracks. If the marker-file is
+not specified it defaults to <mp3-file>.markers.  Upon exit all markers are
+stored so work can continue some other time -- unless `-x` is enabled.
+
+Slideshow and slideshow delay are used to run a slideshow of the pictures in
+the specified directory while the user is waiting for a track to complete.
+
+Output prefix, if specified will be added in front of every chopped file
+and can be a directory if ending in '/'.
+
+KeyBoard:
+SPACE		: pause/play
+LEFT/RIGHT	: fast forward/rewind.  press a second time to stop ff.
+UP/DOWN		: volume control
+
+In Fine Tune mode to set a marker precisely the above keys work for playing
+2 seconds and micro tuning 0.2 seconds back/forth.
+"""
+
+import gui, thread, time, misc, serialize, os
+from audio.dev import volume
+from audio.fft import FFT
+
+####
+####
+
+def mktime (t)
+{
+	i = int (t)
+	s = i % 60
+	m = i / 60
+	h = m / 60
+	m = m % 60
+	return "%02i:%02i:%02i" %(h, m, s)
+}
+
+def audio_chop (orig, newfile, start, end, title, artist, comment)
+{
+	f = HOME + "ffmpeg/ffmpeg"
+	if (!os.access (f))
+		f = "ffmpeg"
+	L = [f, "-y", "-t", "%.2f" %(end-start),
+		"-ss", "%.2f" %start, "-i", orig, "-acodec", "copy"]
+	if (title) L.extend (["-title", title])
+	if (artist) L.extend (["-author", artist])
+	if (comment) L.extend (["-comment", comment])
+	L.append (newfile)
+	return !@os.execbin (*L)
+}
+
+class Timer (gui.widget)
+{
+	method Init (tt=None, **kw)
+	{
+		f = $font = $wm.dfont
+		$fg1 = kw.pop ("fg1", 0x777777)
+		$fg2 = kw.pop ("fg2", 0x7777dd)
+		$fg = $fg1
+		$bg =  0x000000
+		kw ["w"] = f.isizeof ("00:00:00.00") + 4
+		kw ["h"] = f.size () [1] + 2
+		$tt = tt is None ? "--:--:--" : mktime (tt)
+		$widget_init (**kw)
+	}
+
+	method Draw ()
+	{
+		$draw_blank ($bg)
+		$draw_string ($tt, 1, 2, $fg, $font, $bg)
+	}
+
+	method update (t)
+	{
+		tt = t is None ? "--:--:--" : mktime (t)
+		if (tt != $tt) {
+			$fg = $fg1
+			$tt = tt
+			$wm.async ($Draw)
+		}
+	}
+
+	method update_fine (t)
+	{
+		tt = t is None ? "--:--:--.--" : mktime (t) + ".%02i" % int (100 * (t - int (t)))
+		if (tt != $tt) {
+			$fg = $fg2
+			$tt = tt
+			$Draw ()
+			$wm.flush ()
+		}
+	}
+}
+
+class TimeLine (gui.widget)
+{
+	elastic = False
+
+	method Init ($total, **kw)
+	{
+		$markers = {}
+		$careas = []
+		$widget_init (**kw)
+		$col1 = 0x5555ee
+		$col2 = 0xff0000
+		$col3 = 0x2a2a3a
+	}
+
+	method _resize_w (dw)
+		$w += dw
+
+	method Draw ()
+	{
+		$fill_rect (0, 0, $w, $h, $col3)
+		$fill_rect (1, $h/4, $w-2, $h/2, $col1)
+
+		for (x, w in $careas)
+			$fill_rect (x, $h/4, w, $h/2, $col2)
+
+		for (x, c in $markers.values ())
+			$draw_line (x, 0, x, $h, c)
+	}
+
+	method cv (p)
+		return int (($w * p) / $total)
+
+	method place_bar (b, p, c)
+	{
+		if (p is None) {
+			if (b in $markers)
+				try $wm.async ($remove_bar, b)
+			return
+		}
+		try $wm.async ($put_bar, b, $cv (p), c)
+	}
+
+	method add_chop_area (s, e)
+	{
+		s, e = $cv (s), $cv (e)
+		$careas.append ((s, e-s))
+		$Draw ()
+	}
+
+	Jump = void
+	method onClick (x, y)
+		$Jump (float (x) / $w)
+
+	method remove_bar (b)
+	{
+		x, None = $markers.pop (b)
+		for (xx, c in $markers.values ())
+			if (xx == x) {
+				$draw_line (x, 0, x, $h, c)
+				return
+			}
+
+		c = $col1
+		for (xx, w in $careas)
+			if (xx <= x <= xx + w)
+				c = $col2
+
+		$draw_line (x, 0, x, $h, $col3)
+		$draw_line (x, $h/4, x, 3*$h/4, c)
+	}
+
+	method put_bar (b, x, c)
+	{
+		if (b in $markers)
+			$remove_bar (b)
+
+		v = $markers.values ()
+		$markers [b] = x, c
+		for (xx, cc in v)
+			if (xx == x) {
+				$draw_line (x, 0, x, $h, c)
+				return
+			}
+
+		$draw_line (x, 0, x, $h, c)
+	}
+}
+
+class app
+{
+	method __init__ ()
+	{ }
+
+	method load ()
+	{
+		D = {
+			"start_marker": None,
+			"end_marker": None,
+			"pre_filename": "out.mp3",
+			"chopped_areas": {},
+			"labels":{},
+			"current":None,
+		}
+
+		saved = serialize.load ($PrefFile, None)
+
+		if (saved == None) {
+			if ($StoreMarkers)
+				try open ($PrefFile, "w").write ("")
+				except {
+					print "Will not be able to save the markers in [%s]" %$PrefFile
+					print "upon exit!  use the option `-x` to proceed anyway"
+					exit (1)
+				}
+		} else D.update (saved)
+
+		for (k, v in D.items ())
+			$(k) = v
+	}
+
+	method save ()
+		serialize.save ($PrefFile, {
+			"start_marker":$start_marker,
+			"end_marker":$end_marker,
+			"pre_filename":$ChopFNM.getText (),
+			"chopped_areas":$chopped_areas,
+			"labels":$labels,
+			"current":$P.fpos (),
+		})
+
+	method start ()
+	{
+		$dev = @audio.dev.AudioDev ()
+		if (!volume.get_pcm ())
+			volume.set_pcm (80)
+
+		$StoreMarkers = not sys.argp.check_switch ('-x')
+		mono = sys.argp.check_switch ("-mono")
+		opts = sys.argp.opts ("m", "s", "sd", ["o", ""])
+
+		if ("s" in opts) {
+			$ImageList = @os.listdir_fullpath (opts ["s"])
+			@random.shuffle ($ImageList)
+		} else $ImageList = []
+
+		$OutputPrefix = opts ["o"]
+
+		$slide_delay = float (opts.get ("sd", 20))
+		
+		$P = @audio.mp3.player (mono=mono)
+		$P.open (sys.argp.filename_ex ())
+		$duration = $P.duration
+
+		$PrefFile = opts.get ("m", $P.filename + ".markers")
+
+		$NFFT = 4096
+		$NBANDS = 12
+		$BW = 9
+		$FFT = FFT ($NFFT, $P.channels == 2, $NBANDS)
+		$fft_fifo = thread.fifo ()
+
+		$paused = True
+		$pauselock = thread.xlock (False)
+		$fastmove = 0
+		$fine_volume = None
+		$main_state = "play"
+		thread.start_new ($Play)
+
+		$wm = gui.Wm (0, 0, "soundlab", KeyCtrl=$KeyCtrl)
+		$wm.avtheme ()
+
+		with (gui.vcontainer ())
+			$make_ui ()
+
+		$wm.Start ($Setup)
+		$dev.release ()
+		if ($StoreMarkers)
+			$save ()
+	}
+
+	method make_ui ()
+	{
+		gui.label (@os.basename ($P.filename), font=@fonts.Open ("$urw/serif-b", 28))
+		$L = TimeLine ($P.duration, h=40)
+		$L.Jump = $Jump
+		with (gui.hcontainer ()) {
+			with (gui.vcontainer ())
+				$make_buttons ()
+			$IView = gui.image (ialign='r')
+		}
+	}
+
+	method make_buttons ()
+	{
+		brown = 0xd48440
+		with (gui.hcontainer ()) {
+			with (gui.vcontainer ()) {
+				with ($G1 = gui.hcontainer (lmargin="X")) {
+					$PauseButton = gui.togglebutton ("  Play/Pause  ", state=True,
+								 onToggle=$Pause)
+					ffb = [(" << ", -1), (" >> ", 1)]
+					$FFS = []
+					for (btext, fdiff in ffb) {
+						b = gui.togglebutton (btext, state=False)
+						b.onToggle = $FF_button (b, fdiff)
+						$FFS.append (b)
+					}
+				}
+				with (gui.hcontainer (lmargin="X")) {
+					$T = Timer ()
+					gui.label ("..." + mktime ($duration))
+				}
+				with (gui.hcontainer (lmargin="X")) {
+					gui.label ("  volume: ")
+					$Vup = gui.button ("+", Action=$VolumeUp)
+					$Vol = gui.status (w="100", fg=brown)
+					$Vdown = gui.button ("-", Action=$VolumeDown)
+				}
+				with ($G2 = gui.hcontainer (lmargin="X"))
+					$MarkerButton = gui.button ("    \\set marker    ",
+									 Action=$SetMarker)
+			}
+			$fft_fb = gui.fb (w = $BW * $NBANDS, h = 90)
+		}
+		with ($G3 = gui.hcontainer (lmargin="X")) {
+			$ChopButton = gui.button ("\\chop", Action=$Chop)
+			gui.label (" ")
+			$MFrom = Timer ()
+			gui.label (" to ")
+			$MTo = Timer ()
+		}
+		with (gui.hcontainer (lmargin="X")) {
+			$NOW = gui.status (w="00:00", fg=brown)
+			gui.label ("   ")
+			$AVG = gui.status (w="100%", fg=brown)
+			gui.label ("  ")
+			gui.button ("Exit", Action=$wm.exit)
+			thread.start_new ($WhatTimeIsIt)
+		}
+		with ($Extras = gui.union ()) {
+			gui.space ()
+			$MarkerCtrl ()
+			$ChopCtrl ()
+			$OverwriteCtrl ()
+		}
+	}
+
+	method MarkerCtrl ()
+	{
+		$fpplay = thread.sem ()
+		$fplock = thread.xlock ()
+		$fpint = False
+		thread.start_new ($Fine.FinePlay)
+
+		with (gui.vcontainer (outlined=True)) {
+			gui.label ("   Fine Tune")
+			gui.button ("esc", Action=$Fine.Cancel)
+			with (gui.hcontainer ()) {
+				$FineBackButton = gui.button ("-0.2 seconds", Action=$Fine.Back)
+				$FinePlayButton = gui.button ("play", Action=$Fine.Play)
+				$FineFfwdButton = gui.button ("+0.2 seconds", Action=$Fine.Ahead)
+			}
+			gui.label (" ")
+			$LBButton = gui.button ("      set \\Label marker      ", Action=$Fine.Set)
+			$SSButton = gui.button ("      \\Set start marker      ", Action=$Fine.SetStart)
+			$SEButton = gui.button ("       set \\End marker       ", Action=$Fine.SetEnd)
+		}
+	}
+
+	method OverwriteCtrl ()
+		with (gui.vcontainer (outlined=True)) {
+			gui.label ("File Exists. Overwrite?")
+			with (gui.hcontainer (tabgroup=True)) {
+				def do_overwrite ()
+					$DoTheChop (True)
+				gui.button ("Yes", Action=do_overwrite, tabgroup=True)
+				gui.label ("           ")
+				def dont_overwrite ()
+				{
+					$Extras.Switch (2)
+					$ChopFNM.setKeyWidget ()
+				}
+				$Dont = gui.button ("No", Action=dont_overwrite, tabgroup=True)
+			}
+		}
+
+	method ChopCtrl ()
+	{
+		with ($Chopping = gui.vcontainer (outlined=True, tabgroup=True)) {
+			gui.label ("         Chop to mp3        ")
+			gui.label ("filename")
+			$ChopFNM = gui.textin (tw=30, fixed=True)
+			gui.label ("title")
+			$ChopTitle = gui.textin (tw=30, fixed=True)
+			gui.label ("musician")
+			$ChopArtist = gui.textin (tw=30, fixed=True)
+			gui.label ("comment")
+			$ChopComment = gui.textin (tw=30, fixed=True)
+			with (gui.hcontainer ()) {
+				gui.button ("    Do Chop    ", Action=$DoTheChop, tabgroup=True)
+				gui.button ("   esc   ", Action=$LeaveChop, tabgroup=True)
+			}
+		}
+	}
+
+	method KeyCtrl (k)
+	{
+		if ($main_state == "play") {
+			if (k == " ") $PauseButton.toggle ()
+			else if (k == "RIGHT") $FFS [1].toggle ()
+			else if (k == "LEFT") $FFS [0].toggle ()
+			else if (k == "UP" or k == "+") $VolumeUp ()
+			else if (k == "DOWN" or k == "-") $VolumeDown ()
+			else if (k == "s") $MarkerButton.Click ()
+			else if (k == "c") $ChopButton.Click ()
+			else return False
+			return True
+		} else if ($main_state == "fine") {
+			if (k == " ") $FinePlayButton.Click ()
+			else if (k == "RIGHT") $FineFfwdButton.Click ()
+			else if (k == "LEFT") $FineBackButton.Click ()
+			else if (k == "UP" or k == "+") $VolumeUp ()
+			else if (k == "DOWN" or k == "-") $VolumeDown ()
+			else if (k == "ESC") $Fine.Cancel ()
+			else if (k == "s") $SSButton.Click ()
+			else if (k == "e") $SEButton.Click ()
+			else if (k == "l") $LBButton.Click ()
+			else return False
+			return True
+		} else if ($main_state == "chop") {
+			if (k == "ESC") $LeaveChop ()
+			else return False
+			return True
+		}
+		return False
+	}
+
+	method Setup ()
+	{
+		$load ()
+		$ShowVolume ()
+		$set_start_marker ($start_marker)
+		$set_end_marker ($end_marker)
+		if ($current)
+			$P.seek ($current)
+		$ChopFNM.setText ($pre_filename)
+		for (s, e in $chopped_areas.values ())
+			$L.add_chop_area (s, e)
+		for (t, p in $labels.items ())
+			$L.place_bar (t, p, 0xbbbb22)
+		$Update ()
+		thread.start_new ($SlideShow)
+		thread.start_new ($DrawFFT)
+	}
+
+	method WhatTimeIsIt ()
+		while (1) {
+			$wm.async ($ShowVolume)
+			h, m = time.localtime (now ()) [3:5]
+			$wm.async ($NOW.setmsg, "%i:%02i" %(h, m))
+			avg = misc.loadavg ()
+			if (avg is not None)
+				$wm.async ($AVG.setmsg, "%i%%" %avg)
+			sleep (5)
+		}
+
+	method DrawFFT ()
+	{
+		maxvals = []
+		fb = $fft_fb.F
+		H = fb.h
+		while (1) {
+			d = $fft_fifo.get ()
+			if (!d) continue
+			o = $FFT.fft_s16le (d)
+			maxvals.append (float (max (list (o))))
+			if (len (maxvals) > 100)
+				maxvals.pop (0)
+			maxval = max (maxvals)
+			fb.clear (0x101020)
+			for (i in *len (o)) {
+				val = min (o [i] / maxval, 1.0)
+				hh = int (0.9 * H * val)
+				fb.fill_rect ($BW * i, H - hh, $BW - 1, hh, 0x770000)
+			}
+			for (i in *(H/2))
+				fb.draw_line (0, 2 * i, fb.w, 2 * i, 0x101020)
+			# drop overruns
+			while ($fft_fifo)
+				$fft_fifo.get ()
+			$wm.async ($fft_fb.Draw)
+		}
+	}
+
+	method SlideShow ()
+		for (i in $ImageList) {
+			$IView.load (i, fit=True, background=True)
+			$wm.async ($IView.clear)
+			$wm.async ($IView.Draw)
+			thread.sched_yield ()
+			sleep ($slide_delay)
+		}
+
+	method Update ()
+	{
+		fpos = $P.fpos ()
+		$T.update (fpos)
+		$L.place_bar (0, fpos, 0xffffff)
+	}
+
+	method Play ()
+		while (1) {
+			if ($paused) {
+				$dev.release ()
+				$pauselock.ack ()
+				$paused = False
+				$dev.grab ($P.sample_rate, $P.channels)
+				if ($fastmove == -1)
+					$P.seek ($P.tpos - 0.3)
+			}
+			if (data = $P.get_samples ($NFFT)) {
+				$fft_fifo.put (data)
+				$Update ()
+				$dev.play (data)
+				if ($fastmove == 1) {
+					for (i in *15)
+						$P.get_samples ()
+				} else if ($fastmove == -1) {
+					$P.seek ($P.tpos - 0.3)
+					if ($P.tpos <= 0)
+						$selfPause ()
+				}
+			} else $selfPause ()
+		}
+
+	method Jump (frac)
+	{
+		if ($main_state != "play")
+			return
+		$tmp_pause ()
+		$P.seek ($P.duration * frac)
+		$Update ()
+		$tmp_resume()
+	}
+
+	method Chop ()
+	{
+		$main_state = "chop"
+		$tmp_pause ()
+		$G1.set_enable (False)
+		$G2.set_enable (False)
+		$G3.set_enable (False)
+		$ChopFNM.setKeyWidget ()
+		$Extras.Switch (2)
+	}
+
+	method DoTheChop (force=False)
+	{
+		fnm     = $ChopFNM.getText ()
+		if (!force and @os.access (fnm)) {
+			$Extras.Switch (3)
+			$Dont.setKeyWidget ()
+			return
+		}
+
+		title   = $ChopTitle.getText ()
+		artist  = $ChopArtist.getText ()
+		comment = $ChopComment.getText ()
+		if (!fnm) return
+
+		$Chopping.set_enable (False)
+		if (audio_chop ($P.filename, $OutputPrefix + fnm, $start_marker, $end_marker,
+				 title, artist, comment)) {
+			$chopped_areas [fnm] = $start_marker, $end_marker
+			$L.add_chop_area ($start_marker, $end_marker)
+		}
+		$Chopping.set_enable (True)
+
+		$LeaveChop ()
+	}
+
+	method LeaveChop ()
+	{
+		$main_state = "play"
+		$G1.set_enable (True)
+		$G2.set_enable (True)
+		$G3.set_enable ($start_marker is not None and $end_marker is not None)
+		$Extras.Switch (0)
+		$tmp_resume ()
+	}
+
+	method VolumeUp ()
+		$ShowVolume (volume.mod_volume (1))
+	method VolumeDown ()
+		$ShowVolume (volume.mod_volume (-1))
+	method ShowVolume (v=None)
+		$Vol.setmsg ("%i" %(v or volume.get_volume ()))
+
+	method selfPause ()
+	{
+		$wm.async ($clear_ff)
+		if (!$PauseButton.state)
+			$wm.async ($PauseButton.toggle)
+	}
+
+	method Pause (val=True)
+		if (val) {
+			$pauselock.acquire ()
+			$paused = True
+		} else {
+			$pauselock.release ()
+		}
+
+	method clear_ff (w=None)
+	{
+		$fastmove = 0
+		for (ww in $FFS)
+			if (ww is not w)
+				ww._setstate (False)
+	}
+
+	method FF_button (b, ch)
+	{
+		def f (state)
+		{
+			if (state) {
+				$clear_ff (b)
+				$fastmove = ch
+			} else $fastmove = 0
+		}
+		return f
+	}
+
+	method tmp_pause ()
+		if ($unpause = !$paused) {
+			$pauselock.acquire ()
+			$paused = True
+		}
+
+	method tmp_resume ()
+		if ($unpause) {
+			$paused = False
+			$pauselock.release ()
+		}
+
+	method SetMarker ()
+	{
+		$main_state = "fine"
+		$tmp_pause ()
+		$playvolume = volume.get_volume ()
+		if ($fine_volume is None)
+			$fine_volume = $playvolume
+		volume.set_volume ($fine_volume)
+		$ShowVolume ()
+		$G1.set_enable (False)
+		$G2.set_enable (False)
+		$G3.set_enable (False)
+		$SEButton.set_enable ($start_marker is not None)
+		$marker = $P.fpos ()
+		$T.update_fine ($marker)
+		$Extras.Switch (1)
+	}
+
+	method set_start_marker ($start_marker)
+	{
+		$MFrom.update_fine (start_marker)
+		$L.place_bar (1, start_marker, 0xbb2222)
+	}
+
+	method set_end_marker ($end_marker)
+	{
+		$MTo.update_fine (end_marker)
+		$G3.set_enable ($start_marker is not None and $end_marker is not None)
+		$L.place_bar (2, end_marker, 0x22bb22)
+	}
+
+	namespace Fine
+	{
+		method FinePlay (secs=2)
+			while (1) {
+				$fpplay.down ()
+				with ($fplock) {
+					$dev.grab ($P.sample_rate, $P.channels)
+					t0 = $P.fpos ()
+					while (!$fpint and $P.fpos () - t0 < secs and
+					(data = $P.get_samples ()))
+						$dev.play (data)
+					$P.seek (t0)
+					$dev.release ()
+				}
+			}
+
+		method FinePlayInterrupt ()
+		{
+			$fpint = True
+			$fplock.ack ()
+			$fpint = False
+		}
+
+		method Cancel ()
+		{
+			$Extras.Switch (0)
+			$G1.set_enable (True)
+			$G2.set_enable (True)
+			$G3.set_enable ($start_marker is not None and $end_marker is not None)
+			$fine_volume = volume.get_volume ()
+			volume.set_volume ($playvolume)
+			$ShowVolume ()
+			$tmp_resume ()
+			$main_state = "play"
+		}
+
+		method MoveAndPlay (n=0.0)
+		{
+			$Fine.FinePlayInterrupt ()
+			if (n) $P.seek ($P.fpos () + n)
+			$marker = $P.fpos ()
+			$T.update_fine ($marker)
+			$fpplay.up ()
+		}
+
+		method Play ()
+			$Fine.MoveAndPlay (0.0)
+
+		# confine
+
+		method Ahead ()
+			$Fine.MoveAndPlay (0.2)
+
+		method Back ()
+			$Fine.MoveAndPlay (-0.2)
+
+		method SetStart ()
+		{
+			$set_start_marker ($P.fpos ())
+			if ($end_marker is not None and $end_marker < $start_marker)
+				$set_end_marker (None)
+			$Fine.Cancel ()
+		}
+
+		method SetEnd ()
+		{
+			$set_end_marker ($P.fpos ())
+			$Fine.Cancel ()
+		}
+
+		method Set ()
+		{
+			p = $P.fpos ()
+			t = mktime (p)
+			$labels [t] = p
+			$L.place_bar (t, p, 0xbbbb22)
+			$Fine.Cancel ()
+		}
+	}
+}
+
+app ().start ()
+# 'pause' should shut off ffwd, and rwd

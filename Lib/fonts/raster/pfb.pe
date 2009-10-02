@@ -1,0 +1,229 @@
+##  Type 1 font parser (pfb)
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+import DLL, ttycolor
+
+decrypt = DLL.Clib ("eexec", "-O2", pelf=1)["decrypt"]
+
+def deexec (key, cipher)
+{
+	plain = _buffer (len (cipher))
+	decrypt (key, cipher, plain, len (cipher))
+	return plain
+}
+
+# This is a crappy pfb file parser.
+# Now, in order for one to rasterize type1 fonts, theoretically a full
+# postscript interpreter is required!  However, by smart parsing we can
+# just extract the basic drawing primitives of fonts and do the drawing
+# without postscript.  Thus, this file is just so small.
+#
+# Basically, we care about the URW fonts in order to be able to bring up
+# the GUI even if freetype is not available.  URW fonts do work with
+# this parser.  Because postscript is a real programming language, there
+# are MTOWTDI cases: the same font can be done with many different programs.
+# This parser may very possibly fail because it assumes a standard
+# format for the pfb files.  Usually this is the default standard format
+# but you can never know.
+#
+# This program is based mostly on the t1utils program by Lee Hetherington.
+# First look there for proper disassembly of pfb fonts, and then in their
+# specification.
+
+VERBOSE = 0
+import re
+dupline   = re.re (r"dup (\d+) (\d+) (RD|-\|) (.*)", re.DOTALL)
+charstr   = re.re (r"/([\.\w]+) (\d+) (RD|-\|) (.*)", re.DOTALL)
+fontname  = re.re (r"/FullName\s*\((.*?)\)\s*(readonly\s+)?def")
+fontbbox  = re.re (r"/FontBBox\s*[[{](.*?)[}\]]\s*readonly def")
+encarr    = re.re (r"/Encoding\s+\d+\s+array")
+encentry  = re.re (r"dup\s+(\d+)\s+/(.*?)\s+put")
+endofline = re.compile (r"\r\n|[\r\n]").search
+
+# Each pfb file is made up of chunks. We assume that there are
+# three chunks.  Header is: <128><1,2 or 3><chunk-len-4-bytes>
+#
+#	1) ASCII only chunk with the FontDictionary in postscript language.
+#	   The last command of this chunk must be `eexec`
+#	2) BINARY chunk encrypted with eexec. This contains the Private
+#	   dictionary and the charstrings/subroutines.
+#	3) ASCII chunk with zeros. We throw away.
+#
+
+gen pfb_chunks (r)
+	while (1) {
+		if (r [0] != chr (128))
+			raise "Not PFB Marker"
+		type = ord (r [1])
+		if (type == 3)
+			break
+		dlen = ord32l (r [2:6])
+		data = r [6:6+dlen]
+		yield data, type
+		r = r [6+dlen:]
+	}
+
+def parse_topdict (txt)
+{
+	Encoding = "StandardEncoding"
+	BBox = FontName = None
+
+	EOL = endofline (txt)[0]
+	itr = txt.split (EOL)
+	for (l in itr) {
+		if (M = fontname (l))
+			FontName = M [1]
+		else if (M = fontbbox (l))
+			BBox = ints (M [1].split ())
+		else if (l.sw ("/Encoding")) {
+			if (encarr (l)) {
+				Encoding = [""] * 256
+				for (l in itr)
+					if (M = encentry (l))
+						Encoding [int (M [1])] = intern (M [2])
+					else if (l.sw ("readonly def")) break
+			}
+		}
+		if (VERBOSE)
+			print "line:", l
+	}
+
+	return FontName, BBox, Encoding
+}
+
+def parse_priv (data)
+{
+	Char = {}
+	Subr = {}
+
+	e1 = deexec (55665, data).partition ("closefile")[0]
+	EOL = endofline (e1)[0]
+	e1 = iter (e1.split (EOL))
+
+	for (l in e1)
+		if (M = dupline (l)) {
+			while (!l.ew ("NP") and !l.ew ("|-")) {
+				l += EOL + e1.next ()
+				M = dupline (l)
+			}
+			code = deexec (4330, M [4][:int (M [2])]) [4:]
+			Subr [int (M [1])] = decode_charstring (code)
+		} else if (M = charstr (l)) {
+			while (!l.ew ("ND") and !l.ew ("|-")) {
+				l += EOL + e1.next ()
+			}
+			M = charstr (l [:-2])
+			code = deexec (4330, M [4][:int (M [2])]) [4:]
+			Char [intern (M [1])] = decode_charstring (code)
+		}
+		else if (VERBOSE)
+			print "line in encrypted part:", l
+
+	return Subr, Char
+}
+
+def parse (data)
+{
+	c1, c2, c3 = [x for (x in pfb_chunks (data))]
+	if (c1 [1] != 1 or !c1 [0][-10:].rstrip ().ew ("eexec")
+	    or c3 [1] != 1)
+		raise Error ()
+
+	FontName, BBox, Encoding = parse_topdict (c1 [0].replace ("\r\n", "\n").replace ("\r", "\n"))
+	Subr, Char = parse_priv (c2 [0])
+
+	if (Encoding == "StandardEncoding")
+		from fonts import standardEncoding as Encoding
+
+	return FontName, BBox, Encoding, Subr, Char
+}
+
+# Decoding of CharStrings and Subroutines.
+#
+# These are little blocks of postscript code with drawing primitives
+# encoded as numbers (and encrypted).  We convert from those numbers
+# to an actual sequence of values and names.
+#
+
+Type1Coding = {
+	1: "hstem",
+	3: "vstem",
+	4: "vmoveto",
+	5: "rlineto",
+	6: "hlineto",
+	7: "vlineto",
+	8: "rrcurveto",
+	9: "closepath",
+	10: "callsubr",
+	11: "return",
+	13: "hsbw",
+	14: "endchar",
+	21: "rmoveto",
+	22: "hmoveto",
+	30: "vhcurveto",
+	31: "hvcurveto",
+
+	-1: "vstem3",
+	-2: "hstem3",
+	-3: "vstem",
+	-6: "seac",
+	-9: "closepath",
+	-12: "div",
+	-16: "callothersubr",
+	-17: "pop",
+	-22: "hmoveto",
+	-33: "setcurrentpoint",
+	-30: "vhcurveto",
+	-31: "hvcurveto",
+}
+
+def decode_charstring (c, CCODE=Type1Coding)
+{
+	if (!c) return ()
+	c = ords (c)
+	d = []
+	i = 0
+	while (i < len (c)) {
+		v = c [i]
+		i += 1
+		if (v >= 32) {
+			if (v <= 246)
+				v -= 139
+			else if (v <= 250) {
+				v = (v - 247) * 256 + c [i] + 108
+				i += 1
+			} else if (v <= 254) {
+				v = -(v - 251) * 256 - c [i] - 108
+				i += 1
+			} else {
+				v = ord32b ("".join ([chr (x) for (x in c [i:i+4])]))
+				i += 4
+			}
+			d.append (v)
+		} else if (v == 12) {
+			try d.append (CCODE [-c [i]])
+			except {
+				print 'xyzzy', ttycolor.color ("UNKNOWN PFB COMMAND (12):", 'r'), c [i]
+				raise Error ("Not Implemented")
+			}
+			i += 1
+		} else {
+			try d.append (CCODE [v])
+			except {
+				print 'xyzzy', ttycolor.color ("UNKNOWN PFB Charstring COMMAND:", 'r'), v
+				raise Error ("Not Implemented")
+			}
+		}
+	}
+
+	return tuple (d)
+}
+
+if (__name__ == __main__)
+	for (f in sys.argv [1:])
+		parse (readfile (f))

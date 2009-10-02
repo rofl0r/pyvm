@@ -1,0 +1,15 @@
+Javascript
+----------
+
+So far we have only a lexer, useful for indenting js in bundles.
+
+It's quite easy to write a javascript interpreter: parse the tokens
+to an ast tree and then add an "eval()" method to each node.
+
+Speed is not an issue.
+
+The real hard part is interfacing with the HTML DOM (which is the
+I/O system of the js language) and especially re-rendering parts
+of the display if js code modifies css attributes of various nodes.
+That will require a rewrite of the css rendering engine which is
+in a broken state anyway!

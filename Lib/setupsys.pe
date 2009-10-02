@@ -1,0 +1,22 @@
+# System Setup script
+#
+# This script should be run after the installation and it checks
+# what works best on this specific system and overrides sysconfig
+# variables accordingly.
+
+__autosem__
+
+import os
+
+print "#### Testing whether the pelf loader/linker works on this system ####"
+os.system ("pyvm pelf -test")
+pelfok = readfile ("PELFTEST") == "OK"
+if (pelfok)
+	print " OK"
+else {
+	print " pelf DOES NOT WORK!!!!"
+	print " maybe due to security modules, not x86_32 or something else"
+	print " will use shared libraries instead..."
+	os.system ("pyvm sysconfig set pelfworks no")
+}
+try os.remove ("PELFTEST")

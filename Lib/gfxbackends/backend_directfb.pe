@@ -1,0 +1,260 @@
+##  DirectFB Backend/Framebuffer
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+
+### XXXXXXXXXX: untested for many years. possibly 100% broken.
+### XXXXXXXXXX: REFERENCE
+
+# todo: dfb.c functions should take color and set_color themselves
+
+__autosem__
+
+from backend_base import Window as BaseWin
+from colornames import lookup as LookupColor
+from graphics import image
+
+try namespace dfb
+{
+	# where are the headers
+	DIRECTFB_H = '/usr/local/include/directfb'
+
+	# XXX: pelf linker SEGFAULTS -- do not use
+	locals ().update (modules.DLL.Clib ('dfb', '-O2 -I%s' %DIRECTFB_H, libs=['directfb']))
+} except {
+	print sys.exc_info ()
+	print "DirectFB not available, header files or library missing?"
+	raise
+}
+
+class Error (Exception);
+
+class dfbImage
+{
+	method __init__ ($D, $data, $w, $h, bpp)
+		$v = dfb.create_image ($D, w, h, data, bpp)
+	method put (x, y, sx, sy, w, h)
+		dfb.put_image ($D, $v, x, y, sx, sy, w, h)
+	method __del__ ()
+		if ($v) dfb.destroy_image ($v)
+}
+
+class Display
+{
+	# XXX: normally this should LOCK before direct access.
+	# test on vt switch with FIREWORKX
+
+	method __init__ ()
+	{
+		$D = _buffer (dfb.sizeof_dfb ())
+		v = array ('i', 3)
+		if (!dfb.init ($D, 0, v))
+			raise Error
+		$bpp, $w, $h = v
+	}
+
+	method set_color (rgb)
+		dfb.set_color ($D, rgb)
+
+	method fill_rect (x, y, w, h)
+		dfb.fill_rect ($D, x, y, w, h)
+
+	method draw_line (x1, y1, x2, y2)
+		dfb.draw_line ($D, x1, y1, x2, y2)
+
+	method flush ()
+		dfb.flush ($D)
+
+	method clear (rgb)
+	{
+		# DirectFB has a method for this
+		$set_color (rgb)
+		$fill_rect (0, 0, $w, $h)
+	}
+
+	method Image (data, w, h, bpp=3)
+	{
+		# XXX: always covert to rgb. some bug there.
+		if (bpp != $bpp) {
+			i = image (data, w, h, bpp).convert_bpp ($bpp)
+			data, w, h, bpp = i.data, i.w, i.h, i.bpp
+		}
+		return dfbImage ($D, data, w, h, bpp)
+	}
+
+	method show_image (im, x, y, sx=0, sy=0, w=3200, h=3200)
+		im.put (x, y, sx, sy, min (w, im.w), min (h, im.h))
+
+	method draw_string (s, x, y, fg, font, bg)
+		$show_image ($Image (*font.DrawText (s, fg, bg)), x, y)
+
+	method __del__ ()
+	{
+		try dfb.terminate ($D)
+		$D = None
+	}
+}
+
+Translate = {
+	61953:"SHIFT",
+	61954:"CTRL",
+	61956:"ALT",
+	61960:"ALT",
+	61440:"LEFT",
+	61441:"RIGHT",
+	61442:"UP",
+	61443:"DOWN",
+	61445:"HOME",
+	61446:"END",
+	61447:"PAGEUP",
+	61448:"PAGEDOWN",
+	27:"ESC",
+	8:"BACKSPACE",
+	127:"DEL",
+}
+
+from graphics.framebuffer import FrameBuffer as FBbase
+
+class WFrameBuffer (*FBbase)
+{
+	method __init__ (w, h, $Win)
+	{
+		FBbase.__init__ (self, w, h, $Win.Dpy.bpp)
+		$v = dfb.create_image ($Win.Dpy.D, w, h, $buffer, $bpp)
+	}
+
+	method Update (x, y)
+		dfb.put_image ($Win.Dpy.D, $v, x, y, 0, 0, $w, $h)
+
+	method lock () dfb.lock_surface ($v)
+	method unlock () dfb.unlock_surface ($v)
+
+	method __del__ ()
+		if ($v) dfb.destroy_image ($v)
+}
+
+class Window (**BaseWin)
+{
+	method __init__ (w=None, h=None, name='')
+	{
+		$Dpy = Display ()
+		$bpp = $Dpy.bpp
+		$width = $Dpy.w
+		$height = $Dpy.h
+		$std_fonts ()
+		$Dpy.clear (0)
+	}
+
+#	method get_color (c)
+#	{
+#		if (not c -> tuple) c = LookupColor (c)
+#		return c
+#	}
+
+	method draw_line (x0, y0, x1, y1, col)
+	{
+		$Dpy.set_color (col)
+		$Dpy.draw_line (x0, y0, x1, y1)
+	}
+
+	method fill_rect (x, y, w, h, col)
+	{
+		$Dpy.set_color (col)
+		$Dpy.fill_rect (x, y, w, h)
+	}
+
+	method flush (area)
+		$Dpy.flush ()
+
+	method Image (*args)
+		return $Dpy.Image (*args)
+
+	method show_image (im, x, y, sx=0, sy=0, w=3200, h=3200)
+	{
+		im = im => dfbImage ? im : $Image (im.data, im.w, im.h, im.bpp)
+		im.put (x, y, sx, sy, min (w, im.w), min (h, im.h))
+	}
+
+	method FrameBuffer (w, h)
+		return WFrameBuffer (w, h, self)
+
+	method where ()
+	{
+		xy = array ('i', 2)
+		dfb.where ($Dpy.D, xy)
+		return tuple (xy)
+	}
+
+	method block_until_event ()
+		dfb.block_until_event ($Dpy.D)
+
+	method get_event ()
+	{
+		if (!dfb.has_event ($Dpy.D))
+			return None
+
+		v = array ('i', 4)
+		if (!dfb.get_event ($Dpy.D, v))
+			return None
+
+		etype, v1, v2, v3 = v
+		if (etype == 1) {
+			try v1 = Translate [v1]
+			except if (v1 < 127) v1 = chr (v1)
+				else {
+					print "SKIPPING:", v1
+					return None
+				}
+			return 'PRESS', v1
+		}
+		if (etype == 2)
+			try return 'RELASE', Translate [v1]
+			except return None
+		if (etype in (3,4))
+			return {3:'CLICK', 4:'UNCLICK'}[etype], v1, v2, v3
+		return None
+	}
+
+	method shutdown ()
+		del $Dpy
+}
+
+#
+# Run to test DirectFB.
+#
+
+if (__name__ == '__main__')
+{
+	from fonts.psf import PSF
+	df = PSF ('$unicode-8x16.psfu')
+
+	from graphics import ImageFile
+	X = ImageFile (HOME+"Stuff/Demo/pi.gif")
+
+	import time
+	W = Window ()
+	F = W.Dpy
+	try {
+		F.clear (0)
+		I = F.Image (*X.read_rgb ())
+		F.show_image (I, 150, 0, sy=0, sx=150)
+		F.draw_string ("DirectFB Works", 0, 200, 0xeaeaff, df, 0x000000)
+		F.set_color (0x8296b4)
+		F.fill_rect (0, 0, 100, 100)
+		F.draw_line (0, 0, 100, 200)
+		F.flush ()
+		for (i in xrange (1000)) {
+			time.sleep (0.005)
+			if (e = W.get_event ()) {
+				print e
+				print "Mouse IS AT:", W.where ()
+			}
+		}
+		I = None
+	} except print sys.exc_info ()
+	F = None
+	W.shutdown ()
+}

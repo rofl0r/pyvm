@@ -1,0 +1,438 @@
+##  gpg command line frontend
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from pgp import base
+
+DOUBLE_CHECK = 1#False
+
+USAGE = """OpenPGP implementation, aiming for compatibility with GnuPG.
+usage: pyvm gpg [import|export|list|verify|import-private|-b|sign|get-key] <arguments>
+
+ import <file>+
+	Import keys into the db.  The files should be in PGP armored format. (radix-64)
+	WARNING: imports keys without UserID.
+
+ export <key>*
+	export public keys in one big PGP armored file. Currently specific keys are not
+	implemented.  gpg can only export all the (public) keys.
+
+ list
+ list-priv
+	list known keys in the db (key-id and fingerprints)
+
+ verify <sig-file> [<data-file>]
+	the sig-file is usually something with the `.asc` extension.  If the data-file
+	is not specified, gpg will try to open a file without the `.asc` extension.
+
+ verifymime <mime-message-file>
+	verify multipart/signed parts of MIME messages (for example, usenet *.off messages)
+
+ import-private <file>+
+	import private (secret) keys.  These can be exported with "gpg --armor export-secret-keys"
+	on the GnuPG program.  Note that this option hasn't been tested much; it is much
+	easier to test public keys from the internet, while secret keys can be tested only
+	for the local version of GnuPG.  So it is quite possible that this command will
+	fail and you'll need to hack gpg.pe further
+	Generally, it is even better to just create a brand new keypair with 'pyvm keygen'
+	and import that, and leave the managment of your old keys to gnupg.
+
+ -b|sign <file>
+	Sign a file with the private key.  If more than one private keys exist in the db,
+	the program will ask interactively for which one.  This will produce a "detached
+	signature";  that is the command line option `-b` of GnuPG.  GnuPG's `--sign` does
+	something different.  The signature is written armored on the file <file>.asc
+
+ signmime <infile> <outfile>
+	sign a mime message. (tested only with gpg.pe's verifymime)
+
+ get-key <KEYID>
+	Try to find/download the key <KEYID> from subkeys.pgp.net.
+	The KEYID may be a short keyid (8 characters) or a long key fingerprint (32).
+	The received text is printed on stdout and when redirected to a file can then
+	be imported with the 'import' command. Note that subkeys.pgp.net some
+	times just drops the connection, so a few retries may be needed.
+"""
+
+class KDB
+{
+	method __init__ ($public)
+	{
+		$FILE = USERHOME + "PGP/" + (public ? "PUBKEYS" : "PRIKEYS") + ".PGP"
+		$Loaded = False
+		$Raw = {}
+		$Rings = {}
+	}
+
+	method load ()
+		if (!$Loaded) {
+			$Loaded = True
+			try l = open ($FILE)
+			except return
+			for (s in l) {
+				k, v = s.split ()
+				$Raw [k] = v
+			}
+		}
+
+	method get_ring (k)
+	{
+		$load ()
+
+		if (k in $Rings)
+			return $Rings [k]
+
+		if (k not in $Raw)
+			raise Error ("Don't have Key [%s]" %k)
+
+		return $Rings [k] = base.read_keyring (unhexlify ($Raw [k]), public=$public)
+	}
+
+	method get_all_rings ()
+	{
+		$load ()
+		for (k in $Raw)
+			$get_ring (k)
+		return $Rings
+	}
+
+	method add_ring (k, kr)
+	{
+		$Rings [k] = kr
+		$Raw [k] = kr.reconstruct ().hexlify ()
+	}
+
+	method save ()
+	{
+		s = [k + " " + v for (k, v in $Raw.items ())]
+		open ($FILE, "w").write ("\n".join (s))
+	}
+}
+
+PUBS = KDB (True)
+PRIVS = KDB (False)
+
+# ----------------------------------------------------------------------
+
+def do_import_private ()
+	return do_import (False)
+
+def do_import (public=True)
+{
+	kdb = public ? PUBS : PRIVS
+	KEYS = kdb.get_all_rings ()
+
+	filenames = sys.argp.argv
+	added = 0
+
+	for (f in filenames) {
+		print "Processing:", f
+		d = readfile (f)
+
+		ahdr = public ? "PUBLIC" : "PRIVATE"
+		try ctx = base.read_armor (d, ahdr + " KEY BLOCK")
+		except {
+			print "Invalid file. Not a PGP %s KEY BLOCK?" %(public?"PUBLIC":"PRIVATE")
+	##	print sys.exc_info ()
+			return
+		}
+
+		Failed = set ()
+		kr = base.read_keyrings (ctx, public)
+		for (k in kr) {
+			print "Key:", k.KeyID
+			try k.verify ()
+			except (base.Malorie) {
+				print "Signature verification failed for file %s key %s !!!!" %(f,
+					 k.KeyID)
+				Failed.add (k.KeyID)
+				continue
+			}
+		}
+
+		for (k in kr) {
+			print "Key:", k.KeyID
+			if.continue (k.KeyID in Failed)
+				print "Failed. Won't store"
+
+			if (k.KeyID in KEYS) {
+				k2 = KEYS [k.KeyID]
+				if (k.pk.keys == k2.pk.keys and ! (set (k.userids) - set (k2.userids))) {
+					print "Not changed"
+				} else if (k.pk.keys == k2.pk.keys) {
+					print "Key exists with different userIDs"
+					print k.userids
+					print k2.userids
+				} else print "WHAT?"
+			} else {
+				added += 1
+				kdb.add_ring (k.KeyID, k)
+				print "stored."
+			}
+		}
+
+		print
+	}
+
+	if (added) {
+		print "%i new keys imported" %added
+		kdb.save ()
+	} else print "No new keys imported"
+}
+
+def do_export ()
+{
+	keys = sys.argp.argv
+	if (keys) {
+		print "Exporting specific keys not implemented. Hack it!"
+		return
+	}
+
+	PUBS.load ()
+	blob = [unhexlify (v) for (v in PUBS.Raw.values ())]
+	print base.write_armor ("".join (blob), "PUBLIC KEY BLOCK")
+}
+
+def do_list_keys (priv=0)
+	for (k in (priv ? PRIVS : PUBS).get_all_rings ().values ()) {
+		print "Key:", k.KeyID
+		print "   :", k.Fingerprint
+		for (u in k.userids)
+			print "\t", u
+		for (sk in k.subkeys)
+			print "SubKey:", sk.KeyID
+	}
+
+def do_verify ()
+{
+	if (len (sys.argp.argv) == 2)
+		fsig, fdat = sys.argp.argv
+	else if (len (sys.argp.argv) == 1) {
+		fsig = sys.argp.argv [0]
+		fdat = fsig [:-4]
+	} else sys.argp.help ()
+
+	try sigdata = readfile (fsig)
+	except {
+		print "Can't open:", fsig
+		return
+	}
+
+	try rdata = readfile (fdat)
+	except {
+		print "Can't open data file:", fdat
+		return
+	}
+	VERIFY (fsig, fdat, sigdata, rdata)
+}
+
+def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
+{
+	if (fsig.ew (".asc") or "-----BEGIN" in sigdata)
+		ctx = base.read_armor (sigdata, "SIGNATURE")
+	else if (fsig.ew (".sig"))
+		ctx = sigdata
+	else {
+		print "Don't know what kind of file that is"
+		return "error"
+	}
+
+	for (p in base.parse_packets (ctx)) {
+		if.continue (not p => base.Signature)
+			print "Not a signature packet!"
+
+		try pk = PUBS.get_ring (p.KeyID)
+		except {
+			print "Don't have Key:", p.KeyID
+			return "nokey"
+		}
+
+		try p.do_verify (rdata, pk.pk)
+		except (base.Malorie) {
+			print "Signature Verification FAIL."
+			return "fail"
+		} except {
+			print "Couldn't verify. Some exception happened:", sys.exc_info ()
+			return "error"
+		}
+
+		print "OK. Signature verified with", p.KeyID
+		if (From) {
+			for (u in pk.userids)
+				if (Mime.addrcmp (From, u))
+					return "ok"
+			print "ERROR 'From:' does not match signer"
+			return "fail"
+		}
+		if (keyid) {
+			if (p.KeyID != keyid and p.Fingerprint != keyid) {
+				print "keyID mismatch!"
+				return "fail"
+			}
+		}
+		return "ok"
+	}
+}
+
+def do_sign ()
+{
+	f = sys.argp.filename_ex ()
+	data = readfile (f)
+
+	sig = SIGN (data)
+
+	print sig
+	open (f + ".asc", "w").write (sig)
+	print "saved to %s.asc" %f
+}
+
+def SIGN (data)
+{
+	PRIVS.load ()
+	D = PRIVS.Raw
+	if (len (D) > 1) {
+		print "We have more than one private keys. which one? (implement)"
+		return
+	}
+	if (!D) {
+		print "No private keys.  Use `GnuPG --gen-key` or `pyvm keygen` to make some"
+		return
+	}
+
+	key = PRIVS.get_ring (D.keys ()[0]).pk
+	packet = key.sign (data)
+	print "gpg: Signed with:", key.KeyID
+
+	# Double check that the signature is at least verifiable by us.
+	# This is supposed to be always True, but for the initial versions
+	# of this program, it makes sense to enable...
+	if (DOUBLE_CHECK) {
+		for (pp in base.parse_packets (packet)) {
+			pk = PUBS.get_ring (pp.KeyID)
+			pp.do_verify (data, pk.pk)
+		}
+		print "gpg: Signature Double Checked."
+	}
+
+	sig = base.write_armor (packet, "SIGNATURE")
+	return sig
+}
+
+def do_get_key ()
+{
+	keyid = sys.argp.one ()
+	from net import http
+	print "Connecting to subkeys.pgp.net..."
+	try status, headers, file = http.http_get ("subkeys.pgp.net",
+			 "/pks/lookup?op=get&search=0x%s" %keyid, port=11371)
+	except {
+		print "Connection error. Try again later"
+		return
+	}
+	print file.read ()
+}
+
+Mime = None
+
+def do_verify_mime (data)
+{
+	# possibilities: bad format, unknown method, user mismatch,
+	#  don't have key, sig OK, sig fail, unexpected implementation error, not signed
+	# The function returns the strings: "error", "nokey", "fail", "ok"
+	global Mime
+	if (!Mime)
+		Mime = @mailnews.mime
+	M = Mime.Mime (data)
+	try From = M.HD ["from"]
+	except {
+		print "No From Line"
+		return "error"
+	}
+	rez = []
+	for (m in M.get_signed ()) {
+		print "Found signed part"
+		if.continue (len (m.body) != 2) {
+			rez<< "error"
+			print "Unknown format. Expecting 2 parts in multipart/signed"
+		}
+		p1, p2 = m.body
+		if.continue (p2.content_type != "application/pgp-signature") {
+			rez<< "error"
+			print "Error. Part 2 has content_type:", p2.content_type
+		}
+		# Headers + text, not decoded
+		data = p1.text
+		data = data.replace ("\n", "\r\n")
+		data = data.rstrip () + "\r\n"
+		signature = p2.decoded ()
+		rez<< VERIFY ("", "", signature, data, From)
+	}
+	if (!rez) {
+		print "Not signed"
+		return "error"
+	}
+	if ("fail" in rez) return "fail"
+	if ("error" in rez) return "error"
+	if ("nokey" in rez) return "nokey"
+	return "ok"
+}
+
+def do_sign_mime (infile, outfile)
+{
+	from mailnews.mime import Mime, make_message
+	M = Mime (readfile (infile))
+	h = []
+	cte = ""
+	for (k, v in M.H)
+		if (k == "content-type") ct = v
+		else if (k == "content-transfer-encoding") cte = v
+		else h<< (k, v)
+	boundary = @random.hrandstr (10)
+	h<< ("content-type", 'multipart/signed; micalg=pgp-sha1; protocol="application/pgp-signature"; '
+			+ 'boundary="%s"'%boundary)
+
+	# (xx: make message)
+	tp = "Content-Type: %s\nContent-Disposition: inline\n"%ct
+	if (cte) tp += "Content-Transfer-Encoding: %s\n"%cte
+	tp += "\n" + M.bodytext
+
+	sd = "\r\n" + tp.strip ().replace ("\n", "\r\n") + "\r\n"
+	sig = "Content-Type: application/pgp-signature\n\n" + SIGN (sd)
+	boundary = "--"  + boundary
+	body = boundary + " \n" + tp + boundary + "\n" + sig + boundary + "--\n"
+
+	open (outfile, "w").write (make_message (h,body))
+}
+
+if (__name__ == __main__)
+{
+	mode = sys.argp.pop_command (
+	"import,import-private,export,list,list-priv,verify,-b,sign,get-key,verifymime,signmime")
+
+	if (mode == "import")
+		do_import ()
+	else if (mode == "import-private")
+		do_import_private ()
+	else if (mode == "export")
+		do_export ()
+	else if (mode == "list")
+		do_list_keys ()
+	else if (mode == "list-priv")
+		do_list_keys (1)
+	else if (mode == "verify")
+		do_verify ()
+	else if (mode in ("-b", "sign"))
+		do_sign ()
+	else if (mode == "get-key")
+		do_get_key ()
+	else if (mode == "verifymime") {
+		r = do_verify_mime (readfile (sys.argp.one ()))
+		print "Status:", r
+	} else if (mode == "signmime")
+		do_sign_mime (*sys.argp.nargs (2))
+}

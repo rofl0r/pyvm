@@ -1,0 +1,103 @@
+__autosem__
+
+from fstree import LOCAL
+
+gen copytree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdirs=True, econic=False)
+{
+	if (fs1 is None) fs1 = LOCAL
+	if (fs2 is None) fs2 = LOCAL
+	if (src [-1] != "/") src += "/"
+	if (dst [-1] != "/") dst += "/"
+	for (f in fs1.listdir (src)) {
+#		print f;
+		srcf = src + f
+		dstf = dst + f
+		havedst = fs2.access (dstf)
+		if (fs1.islink (srcf)) {
+			if (symlinks == "ignore")
+				continue
+			if (symlinks) {
+				if (havedst)
+					if (overwrite) {
+						if (!econic)
+							fs2.remove (dstf)
+					} else continue
+				yield "symlink: " + dstf
+				if (!econic)
+					fs2.symlink (fs1.readlink (srcf), dstf)
+				continue
+			}
+		}
+		if (fs1.isdir (srcf)) {
+			if (!havedst)
+				if (mkdirs) {
+					yield 'mkdir: ' + dstf
+					fs2.mkdir (dstf)
+				} else raise "No directory: " + dstf
+			else if (!fs2.isdir (dstf))
+				raise "Destination [%s] not a directory" %dstf
+			for (p in copytree (srcf, dstf, fs1, fs2, symlinks=symlinks,
+					 overwrite=overwrite, mkdirs=mkdirs, econic=econic))
+				yield p
+		} else if (overwrite or !havedst) {
+			yield 'copy: ' + dstf
+			if (!econic) {
+				data = fs1.readfile (srcf)
+				fs2.writefile (dstf, data)
+			}
+		} else if (havedst)
+			yield 'have: ' + dstf
+	}
+}
+
+def CopyTree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdirs=True, econic=False)
+	for (p in copytree (src, dst, fs1, fs2, symlinks, overwrite, mkdirs, econic))
+		print p
+
+USAGE = """cptree [-o|-li|-ld|-e|-nd] source destination
+
+copy recursively source tree to destination tree.
+
+	-o	: overwrite existing files
+	-e	: dry-run.  print the commands that would be executed but do not write anything
+		  (directories will be created though)
+	-li	: ignore symbolic links
+	-ld	: dereference symbolic links
+	-nd	: do not create new directories in the destination tree
+"""
+
+if (__name__ == __main__)
+{
+	args = sys.argv [1:]
+	if (len (args) < 2 or "--help" in args) {
+		print USAGE
+		exit (1)
+	}
+	destination = args.pop ()
+	source = args.pop ()
+	def haveopt (o)
+		if (o in args) {
+			args.remove (o)
+			return True
+		} else return False
+
+	overwrite = haveopt ("-o")
+	econic = haveopt ("-e")
+	nodirs = haveopt ("-nd")
+	symlinks = haveopt ("-li") ? "ignore" : haveopt ("ld") ? "deref" : "copy"
+	if (symlinks == "deref") {
+		print "symlink dereference not implemented yet. please hack cptree.pe"
+		exit (1)
+	}
+
+	if (args) {
+		print "leftover arguments", args
+		print USAGE
+		exit (1)
+	}
+
+	print source, destination, overwrite, econic, nodirs, symlinks
+	for (a in copytree (source, destination, symlinks=symlinks, econic=econic,
+			    overwrite=overwrite, mkdirs=!nodirs))
+		print a;
+}

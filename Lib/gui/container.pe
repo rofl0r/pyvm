@@ -1,0 +1,144 @@
+__autosem__
+from util import *
+from basecontainer import basecontainer
+from widget import widget
+
+class container (*basecontainer)
+{
+	method Init (**kw)
+	{
+		$Align = kwget (kw, "Align")
+		$outlined = kwget (kw, 'outlined')
+		for (k, v in zip (["lmargin", "rmargin", "tmargin", "bmargin"],
+			($outlined ? ($A.dfW, $A.dfH, $A.dfW, $A.dfH) : (0, 0, 0, 0))
+		)) $(k) = $clen (kwget (kw, k, v))
+		$title = kwget (kw, 'title')
+		$base_init (**kw)
+		$c = []
+	}
+
+	container_init = Init
+
+	method children ()
+		return $c
+
+	method borders ()
+		return $lmargin, $tmargin, $rmargin, $bmargin
+
+	method arrange ()
+	{
+		w1, h1, w2, h2 = $borders ()
+		$place ((w1, h1))
+		$w += w2
+		$h += h2
+	}
+
+	#
+
+	method DrawOutline ()
+		if ($outlined)
+			if ($title) {
+				$draw_rect (1, $A.dfH/2, $w-2,
+					$h-$A.dfH/2-1, $A.color_shaded,
+					funky=3)
+				$draw_string ($title, 10, 0,
+				 font=$A.dfont,
+				 bg=$A.color_bg, fg=$A.color_txt)
+			} else $outline ('raised', D=1)
+
+	method Draw ()
+	{
+		$fillRest ()
+		basecontainer.Draw (self)
+	}
+
+	# mirroring virtuals
+
+	method resize_parallel (ds)
+	{
+		m = max ([i.($SSERIAL) for (i in $c)])
+		for (i in $c)
+			i.($RZSERIAL) (m - i.($SSERIAL) + ds)
+		$arrange ()
+	}
+
+	method resize_serial (ds)
+	{
+		for (i in reversed ($c))
+			ds -= i.($RZPARALLEL) (ds)
+		$arrange ()
+	}
+}
+
+# mirror polymorphism ....
+
+class hcontainer (*container)
+{
+	method place ((x0, y0))
+	{
+		h = max ([c.h for (c in $c)])
+		$h = y0 + h
+		for (c in $c) {
+			c.rebase (x0, y0)
+			x0 = c.x + c.w + 1
+		}
+		$w = x0
+	}
+
+	method fillRest ()
+	{
+		for (c in $c) {
+			if (c.y)
+				$fill_rect (c.x, 0, c.w, c.y, $A.color_bg)
+			ly = c.y + c.h
+			if (sp = $h - ly)
+				$fill_rect (c.x, ly, c.w, sp, $A.color_bg)
+		}
+		lx = $c [-1].x + $c [-1].w
+		if (sp = $w - lx)
+			$fill_rect (lx, 0, sp, $h, $A.color_bg)
+	}
+
+	SSERIAL = 'h'
+	SPARALLEL = 'w'
+	RZSERIAL = 'resize_h'
+	RZPARALLEL = 'resize_w'
+	_resize_w = container.resize_serial
+	_resize_h = container.resize_parallel
+}
+
+class vcontainer (*container)
+{
+	method place ((x0, y0))
+	{
+		$w = x0 + max ([c.w for (c in $c)])
+		for (c in $c) {
+			if ($Align == "right")
+				c.rebase (x0 + $w - c.w, y0)
+			else c.rebase (x0, y0)
+			y0 += c.h+1
+		}
+		$h = y0
+	}
+
+	method fillRest ()
+	{
+		for (c in $c) {
+			if (c.x)
+				$fill_rect (0, c.y, c.x, c.h, $A.color_bg)
+			lx = c.x + c.w
+			if (sp = ($w - lx))
+				$fill_rect (lx, c.y, sp, c.h, $A.color_bg)
+		}
+		ly = $c [-1].y + $c [-1].h
+		if (sp = $h - ly)
+			$fill_rect (0, ly, $w, sp, $A.color_bg)
+	}
+
+	SSERIAL = 'w'
+	SPARALLEL = 'h'
+	RZSERIAL = 'resize_w'
+	RZPARALLEL = 'resize_h'
+	_resize_h = container.resize_serial
+	_resize_w = container.resize_parallel
+}

@@ -1,0 +1,142 @@
+# Mandelbrot explorer
+#
+# This little program shows how one can combine python and C code
+# by abtracting the heavy computations in -easy- C and wrapping it
+# into the main program control which is written in python.
+
+__autosem__
+
+MAN =
+"""Mandelbrot Fractal Explorer
+
+Bravely explore interesting areas of the vast mandelbrot fractal
+and capture impressive pictures to decorate your desktop's wallpaper,
+which can be watched later when you work and remember the adventurus
+days when you were exploring the infinite landscapes of the mysteriously
+vast mandelbrot fractal.
+
+Requires graphics.
+"""
+
+if (__name__ != __main__)
+	raise MAN
+
+import gui
+
+palette = array ("i", [ min (n, 255) * 65536 + min (3*n/2, 255) * 256 + min (2 * n, 255)
+				for (n in *256)])
+
+MANDEL_C =
+r"""#define N 255
+int mandel (double x, double y)
+{
+#if 1
+	double x0, y0, x2, y2;
+	int i;
+
+	x0 = x;
+	y0 = y;
+	x2 = x*x;
+	y2 = y*y;
+
+	for (i = 0; i < N; i++) {
+		if (x2 + y2 >= 4.0)
+			return i;
+//			return (N*N - i*i);
+		y = 2.0 * x * y + y0;
+		x = x2 - y2 + x0;
+		x2 = x*x;
+		y2 = y*y;
+	}
+	return 0;
+#else
+#endif
+}
+"""
+
+mandel2 = @DLL.CJIT (MANDEL_C, '-O3 -ffast-math', pelf="try").link (('i', 'mandel', 'dd'))
+
+def draw (xmin, xmax, ymin, ymax, F)
+{
+	dx = (xmax - xmin) / F.w
+	dy = (ymax - ymin) / F.h
+	yy = ymin
+	for (y in *F.h) {
+		xx = xmin
+		for (x in *F.w) {
+			v = mandel2 (xx, yy)
+			F.put_pixel (x, y, palette [v])
+			#F.put_pixel (x, y, F.col (__rgb__ (v, 0, v)))
+			#F.put_pixel (x, y, F.col (v/4, v/4, v))
+			xx += dx
+		}
+		yy += dy
+	}
+	W.Draw ()
+}
+
+POV = [[-2.0, 1.0, -1.0, 1.0]]
+
+wm = gui.Wm (800, 600, 'fb demo')
+with (gui.vcontainer ()) {
+	W = gui.fb (w=wm.width, h=wm.height-20)
+	with (gui.hcontainer ()) {
+		BBACK = gui.button ("Back")
+		BSAVE = gui.button ("Save")
+		gui.space ()
+		gui.label ("Click and drag to magnify")
+	}
+}
+
+def BBACK.Action ()
+	if (len (POV) > 1) {
+		POV.pop ()
+		a, b, c, d = POV [-1]
+		draw (a, b, c, d, W.F)
+	}
+
+Ith = 0
+
+def BSAVE.Action ()
+{
+	W.F.save_as_ppm ("out%i.ppm" %Ith)
+	Ith += 1
+}
+
+def W.onClick (x0, y0)
+{
+	if (!W.mouse_pressed ())
+		return
+	F = W.F
+	c = F.col (0xffffff)
+	Saved = F.save_rect (0, 0, 0, 0)
+	x = None
+
+	for (x, y in W.A.followMouse ()) {
+		F.restore (Saved)
+		Saved = F.save_rect (x0, y0, x, y)
+		F.draw_rect_p (x0, y0, x, y, c)
+		W.Draw ()
+	}
+
+
+	if (x is not None) {
+		fx0, fx1, fy0, fy1 = POV [-1]
+		x0, x1, y0, y1 = min (x0, x), max (x0, x), min (y0, y), max (y0, y)
+		nx0 = fx0 + x0 * (fx1 - fx0) / W.F.w
+		nx1 = fx0 + x1 * (fx1 - fx0) / W.F.w
+		ny0 = fy0 + y0 * (fy1 - fy0) / W.F.h
+		ny1 = fy0 + y1 * (fy1 - fy0) / W.F.h
+
+print nx0, nx1, ny0, ny1
+		draw (nx0, nx1, ny0, ny1, W.F)
+		POV.append ([nx0, nx1, ny0, ny1])
+	}
+}
+
+##################
+##################
+draw (-2.01, 1.01, -1.01, 1.01, W.F)
+W.Draw ()
+wm.flush ()
+wm.Start ()

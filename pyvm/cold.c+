@@ -1,0 +1,1968 @@
+/*
+ *  Miscallaneous functions that are used rarely
+ * 
+ *  Copyright (c) 2006-2008 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+// enable this for reporting of memory increase
+//#define REPORT_BRK
+
+/***********************************************************************************
+
+	stuff for which we don't care about the extreme inlining and to
+	speed up the compilation.  This file is compiled at -Os.
+
+***********************************************************************************/
+
+#include "config.h"
+#include "dynlib.h"
+#include "py_opcodes.h"
+#include "arrayobj.h"
+#include "funcwrapper.h"
+#include "generatorobj.h"
+#include "cStringIO.h"
+
+StringObj *REFPTR.CheckString ()
+{
+	return check_string ();
+}
+
+StringObj *REFPTR.CheckStringNZ ()
+{
+	StringObj *s = check_string ();
+	if (memchr (s->str, 0, s->len))
+		RaiseTypeError ("string contains NULL bytes");
+	return s;
+}
+
+IntObj *REFPTR.CheckInt ()
+{
+	return check_int ();
+}
+
+/******************************************************************************
+			Type names
+******************************************************************************/
+
+const char NoneType	[]	= "NoneType";
+const char IntType	[]	= "int\0double\0";
+const char TypeType	[]	= "type";
+const char BoolType	[]	= "bool";
+const char SetType	[]	= "set";
+const char LongType	[]	= "Long";
+const char StringType	[]	= "string";
+const char IteratorType	[]	= "Iterator";
+const char TupleType	[]	= "tuple";
+const char ListType	[]	= "list";
+const char DictType	[]	= "dict";
+const char NamespaceType[]	= "namespace";
+const char PyCodeType	[]	= "python 2.4 bytecode";
+const char PyFuncType	[]	= "function";
+const char ClassType	[]	= "class";
+const char BoundType	[]	= "boundmethod";
+const char InstanceType	[]	= "instance";
+const char NamedListType[]	= "namedList";
+const char BugType	[]	= "-you are not supposed to see this-";
+const char BuiltinFuncType[]	= "builtin";
+const char cStringIOType[]	= "cStringIO";
+const char CtxSwitchType[]	= "ctx";
+
+extern REFPTR _GC_LIST;
+
+void __container__.GC_ROOT ()
+{
+	if (_GC_LIST.o == &None)
+		_GC_LIST = new ListObj;
+	_GC_LIST.as_list->append (this);
+}
+
+method_proxy.method_proxy ()
+{ }
+
+method_proxy DefaultProxy;
+
+__object__ *method_proxy.sub (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__sub__); }
+__object__ *method_proxy.div (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__div__); }
+__object__ *method_proxy.and (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__and__); }
+__object__ *method_proxy.neg (__object__*)
+{ RaiseNoAttribute (Interns.__not__); }
+__object__ *method_proxy.idiv (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__div__); }
+__object__ *method_proxy.imul (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__mul__); }
+
+/******************************************************************************
+
+			Default Missing methods
+
+******************************************************************************/
+
+int __object__.len ()
+{ RaiseNoAttribute (Interns.__len__); }
+
+void __object__.call (REFPTR, REFPTR*, int)
+{ RaiseTypeError ("object is not callable"); }
+
+StringObj *__object__.str ()
+{ RaiseNoAttribute (Interns.__str__); }
+
+__object__ *__object__.xnext ()
+{ RaiseNoAttribute (Interns.next); }
+
+__object__ *__object__.iter ()
+{ RaiseNoAttribute (Interns.__iter__); }
+
+__object__ *__object__.__xgetitem__ (int)
+{ RaiseNoAttribute (Interns.__getitem__); }
+
+__object__ *__object__.xgetitem (__object__*)
+{ RaiseNoAttribute (Interns.__getitem__); }
+
+#ifdef FEATURE_SETITER
+void __object__.setiter (__object__*)
+{ RaiseNotImplemented ("this object doesn't have __SET_ITER__"); }
+#endif
+
+void __object__.xsetitem (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__setitem__); }
+
+void __object__.setattr (__object__*, __object__*)
+{ RaiseNoAttribute (Interns.__setattr__); }
+
+void __object__.delattr (__object__*)
+{ RaiseNoAttribute (Interns.__delattr__); }
+
+void __object__.xdelitem (__object__*)
+{ RaiseNoAttribute (Interns.__delitem__); }
+
+__object__ *__object__.binary_mul (__object__*)
+{ RaiseNoAttribute (Interns.__mul__); }
+
+__object__ *__object__.binary_add (__object__*)
+{ RaiseNoAttribute (Interns.__add__); }
+
+__object__ *__object__.inplace_sub (__object__*)
+{ RaiseNoAttribute (Interns.__sub__); }
+
+__object__ *__object__.binary_modulo (__object__*)
+{ RaiseNoAttribute (Interns.__mod__); }
+
+bool __object__.contains (__object__*)
+{ RaiseNoAttribute (Interns.__contains__); }
+
+void __object__.xdelslice (int, int)
+{ RaiseNoAttribute (Interns.__delslice__); }
+
+__object__ *__object__.xgetslice (int, int)
+{ RaiseNoAttribute (Interns.__getslice__); }
+
+void __object__.xsetslice (int, int, __object__*)
+{ RaiseNoAttribute (Interns.__setslice__); }
+
+__object__ *__object__.concat (__object__ *o)
+{
+	return binary_add (o);
+}
+
+__object__ *__object__.type_call (REFPTR*, int)
+{ RaiseNotImplemented ("call type of this"); }
+
+__object__ *IntObj.binary_add (__object__ *o)
+{
+	return o->binary_add (this);
+}
+
+void iteratorBase.unyield ()
+{
+pprint (OCC this);
+	RaiseNotImplemented ("This specific iterator does not support unyielding");
+}
+
+long hasherror ()
+{
+	RaiseTypeError ("object is unhashable");
+}
+
+/******************************************************************************
+
+			Very Basic (near root) methods
+
+******************************************************************************/
+
+bool __object__.Bool ()
+{
+	return true;
+}
+
+long __object__.hash ()
+{
+	return (long) this;
+}
+
+StringObj *NoneObj.str ()
+{
+	return Interns.None;
+}
+
+StringObj *BoolObj.str ()
+{
+	return this == &TrueObj ? Interns.True : Interns.False;
+}
+
+bool NoneObj.Bool ()
+{
+	return false;
+}
+
+StringObj *__object__.repr ()
+{
+	return str ();
+}
+
+StringObj *BuiltinCallableBase.repr ()
+{
+	return name.as_string;	// fix <builtin name.o>
+}
+
+BoolObj TrueObj, FalseObj;
+
+BoolObj.BoolObj ()
+{
+	__permanent__.ctor ();
+	i = this == &TrueObj ? 1 : 0;
+}
+
+/******************************************************************************
+
+			Interrupts (lwc exceptions)
+
+******************************************************************************/
+
+static Interrupt KeyError (KEY_ERROR);
+static Interrupt AttributeError (NO_ATTRIBUTE);
+static Interrupt ImportError (IMPORT_ERROR);
+static Interrupt NameError (NAME_ERROR);
+static Interrupt IOError (IO_ERROR);
+static Interrupt RunTimeError (RUNTIME_ERROR);
+static Interrupt TypeError (TYPE_ERROR);
+static Interrupt NotImplementedError (NOT_IMPLEMENTED);
+static Interrupt IndexError (INDEX_ERROR);
+static Interrupt ValueError (VALUE_ERROR);
+static Interrupt SystemExit (SYSTEM_EXIT);
+static Interrupt EOFError (EOF_ERROR);
+static Interrupt FloatingPointError (FPE_ERROR);
+extern Interrupt StopIteration, OSError;
+
+slow void load_dynExceptions ()
+{
+	/*
+	 * This must be done after the exception classes have been created,
+	 * which happens when importing the __builtins__
+	 */
+#define LOAD(X) X.pyexc = DynExceptions.X;
+	LOAD (KeyError)
+	LOAD (AttributeError)
+	LOAD (ImportError)
+	LOAD (NameError)
+	LOAD (IOError)
+	LOAD (RunTimeError)
+	LOAD (TypeError)
+	LOAD (NotImplementedError)
+	LOAD (IndexError)
+	LOAD (ValueError)
+	LOAD (SystemExit)
+	LOAD (EOFError)
+	LOAD (StopIteration)
+	LOAD (OSError)
+	LOAD (FloatingPointError)
+}
+
+void traverse_exceptions ()
+{
+	KeyError.obj.traverse_ref ();
+	TypeError.obj.traverse_ref ();
+}
+
+slow __object__ *RaiseNoAttribute (__object__ *o)
+{
+	AttributeError.obj = o;
+	throw &AttributeError;
+}
+
+slow __object__ *RaiseEOFError ()
+{
+	throw &EOFError;
+}
+
+slow __object__ *RaiseFPE ()
+{
+	throw &FloatingPointError;
+}
+
+slow __object__ *RaiseImportError (__object__ *o)
+{
+	ImportError.obj = o;
+	throw &ImportError;
+}
+
+slow __object__ *RaiseNameError (__object__ *o)
+{
+	NameError.obj = o;
+	throw &NameError;
+}
+
+slow __object__ *RaiseIoError ()
+{
+	IOError.obj = new StringObj (strerror (errno));
+	throw &IOError;
+}
+
+slow __object__ *RaiseRuntimeError (char *d)
+{
+	RunTimeError.obj = new StringObj (d);
+	throw &RunTimeError;
+}
+
+__object__ *RaiseKeyError ()
+{
+	throw &KeyError;
+}
+
+__object__ *RaiseKeyError (__object__ *o)
+{
+	KeyError.obj = o;
+	throw &KeyError;
+}
+
+__object__ *RaiseTypeError (const char *t1, const char *t2)
+{
+	TypeError.obj = new Tuplen (new StringObj (t1), new StringObj (t2));
+	throw &TypeError;
+}
+
+__object__ *RaiseNotImplemented (const char *msg)
+{
+	NotImplementedError.obj = new StringObj (msg);
+	throw &NotImplementedError;
+}
+
+__object__ *RaiseIndexError ()
+{
+	throw &IndexError;
+}
+
+static __object__ *MSG_LIOOR;
+
+__object__ *RaiseListIndexOutOfRange ()
+{
+	IndexError.obj = MSG_LIOOR;
+	throw &IndexError;
+}
+
+__object__ *RaiseValueError (const char *msg)
+{
+	ValueError.obj = new StringObj (msg);
+	throw &ValueError;
+}
+
+void NoDefaults (int argc)
+{
+	RaiseValueError (argc > 255 ? "builtins don't accept keyword arguments":
+			 "argument number mismatch");
+}
+
+static __object__ *MSG_LINIL, *MSG_SSNF, *MSG_UNBOUND;
+
+__object__ *RaiseValueError_li ()
+{
+	ValueError.obj = MSG_LINIL;
+	throw &ValueError;
+}
+
+__object__ *RaiseUnbound ()
+{
+	ValueError.obj = MSG_UNBOUND;
+	throw &ValueError;
+}
+
+__object__ *RaiseValueErrorSubstring ()
+{
+	ValueError.obj = MSG_SSNF;
+	throw &ValueError;
+}
+
+__object__ *MSG_TMVTU;
+
+__object__ *RaiseValueError_up ()
+{
+	ValueError.obj = MSG_TMVTU;
+	throw &ValueError;
+}
+
+static __object__ *MSG_TFA;
+
+__object__ *RaiseTooFewArgs ()
+{
+	ValueError.obj = MSG_TFA;
+	throw &ValueError;
+}
+
+static __object__ *MSG_TMA;
+
+__object__ *RaiseTooManyArgs ()
+{
+	ValueError.obj = MSG_TMA;
+	throw &ValueError;
+}
+
+__object__ *RaiseTypeError (const char *msg)
+{
+	TypeError.obj = new StringObj (msg);
+	throw &TypeError;
+}
+
+__object__ *RaiseSystemExit (__object__ *v)
+{
+	SystemExit.obj = v;
+	throw &SystemExit;
+}
+
+/******************************************************************************
+			operator methods for builtin types
+******************************************************************************/
+
+static __object__ *getitem_op (REFPTR argv[])
+{
+	return argv [0]->xgetitem (argv [1].o);
+}
+
+static const method_attribute op_methods [] = {
+	{ "__getitem__", "__getitem__", SETARGC (2, 2), getitem_op},
+	MENDITEM
+};
+
+/******************************************************************************
+	operator that should normally have a binary_* virtual
+	function.  But because they are rare and speed doesn't
+	matter, we won't add the virtual slot, and do this
+	with if() dispatching.
+******************************************************************************/
+
+__object__ *do_binary_and (__object__ *o1, __object__ *o2)
+{
+	return o1->type.meth->and (o1, o2);
+}
+
+__object__ *do_binary_or (__object__ *o1, __object__ *o2)
+{
+	if (SetObj.isinstance (o1))
+		return new SetObj union_ctor (SetObj.cast (o1), SetObj.checkedcast (o2));
+	RaiseNoAttribute (Interns.__or__);
+}
+
+__object__ *do_binary_xor (__object__ *o1, __object__ *o2)
+{
+	if (SetObj.isinstance (o1))
+		return new SetObj symdiff_ctor (SetObj.cast (o1), SetObj.checkedcast (o2));
+	RaiseNoAttribute (Interns.__xor__);
+}
+
+__object__ *do_binary_sub (__object__ *o1, __object__ *o2)
+{
+	return o1->type.meth->sub (o1, o2);
+}
+
+__object__ *do_binary_div (__object__ *o1, __object__ *o2)
+{
+	return o1->type.meth->div (o1, o2);
+}
+
+__object__ *do_binary_rsh (__object__ *o1, __object__ *o2)
+{
+	if (LongObj.isinstance (o1))
+		return LongObj.cast (o1)->binary_rsh (o2);
+	RaiseNoAttribute (Interns.__rsh__);	// xxx
+}
+
+__object__ *do_binary_lsh (__object__ *o1, __object__ *o2)
+{
+	/* List << value == List.append (value) shortcut */
+	if (ListObj.isinstance (o1))
+		return ListObj.cast (o1)->append (o2);
+	if (LongObj.isinstance (o1))
+		return LongObj.cast (o1)->binary_lsh (o2);
+	RaiseNoAttribute (Interns.__lsh__);	// xxx
+}
+
+__object__ *do_unary_neg (__object__ *o)
+{
+	return o->type.meth->neg (o);
+//	if (LongObj.isinstance (o))
+//		return LongObj.cast (o)->unary_neg ();
+//	RaiseNoAttribute (Interns.__and__);	// xxx
+}
+
+__object__ *do_inplace_div (__object__ *o1, __object__ *o2)
+{
+	return o1->type.meth->idiv (o1, o2);
+}
+
+__object__ *do_inplace_mul (__object__ *o1, __object__ *o2)
+{
+	return o1->type.meth->imul (o1, o2);
+}
+
+/******************************************************************************
+			internal dictionary iteration
+******************************************************************************/
+
+dictiter.dictiter (dictionary *d)
+{
+	tbl = d->tbl;
+	tot = d->used;
+}
+
+bool dictiter.next ()
+{
+	if (tot) {
+		while (!tbl->val.o) ++tbl;
+		k = tbl->key.o;
+		v = tbl->val.o;
+		++tbl;
+		--tot;
+		return true;
+	}
+	return false;
+}
+
+/******************************************************************************
+			Object printing functions
+******************************************************************************/
+
+void probj (__object__ *o)
+{
+	o->print ();
+}
+
+void BuiltinCallableBase.print ()
+{
+	print_out ("<builtin function:", name.o, ">");
+}
+
+void __object__.xprint ()
+{
+	print ();
+}
+
+void NoneObj.print ()
+{
+	print_out (STRL ("None"));
+}
+
+void TypeObj.print ()
+{
+	if (typeptr)
+		print_out ("<type '", TYPE2VPTR (typeptr)->stype, "'>");
+}
+
+StringObj *TypeObj.str ()
+{
+	char tmp [100];
+	return new StringObj (tmp, sprintf (tmp, "<type '%s'>", TYPE2VPTR (typeptr)->stype));
+}
+
+void BoolObj.print ()
+{
+	if (this == &TrueObj)
+		print_out (STRL ("True"));
+	else	print_out (STRL ("False"));
+}
+
+void LongObj.print ()
+{
+	char tmp [10];
+	int i;
+
+	if (L->sign < 0)
+		print_out ("-");
+	for (i = L->size - 1; i >= 0; i--) {
+		sprintf (tmp, "%08x", L->D [i]);
+		print_out (tmp);
+		if (i)
+			print_out (",");
+	}
+}
+
+StringObj *LongObj.str ()
+{
+	char buf [L->size * 9 + 1];
+	int i;
+
+	for (i = 0; i < L->size; i++)
+		sprintf (buf + i * 9, "%08X-", L->D [i]);
+	buf [strlen (buf) - 1] = 0;
+
+	return new StringObj (buf);
+}
+
+void iteratorBase.print ()
+{
+	print_out (STRL ("iterator object at"), (void*) this);
+}
+
+void NamespaceObj.print ()
+{
+	print_out (STRL ("<namespace "), (void*) this, _CHAR('>'));
+}
+
+void DynClassObj.print ()
+{
+	__object__ *o;
+
+	if ((o = getattr (Interns.__module__))) {
+		o->print ();
+		print_out (_CHAR ('.'));
+	}
+	__name__->print ();
+}
+
+static void dictionary.print_items ()
+{
+	dictiter I (this);
+	while (I.next ()) {
+		I.k->xprint ();
+		print_out (_CHAR (':'));
+		I.v->xprint ();
+		if (I.tot)
+			print_out (STRL (", "));
+	}
+}
+
+void DictObj.print ()
+{
+	if (sticky & STICKY_PRINT) {
+		print_out (STRL ("{...}"));
+		return;
+	}
+
+	sticky_set S;
+	print_out (_CHAR ('{'));
+	D.print_items ();
+	print_out (_CHAR ('}'));
+}
+
+void SetObj.print ()
+{
+	if (sticky & STICKY_PRINT) {
+		print_out (STRL ("{...}"));
+		return;
+	}
+
+	sticky_set S;
+	print_out (_CHAR ('{'));
+	D.set_print_items ();
+	print_out (_CHAR ('}'));
+}
+
+static void dictionary.str_items (cStringIO E)
+{
+	dictiter I (this);
+	StringObj *SS;
+	REFPTR rS;
+	while (I.next ()) {
+		rS = I.k->repr ();
+		SS = StringObj.checkedcast (rS.o);
+		E.strcat (SS->str, SS->len);
+		E.strcat (":", 1);
+		rS = I.v->repr ();
+		SS = StringObj.checkedcast (rS.o);
+		E.strcat (SS->str, SS->len);
+		if (I.tot)
+			E.strcat (", ", 2);
+	}
+}
+
+StringObj *DictObj.str ()
+{
+	sticky_set S;
+	cStringIO E;
+	E.strcat ("{", 1);
+	D.str_items (E);
+	E.strcat ("}", 1);
+	return E.getvalue ();
+}
+
+int NamespaceObj.len ()
+{
+	__object__ *a = getattr (Interns.__len__);
+	if_unlikely (!a)
+		RaiseNoAttribute (Interns.__len__);
+	REFPTR xx = a;
+	a->call (xx, &xx, 0);
+	return IntObj.fcheckedcast (xx.o != &CtxSw ? xx.o : preempt_pyvm (CtxSw.vm))->i;
+}
+
+void NamedListObj.print ()
+{
+	if (__class__.o != &None) {
+		print_out (_CHAR ('<'));
+		__class__->xprint ();
+		print_out (STRL (" instance (with slots) at "), (void*)this, _CHAR ('>'));
+		return;
+	}
+
+	if (sticky & STICKY_PRINT) {
+		print_out (STRL ("NamedList{...}"));
+		return;
+	}
+
+	sticky_set S;
+	int i, l = __slots__.as_list->len;
+	print_out (STRL ("NamedList{"));
+	for (i = 0; i < l; i++) {
+		if (i) print_out (STRL (", "));
+		__slots__.as_tuple->data [i]->xprint ();
+		print_out (STRL (": "));
+		data [i]->xprint ();
+	}
+	print_out (STRL ("}"));
+}
+
+static StringObj *DynInstanceObj.std_repr ()
+{
+	__object__ *module = __class__->getattr (Interns.__module__);
+	int l = 32 + __class__.as_class->__name__.as_string->len;
+	if (module && StringObj.isinstance (module))
+		l += StringObj.cast (module)->len;
+
+	char tmp [l];
+	if (module && StringObj.isinstance (module)) {
+		sprintf (tmp, "<%s.%s instance at %p>", StringObj.cast (module)->str,
+				 __class__.as_class->__name__.as_string->str, this);
+	} else {
+		sprintf (tmp, "<%s instance at %p>", __class__.as_class->__name__.as_string->str, this);
+	}
+
+	return new StringObj (tmp);
+}
+
+StringObj *DynInstanceObj.repr ()
+{
+	__object__ *a = getattr (Interns.__repr__);
+	if (!a) return std_repr ();
+	REFPTR xx = a;
+	a->call (xx, &xx, 0);
+	if (xx.o != &CtxSw)
+		return (StringObj*) xx.Dpreserve ();
+	return (StringObj*) preempt_pyvm (CtxSw.vm);
+}
+
+StringObj *DynInstanceObj.str ()
+{
+	__object__ *a = getattr (Interns.__str__);
+	if (!a) return std_repr ();
+	REFPTR xx = a;
+	a->call (xx, &xx, 0);
+	if (xx.o != &CtxSw)
+		return (StringObj*) xx.Dpreserve ();
+	return (StringObj*) preempt_pyvm (CtxSw.vm);
+}
+
+StringObj *DynClassObj.str ()
+{
+	__object__ *module = getattr (Interns.__module__);
+	int l = 32 + __name__.as_string->len;
+	if (module && StringObj.isinstance (module))
+		l += StringObj.cast (module)->len;
+
+	char tmp [l];
+	if (module && StringObj.isinstance (module)) {
+		sprintf (tmp, "%s.%s", StringObj.cast (module)->str, __name__.as_string->str);
+	} else {
+		sprintf (tmp, "%s", __name__.as_string->str);
+	}
+
+	return new StringObj (tmp);
+}
+
+void dictionary.set_print_items ()
+{
+	dictiter I (this);
+	while (I.next ()) {
+		I.k->xprint ();
+		if (I.tot)
+			print_out (STRL (", "));
+	}
+}
+
+void DynInstanceObj.print ()
+{
+	__object__ *o;
+
+	if ((o = getattr (Interns.__str__))) {
+		REFPTR xx = o, yy;
+		o->call (xx, &yy, 0);
+		if (xx.o == &CtxSw)
+			xx = preempt_pyvm (CtxSw.vm);
+		xx->print ();
+		return;
+	}
+
+	print_out (_CHAR ('<'));
+	__class__->xprint ();
+	print_out (STRL (" instance at "), (void*)this, _CHAR ('>'));
+}
+
+void DynMethodObj.print ()
+{
+	print_out (STRL ("<Bound method "));
+	__self__->xprint ();
+	__method__->xprint ();
+	OUT->chr ('>');
+}
+
+void DynStaticMethodObj.print ()
+{
+	print_out (STRL ("<staticmethod of "));
+	__callable__->xprint ();
+	OUT->chr ('>');
+}
+
+void DynClassMethodObj.print ()
+{
+	print_out (STRL ("<classmethod of "));
+	__callable__->xprint ();
+	OUT->chr ('>');
+}
+
+__object__ *PyFuncObj.getattr (__object__ *a)
+{
+	if (a == Interns.func_name || a == Interns.__name__)
+		return codeobj.as_code->name.o;
+	if (a == Interns.__iname__)
+		return codeobj.as_code->iname.o;
+	if (a == Interns.func_code)
+		return codeobj.o;
+	if (a == Interns.func_globals)
+		return GLOBALS.o;
+	if (a == Interns.__doc__)
+		return codeobj.as_code->consts.as_tuplen->__xgetitem__ (0);
+	return 0;
+}
+
+__object__ *PyCodeObj.getattr (__object__ *a)
+{
+	if (a == Interns.co_filename)
+		return filename.o;
+	if (a == Interns.co_code)
+		return code.o;
+	if (a == Interns.co_consts)
+		return consts.o;
+	if (a == Interns.co_lnotab)
+{
+#if	1
+		// this doesn't work with the compressed lnotab
+		pprint ("WHO DOES THAT?");
+#endif
+		return lnotab.o;
+}
+	if (a == Interns.__module__)
+		return module.o;
+	if (a == Interns.lineno)
+		return newIntObj (firstlineno);
+	return 0;
+}
+
+__object__ *BuiltinCallableBase.getattr (__object__ *a)
+{
+	if (a == Interns.__name__)
+		return name.o;
+	return 0;
+}
+
+slow void PyCodeObj.disassemble ()
+{
+	dprint ();
+	StringObj *s = code.as_string;
+	byte *bcd = (byte*) s->str, cmd;
+	unsigned int len2 = s->len, i;
+
+	for (i = 0; i < len2;) {
+		cmd = bcd [i++];
+		pprint (i, "\t", __enumstr__ (py_bytecode, cmd), " ");
+		if (cmd >= STORE_NAME) {
+			short int arg = *((short*) &bcd[i]);
+			i += sizeof arg;
+			pprint (" ", arg);
+			if (has_name (cmd))
+				pprint ("(", names.as_tuplen->__xgetitem__ (arg), ")");
+			else if (has_const (cmd))
+				pprint ("(", consts.as_tuplen->__xgetitem__ (arg), ")");
+			//else if (has_local (cmd))
+			//	pprint ("(", varnames.as_tuplen->xgetitem (arg), ")");
+			
+		}
+	}
+}
+
+void TupleObj.print ()
+{
+	const char *__print_fmt = __print_fmt;
+	if (sticky & STICKY_PRINT) {
+		print_out (_CHAR(__print_fmt [0]), STRL ("..."), _CHAR(__print_fmt [1]));
+		return;
+	}
+
+	sticky_set S;
+	print_out (_CHAR (__print_fmt [0]));
+	REFPTR *data = data;
+	for (int i = 0; i < len; i++) {
+		if_likely (i)
+			print_out (STRL (", "));
+		data [i]->xprint ();
+#ifdef	DEBUG_RELEASE
+		print_out (STRL (COLS"("), data [i].o->refcnt, STRL (")"COLE));
+#endif
+	}
+	if (len == 1 && Tuplen.isinstance (this))
+		print_out (",");
+	print_out (_CHAR (__print_fmt [1]));
+}
+
+StringObj *TupleObj.str ()
+{
+	const char *__print_fmt = __print_fmt;
+	if (sticky & STICKY_PRINT) {
+		char rec [] = { __print_fmt [0], '.', '.', '.', __print_fmt [1], 0 };
+		return new StringObj (rec);
+	}
+
+	/* XXX: keep a static cStringIO
+	 */
+	cStringIO E;
+	StringObj *SS;
+	REFPTR rS;
+	sticky_set S;
+
+	E.strcat (&__print_fmt [0], 1);
+	REFPTR *data = data;
+	for (int i = 0; i < len; i++) {
+		if_likely (i)
+			E.strcat (", ", 2);
+		rS = data [i]->repr ();
+		SS = StringObj.checkedcast (rS.o);
+		E.strcat (SS->str, SS->len);
+	}
+	E.strcat (&__print_fmt [1], 1);
+	return E.getvalue ();
+}
+
+StringObj *StringObj.repr ()
+{
+	int i, n;
+	for (i = n = 0; i < len; i++, n++)
+		if (in2 (str [i], '\\', '\'')) ++n;
+		else if ((unsigned char) str [i] < ' ') {
+			if (str [i] >= '\a' && str [i] <= '\r') ++n;
+			else n += 3;
+		}
+
+	char *s = seg_alloc (n + 3);
+	char *p = s;
+	*p++ = '\'';
+	for (i = 0; i < len; i++) {
+		if ((unsigned char) str [i] < ' ') {
+			*p++ = '\\';
+			if (str [i] >= '\a' && str [i] <= '\r') 
+				*p++ = "abtnvfr" [str [i] - '\a'];
+			else {
+				*p++ = 'x';
+				*p++ = "0123456789abcdef" [(str [i]>>4) & 0xf];
+				*p++ = "0123456789abcdef" [str [i] & 0xf];
+			}
+			continue;
+		}
+		if (in2 (str [i], '\\', '\'')) 
+			*p++ = '\\';
+		*p++ = str [i];
+	}
+	*p++ = '\'';
+	*p = 0;
+	return new StringObj allocated (s, n + 2);
+}
+
+StringObj *IntObj.str ()
+{
+	char tmp [30];
+	return new StringObj (tmp, mytoa10 (tmp, i));
+}
+
+StringObj *FloatObj.str ()
+{
+	char tmp [400];
+	return new StringObj (tmp, sprintf (tmp, "%f", f));
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+__object__ *PyCodeObj.type_call (REFPTR argv[], int argc)
+{
+	/* This is a PyCodeObj constructor */
+	if (argc != 14 && argc != 15)
+		RaiseTypeError ("argument number mismatch");
+	PyCodeObj *C = new PyCodeObj;
+	C->argcount = IntObj.fcheckedcast (argv [0].o)->i;
+	C->nlocals = IntObj.fcheckedcast (argv [1].o)->i;
+	C->stacksize = IntObj.fcheckedcast (argv [2].o)->i;
+	C->flags = IntObj.fcheckedcast (argv [3].o)->i;
+	C->code.ctor (StringObj.checkedcast (argv [4].o));
+	C->consts.ctor (Tuplen->checkedcast (argv [5].o));
+	C->nloops = -1;
+	C->names.ctor (argv [6].o);
+	//C->names.ctor (Tuplen->checkedcast (argv [6].o));
+	C->set_varnames (Tuplen->checkedcast (argv [7].o));
+	C->filename.ctor (StringObj.checkedcast (argv [8].o));
+	C->module.ctor ();
+	C->name.ctor (StringObj.checkedcast (argv [9].o));
+	C->firstlineno = IntObj.fcheckedcast (argv [10].o)->i;
+	C->lnotab.ctor (StringObj.checkedcast (argv [11].o));
+	C->freevars.ctor (Tuplen->checkedcast (argv [12].o));
+	C->cellvars.ctor (Tuplen->checkedcast (argv [13].o));
+	if (!argv [12].as_tuplen->len && !argv [13].as_tuplen->len)
+		C->flags |= CO_NOFREE;
+	if (argc == 14)
+		C->iname.ctor (C->name.o);
+	else C->iname.ctor (StringObj.checkedcast (argv [14].o));
+	return C;
+}
+
+void PyCodeObj.print ()
+{
+	print_out (STRL ("<Code Object at "), (void*) this, STRL(":"));
+	name->print ();
+	print_out (">");
+}
+
+void PyCodeObj.dprint ()
+{
+	print_out (STRL ("argc="), argcount, STRL ("\nnlocal="), nlocals,
+		   STRL ("\nnstack="), stacksize, STRL ("\nflags="), flags, "\nnloops=", nloops);
+#define SHOW(XX) print_out (STRL ("\n" #XX ":")); XX->print ();
+	SHOW (name);
+	SHOW (code);
+	SHOW (consts);
+	SHOW (names);
+	SHOW (varnames);
+	SHOW (freevars);
+	SHOW (cellvars);
+	SHOW (filename);
+	SHOW (lnotab);
+	print_out (_CHAR ('\n'));
+}
+
+void StringObj.print ()
+{
+static	const char printable [' '] = { ['\n'] = 1, ['\t'] = 1, ['\r'] = 1, ['\f'] = 1, [27] = 1 };
+
+	for (unsigned int i = 0; i < len; i++)
+		if ((unsigned char) str [i] < ' ' && !printable [(unsigned char) str [i]]) {
+			for (i = 0; i < len; i++)
+				if (str [i] < ' ' || str [i] > '~')
+					OUT->chr ('.');
+				else
+					OUT->chr (str [i]);
+			return;
+		}
+	print_out ((str, len));
+}
+
+/* -----* PyCodeObj *----- */
+
+void PyCodeObj.set_varnames (Tuplen *vn)
+{
+	varnames.ctor (vn);
+}
+
+PyCodeObj.PyCodeObj (inline_machine_code M, Tuplen *cc, int argc, int fl,
+		     int sts, char *n, Tuplen *nn, Tuplen *vn)
+{
+	ctor ();
+
+	code.ctor ((__object__*) new StringObj binctor ((char*) M.code, M.codesize));
+#ifdef	DIRECT_THREADING
+	lcode = M.lcode;
+#endif
+	argcount = argc;
+	flags = fl;
+	stacksize = sts + 0;
+	nloops = M.nloops;
+	consts.ctor (cc);
+
+	pyvm_flags = 0;
+	names.ctor (nn);
+	set_varnames (vn);
+	nlocals = varnames.as_tuplen->len;
+	nclosure = 0;
+	freevars.ctor (NILTuple);
+	cellvars.ctor (NILTuple);
+	filename.ctor ();
+	module.ctor ();
+	name.ctor (new StringObj (n));
+	iname.ctor (name.o);
+	lnotab.ctor ();
+	_prep ();
+#ifdef	DIRECT_THREADING
+	inline_consts ();
+#endif
+}
+
+extern __object__ *exitfunc_sys ();
+
+PyCodeObj.PyCodeObj ()
+{
+	__container__.ctor ();
+#ifdef	DIRECT_THREADING
+	lcode = 0;
+#endif
+	lno_offset = 0;
+	lno_len = -1;
+//self_closure=-1;
+}
+
+PyCodeObj.~PyCodeObj ()
+{
+#ifdef	DIRECT_THREADING
+	__free (lcode);
+#endif
+}
+
+DynClassObj.~DynClassObj ()
+{ }
+
+ModuleObj.~ModuleObj ()
+{ }
+
+PyFuncObj.~PyFuncObj ()
+{ }
+
+void FloatObj.print ()
+{
+	print_out (f);
+}
+
+void PyFuncObj.print ()
+{
+	print_out (STRL ("<Function on:"));
+	codeobj->print ();
+	print_out (STRL (">"));
+}
+
+void PyGeneratorFuncObj.print ()
+{
+	print_out (STRL ("<Generator on:"));
+	GTOR.as_func->codeobj->print ();
+	print_out (STRL (">:"));
+}
+
+void PyGeneratorObj.print ()
+{
+	print_out (STRL ("<Active Generator instance:"), (void*)this, ">");
+}
+
+static int PyCodeObj.Addr2Line (int addrq)
+{
+	// The lnotab is compressed to one common big string + offsets per code object
+	int size = (lno_len == -1 ? lnotab.as_string->len : lno_len) / 2;
+	byte *p = (byte*) lnotab.as_string->str + lno_offset;
+
+	int line = firstlineno, addr = 0;
+
+	while (--size >= 0) {
+		addr += *p++;
+		if (addr > addrq)
+			break;
+		line += *p++;
+	}
+
+	return line;
+}
+
+__object__ *PyCodeObj.LineInfo (PCtype PC)
+{
+	char tmp [500];
+	_LineInfo (PC, tmp);
+	return new StringObj (tmp);
+}
+
+static int PyCodeObj._LineInfo (PCtype PC, char tmp[])
+{
+	if (!this) {
+		return sprintf (tmp, "No file/line");
+	}
+
+	if (PC && StringObj.isinstance (filename.o)) {
+		return sprintf (tmp, "%s:%i", filename.as_string->str,
+#ifdef	DIRECT_THREADING
+			 Addr2Line (PC - lcode));
+#else
+			 Addr2Line (PC - (byte*) code.as_string->str);
+#endif
+	}
+	return sprintf (tmp, "No file/line");
+}
+
+#ifdef DIRECT_THREADING
+#define vmPC(X) X->WPC
+#else
+#define vmPC(X) X->bcd
+#endif
+
+extern void *boot1, *boot2, *pree;
+extern void flushPC ();
+
+void print_whereami (vm_context *vv)
+{
+	/* XXX: catch preempt_ctx and connect to caller */
+	flushPC ();
+	pprint ("Traceback (most recent call first)");
+	char tmp [500];
+	for (; vv != boot1; vv = vv->caller) {
+		if (vv == pree) {
+			pprint ("  ** PREEMPTION **");
+			break;
+		}
+		vv->get_code ()->_LineInfo (vmPC (vv), tmp);
+		pprint ("  File:", tmp,
+			"in", vv->FUNC.as_func->codeobj.as_code->name.o, "()");
+	}
+}
+
+__object__ *traceback_str (vm_context *vv, int lvl)
+{
+static	vm_context *last_ctx;
+static	PCtype last_PC;
+static	REFPTR last_tb;
+
+	if (lvl == 3) {
+		if (vv == last_ctx && vmPC (vv) == last_PC)
+			return last_tb.o;
+	} else {
+		if (vmPC (vv) == last_PC)
+			return last_tb.o;
+	}
+
+	last_ctx = vv;
+	last_PC = vmPC (vv);
+
+	int i, j, l, k;
+	REFPTR R;
+	char *mm [100], tmp [4000], lno [500];
+	flushPC ();
+	for (i = l = 0; vv != boot1 && i < 100; vv = vv->caller, i++) {
+		if (vv == pree)
+			break;
+		vv->get_code ()->_LineInfo (vmPC (vv), lno);
+		j = sprintf (tmp, "File: %s in %s()\n",
+			     lno,
+			     vv->get_code ()->name.as_string->str);
+		mm [i] = alloca (j + 1);
+		strcpy (mm [i], tmp);
+		l += j;
+	}
+
+	char *msg = seg_alloc (l + 1);
+	for (j = l = 0; j < i; j++) {
+		k = strlen (mm [j]);
+		memcpy (msg + l, mm [j], k);
+		l += k;
+	}
+	msg [l] = 0;
+	last_tb = new StringObj allocated (msg, l);
+	return last_tb.o;
+}
+
+extern const void *UNBOUND;
+
+__object__ *PyFuncObj.FastToLocals (vm_context *vm)
+{
+	/* XXX: what about the freevars? */
+	/* XXX: don't include unbound locals */
+	Tuplen *vn = codeobj.as_code->varnames.as_tuplen;
+	REFPTR D = new DictObj;
+
+	for (int i = 0; i < vn->len; i++)
+		if (vm->fastlocals [i].o != UNBOUND)
+			D.as_dict->xsetitem (vn->__xgetitem__ (i), vm->fastlocals [i].o);
+
+	return D.Dpreserve ();
+}
+
+/***************************constructors********************************/
+
+BuiltinCallableBase.BuiltinCallableBase (const char *n, const char *d)
+{
+	__permanent__.ctor ();
+	name.ctor (new StringObj (n));
+}
+
+void BuiltinCallableBase.nc (__object__*n)
+{
+	__permanent__.ctor ();
+	name.ctor (n);
+}
+
+void FuncWrapperObj_noarg.nc (void *F, __object__ *n)
+{
+	f = F;
+	BuiltinCallableBase.nc (n);
+}
+
+FuncWrapperObj_noarg.FuncWrapperObj_noarg (no_arg_func F, const char *n)
+{
+	f = F;
+	BuiltinCallableBase.ctor (n);
+}
+
+void FuncWrapperObj_fargc.nc (int argc, void *F, __object__ *n)
+{
+	argcount = argc;
+	f = F;
+	BuiltinCallableBase.nc (n);
+}
+
+FuncWrapperObj_fargc.FuncWrapperObj_fargc (int argc, fixed_arg_func F, const char *n)
+{
+	argcount = argc;
+	f = F;
+	BuiltinCallableBase.ctor (n);
+}
+
+void FuncWrapperObj_vargc.nc (int mina, int maxa, void *F, __object__ *n)
+{
+	minarg = mina;
+	maxarg = maxa;
+	f = F;
+	BuiltinCallableBase.nc (n);
+}
+
+FuncWrapperObj_vargc.FuncWrapperObj_vargc (int mina, int maxa, var_arg_func F, const char *n)
+{
+	minarg = mina;
+	maxarg = maxa;
+	f = F;
+	BuiltinCallableBase.ctor (n);
+}
+
+void FuncWrapperObj_iargc.nc (int mina, void *F, __object__ *n)
+{
+	minarg = mina;
+	f = F;
+	BuiltinCallableBase.nc (n);
+}
+
+FuncWrapperObj_iargc.FuncWrapperObj_iargc (int mina, var_arg_func F, const char *n)
+{
+	minarg = mina;
+	f = F;
+	BuiltinCallableBase.ctor (n);
+}
+
+extern char **Program_argv, *Program_name;
+extern int Program_argc;
+extern REFPTR modpath;
+extern __object__ *import___builtins__ ();
+
+__object__ *_import_builtins ()
+{
+	modpath = new ListObj ();
+	modpath.as_list->GC_ROOT ();
+	modpath.as_list->append (new StringObj ("./"));
+	modpath.as_list->append (new StringObj (PYVM_HOME "Lib/"));
+	modpath.as_list->append (new StringObj (PYVM_HOME "Lib/sandbox/"));
+#ifdef	PYTHON_PATH
+	modpath.as_list->append (new StringObj (PYTHON_PATH));
+	modpath.as_list->append (new StringObj (PYTHON_PATH "lib-tk/"));
+	modpath.as_list->append (new StringObj (PYTHON_PATH "site-packages/"));
+#endif
+	return import___builtins__ ();
+}
+
+void import_hardcoded (REFPTR sys_modules)
+{
+	sys_modules.as_dict->xsetitem (Interns.__builtin__, __builtins__.o);
+	/*
+	 * These are all the modules which are hardcoded in the pyvm binary.
+	 * import them all now and don't worry about lookups later.
+	 */
+#define DO_BUILTIN(X) extern __object__ *import_ ## X ();
+#include "hmodules.h"
+#undef DO_BUILTIN
+static const	struct {
+		char *name;
+		__object__ *(*F)();
+	} bltins [] = {
+#define DO_BUILTIN(X) {#X, import_ ## X},
+#include "hmodules.h"
+#undef DO_BUILTIN
+	};
+
+	for (int i = 0; i < sizeof bltins / sizeof bltins [0]; i++)
+		sys_modules.as_dict->xsetitem (new_interned (bltins [i].name), bltins [i].F ());
+}
+
+void set_sys_argv (int _argc, char **_argv)
+{
+	Program_name = _argv [0];
+	Program_argc = _argc - 1;
+	Program_argv = _argv + 1;
+}
+
+//****************************************************************************
+//
+//	Import Guard
+//
+//	this is done by wrapping IMPORT_NAME into the bytecode assembly
+//	displayed below which uses the reentrant import lock in bytecode.
+//
+//****************************************************************************
+
+extern PyFuncObj *lockedImport;
+extern REFPTR devnull;
+
+void IMPORT_GUARDED (__object__ *o)
+{
+	REFPTR arg = o;
+	(*lockedImport).call (devnull, &arg - 1, 1);
+}
+
+void IMPORT_GUARDED_FROM (__object__ *o, __object__ *m)
+{
+	ModuleObj *M = ModuleObj.cast (o);
+	if (M->mtype != MTYPE_INIT)
+		RaiseImportError (m);
+	StringObj *S1 = M->module_name.as_string;
+	StringObj *S2 = StringObj.cast (m);
+	char tmp [S1->len + S2->len + 2];
+	sprintf (tmp, "%s.%s", S1->str, S2->str);
+	REFPTR R = new StringObj (tmp);
+	IMPORT_GUARDED (R.o);
+}
+
+//#####################################################################
+
+__object__ *donothing_v (REFPTR [], int) { return &None; }
+__object__ *donothing_f (REFPTR []) { return &None; }
+__object__ *donothing_F;
+
+/******************************************************************************
+
+******************************************************************************/
+
+AttrPair.AttrPair (const char *n, __object__ *o)
+{
+	idx = new_interned (n);
+	obj = o;
+}
+
+AttrPair.AttrPair (const char *n, const char *o)
+{
+	idx = new_interned (n);
+	obj = new StringObj (o);
+}
+
+AttrPair.AttrPair (const char *n, int o)
+{
+	idx = new_interned (n);
+	obj = new IntObj (o);
+}
+
+static bool StringObj.endswith (const char *s)
+{
+	return len > strlen (s) && !strcmp (str +len- strlen (s), s);
+}
+
+ModuleObj.ModuleObj (__object__ *p, __object__ *nm)
+{
+	NamespaceObj.ctor ();
+	pyc_path.ctor (p);
+	module_name.ctor (nm);
+	if (StringObj.isinstance (p) && StringObj.cast (p)->endswith ("/__init__.pyc"))
+		mtype = MTYPE_INIT;
+	else if (StringObj.isinstance (nm) && strchr (StringObj.cast (nm)->str, '.'))
+		mtype = MTYPE_SUBM;
+	else mtype = MTYPE_TOPLEV;
+}
+
+void ModuleObj.print ()
+{
+	print_out ("<Module:", pyc_path.o, " ", module_name.o, " ", mtype, ">");
+}
+
+void ModuleObj.AddAttributes (AttrPair arg [...])
+{
+	__dict__.as_dict->AddItems (argv, argc);
+}
+
+void ModuleObj.AddFuncs (const bltinfunc *F)
+{
+	int i;
+	for (i = 0; F [i].name; i++) {
+		__object__ *name = new_interned (F [i].name);
+		__object__ *obj;
+		if (!F [i].fptr)
+			obj = new BuiltinCallableBase nc (name);
+		else if (MINARGC (F [i]) == MAXARGC (F [i]))
+			if (!MINARGC (F [i]))
+				obj = new FuncWrapperObj_noarg nc (F[i].fptr, name);
+			else	obj = new FuncWrapperObj_fargc nc (MINARGC (F[i]), F[i].fptr, name);
+		else if (MAXARGC (F [i]) != INFARGC)
+			obj = new FuncWrapperObj_vargc nc (MINARGC (F[i]), MAXARGC (F[i]),
+					 F[i].fptr, name);
+		else obj = new FuncWrapperObj_iargc nc (MINARGC (F[i]), F[i].fptr, name);
+		setattr (name, obj);
+	}
+}
+
+void ModuleObj.BltinModule (const char *name, const bltinfunc *F, const char **A, const varval *V)
+{
+	__object__ *nm = new_interned (name);
+	NamespaceObj.ctor ();
+	pyc_path.ctor ();
+	module_name.ctor (nm);
+	mtype = MTYPE_TOPLEV;
+	GC_ROOT ();
+	if (F) AddFuncs (F);
+	if (A) AddAlias (A);
+	if (V) AddValues (V);
+	setattr (Interns.__module__, nm);
+}
+
+static void ModuleObj.AddAlias (const char **a)
+{
+	for (; a [0]; a += 2)
+		setattr (new_interned (a [0]), getattr (new_interned (a [1])));
+}
+
+static void ModuleObj.AddValues (const varval *V)
+{
+	int i;
+	for (i = 0; V [i].name; i++)
+		setattr (new_interned (V [i].name), (__object__*) V [i].val);
+}
+
+void ModuleObj.ictor (AttrPair arg [...])
+{
+	ctor ();
+	AddAttributes (argv, argc);
+}
+
+void DictObj.AddItems (AttrPair arg [...])
+{
+	for (int i = 0; i < argc; i++)
+		xsetitem (argv [i].idx, argv [i].obj);
+}
+
+__object__ *extendFunc (const char *s, int argc, fixed_arg_func F)
+{
+	return new FuncWrapperObj_fargc (argc, F, s);
+}
+
+__object__ *extendFunc2 (const char *s, int argc, int argc2, var_arg_func F)
+{
+	return new FuncWrapperObj_vargc (argc, argc2, F, s);
+}
+
+static __object__ *EFunc (const char *s, int argc, int argc2, void *F)
+{
+	if (!argc && !argc2)
+		return new FuncWrapperObj_noarg (F, s);
+	if (argc == argc2)
+		return extendFunc (s, argc, F);
+	return argc2 != -1 ?
+		 (__object__*) new FuncWrapperObj_vargc (argc, argc2, F, s) :
+		 (__object__*) new FuncWrapperObj_iargc (argc, F, s);
+}
+
+DictObj NOMETHODS __noinit ();
+
+DictObj.DictObj (const method_attribute *M)
+{
+	/* If the dictionary resizes it will mess the order of elements.
+	 * Make it 32 so we first insert the most common elements which will
+	 * then be accessed with the first hit
+	 */
+	int i;
+	__container__.ctor ();
+	GC_ROOT ();
+	inf ();
+	for (i = 0; M [i].name; i++);
+
+	if (i > 6) (*(dictionaryStrAlways*) &D).ctor (32);
+	else (*(dictionaryStrAlways*) &D).ctor ();
+
+	for (i = 0; M [i].name; i++)
+		xsetitem_str (new_interned (M [i].name),
+			 EFunc (M [i].fname, MINARGC (M [i]), MAXARGC (M [i]), M [i].callable));
+}
+
+void DynClassObj.set_bases (__object__ *o)
+{
+	TupleObj *t = TupleObj.checkedcast (o);
+	__object__ *b;
+
+	for (int i = 0; i < t->len; i++)
+		if (DynClassObj.typecheck (b = t->__xgetitem__ (i))) {
+			if (isparentclass (b))
+				RaiseTypeError ("circular inheritance");
+		} else
+			RaiseNotImplemented ("can't subclass builtins");
+	__bases__ = o;
+}
+
+void DynClassObj.validate_slots ()
+{
+	__slots__.ctor ();
+	if (!__dict__.as_dict->contains (Interns.__slots__))
+		return;
+	__object__ *s = __dict__.as_dict->xgetitem (Interns.__slots__);
+	if (s == &None)
+		return;
+	TupleObj *T = TupleObj.checkedcast (s);
+	// possibly modify tuple in-place. ok probably
+	for (int i = 0; i < T->len; i++)
+		T->data [i] = intern_string (T->data [i].check_string ());
+	__slots__.ctor (s);
+}
+
+extern __object__ *listfromiter (__object__*);
+
+void unpack_other (__object__ *o, REFPTR S[], int len)
+{
+	/* this is called from boot_pyvm.  It's possible that 'o' is
+	 * only referenced on the stack and thus putting stuff into 'S'
+	 * will decref and release 'o'.  We want to avoid that.
+	 */
+	if (o->vf_flags & VF_UNPACK_PROXY) {
+		return o->type.meth->unpacker (o, S, len);
+	}
+	REFPTR L = o->iter ();
+	if (iteratorBase.isinstance (L.o)) {
+		iteratorBase *I = iteratorBase.cast (L.o);
+		if_unlikely (L->len () != len)
+			RaiseValueError_up ();
+		for (int i = 0; i < len; i++)
+			S [i] = I->xnext ();
+	} else {
+		L = listfromiter (L.o);
+		if_unlikely (L.as_list->len != len)
+			RaiseValueError_up ();
+		L.as_list->unpack (S);
+	}
+}
+
+__object__ *BUILD_CLASS_func (REFPTR stk[])
+{
+	/* convention. If class inherits from None, it is a namespace */
+	Tuplen *t = stk [1].as_tuplen;
+	if (t->len == 1 && t->__xgetitem__ (0) == &None)
+		return new NamespaceObj (stk [2].o);
+	return new DynClassObj (stk [2].o, stk [1].o, stk [0].o);
+}
+
+NamedListObj.NamedListObj (__object__ *slots, __object__ *values)
+{
+	__container__.ctor ();
+	__class__.ctor ();
+	__slots__.ctor (slots);
+	ListObj *V = ListObj.cast (values);
+	data = seg_malloc (V->len * sizeof *data);
+	for (int i = 0; i < V->len; i++)
+		data [i].ctor (V->data [i].o);
+}
+
+NamedListObj.NamedListObj (__object__ *slots, __object__ *values, __object__ *cls)
+{
+	ctor (slots, values);
+	__class__.ctor (cls);
+}
+
+/* cleaner of weakref dictionaries that are registered into
+ * __builtins__.__weakrefs__ list.  Called before gc.
+ */
+extern REFPTR WeakRefList;
+
+void gc_weakrefs ()
+{
+	if (WeakRefList.o != &None) {
+		ListObj *L = WeakRefList.as_list;
+		int i;
+
+		for (i = 0; i < L->len; i++) {
+			__object__ *o = L->__xgetitem__ (i);
+			if (DictObj.isinstance (o))
+				DictObj.cast (o)->D.clean_weak_vals (1);
+		}
+	}
+}
+
+/****************************************************************************
+ Segmentation Fault
+****************************************************************************/
+
+static int segv_fatal = 0;
+extern void (*onsegv) ();
+
+void sigpipe (int)
+{
+	// SIGPIPE happens on UNIX domain socket if the one peer has closed
+	// the connection, and since it seems harmless we ignore it.
+	pprint ("SIGPIPE");
+whereami ();
+	return;
+//DoSched |= SCHED_KILL;
+//RaiseSystemExit (&None);
+}
+
+void segv (int)
+{
+	fprintf (stderr, "************* SEGMENTATION FAULT *************\n");
+	if (segv_fatal)
+		exit (1);
+	segv_fatal = 1;
+
+	// registered onsegv handlers (basically restore linuxfb)
+	if (onsegv)
+		onsegv ();
+
+	fprintf (stderr, "Last traceback (possibly incorrect):\n");
+	whereami ();
+
+	// try to exit with RunTimeError. Generally our program state should
+	// be considered fsckd after a segmentation fault so we are not sure if
+	// this is a good idea.
+	// if we are lucky we'll also get a traceback about where the segfault
+	// happened. If we are unlucky we'll get weird error messages and
+	// completely undefined behaviour.
+	// in case we need cleanups (and especially to shutdown graphics and
+	// restore the terminal to a working state) this is good.
+	RaiseRuntimeError ("segmentation fault :(");
+}
+
+//
+// SIGINT.
+//  release thread.__klock__
+//
+
+extern void klock_up ();
+
+void sigint (int)
+{
+	if (DoSched & SCHED_KILL) {
+		fprintf (stderr, "*** The vm is in a state that SCHED_KILL is bypassed\n");
+		fprintf (stderr, "*** Will bring down the vm with SystemExit from the interrupt handler\n");
+		fprintf (stderr, "*** This may result in a segfault!\n");
+		DoSched &= ~SCHED_KILL;
+		RaiseSystemExit (&None);
+	}
+	klock_up ();
+}
+
+/* This is called by the memory allocator every time it requests
+ * more memory from the operating system.  This is *rare* enough.
+ * We can use this function to do some maintanance or even stop
+ * pyvm if a certain memory limit is exceeded.  Usually, pyvm
+ * takes no more than 6MB even for complicated tasks.  But if
+ * somebody tries to read a 10GB file, we can catch it here.
+ *
+ * Additionaly, this can be used to trigger garbage collection,
+ * (the number is always increasing)
+ */
+unsigned int allocated_memory;
+
+void pyvm_memory_manager (unsigned int n)
+{
+	allocated_memory = n;
+#ifdef	REPORT_BRK
+	fprintf (stderr, "MEM %.2f\n", n/(1024*1024.0));
+#endif
+}
+
+///////////////////////////// initializations //////////////////////////////
+
+static slowcold class InitGlobaldict : InitObj {
+	int priority = INIT_GLOBALDICT;
+	void todo ()
+	{
+		/* XXXX: maybe this should be an inter-string dict */
+		DictObj *globals = new DictObj;
+		globals->GC_ROOT ();
+		globalocals = globals;
+		__builtins__ = _import_builtins ();
+		globals->xsetitem (Interns.__builtins__, __builtins__.o);
+		globals->xsetitem (Interns.__name__, Interns.BIOS);
+		globals->xsetitem (Interns.__doc__, &None);
+	}
+};
+
+static slowcold class InitObjMeth : InitObj {
+	int priority = INIT_ATTR;
+	void todo ()
+	{
+		NOMETHODS.ctor (op_methods);
+	}
+};
+
+static slowcold class InitInterns : InitObj {
+	int priority = INIT_INTERNS1;
+	void todo ()
+	{
+#define MKINTERN(X) {&Interns.X, #X},
+		static const struct {
+			StringObj **s;
+			char *str;
+		} interntbl [] = {
+			MKINTERN(__init__)
+			MKINTERN(__dict__)
+			MKINTERN(im_class)
+			MKINTERN(im_self)
+			MKINTERN(im_func)
+			MKINTERN(__builtins__)
+			MKINTERN(__name__)
+			MKINTERN(__iname__)
+			MKINTERN(SystemExit)
+			MKINTERN(__iter__)
+			MKINTERN(__file__)
+			MKINTERN(None)
+			MKINTERN(exitfunc)
+			MKINTERN(sys)
+			MKINTERN(globals)
+			MKINTERN(__all__)
+			MKINTERN(acquire)
+			MKINTERN(release)
+			MKINTERN(__main__)
+			MKINTERN(__doc__)
+			MKINTERN(next)
+			MKINTERN(__getitem__)
+			MKINTERN(__setitem__)
+			MKINTERN(__cmp__)
+			MKINTERN(__hash__)
+			MKINTERN(__delitem__)
+			MKINTERN(__del__)
+			MKINTERN(traceback)
+			MKINTERN(format_exc)
+			MKINTERN(__class__)
+			MKINTERN(__nonzero__)
+			MKINTERN(__call__)
+			MKINTERN(__getattr__)
+			MKINTERN(__setattr__)
+			MKINTERN(__bases__)
+			MKINTERN(__delattr__)
+			MKINTERN(__len__)
+			MKINTERN(__str__)
+			MKINTERN(__mul__)
+			MKINTERN(__add__)
+			MKINTERN(__mod__)
+			MKINTERN(__contains__)
+			MKINTERN(__setslice__)
+			MKINTERN(__getslice__)
+			MKINTERN(__delslice__)
+			MKINTERN(__iadd__)
+			MKINTERN(__hasattr__)
+			MKINTERN(__and__)
+			MKINTERN(__lsh__)
+			MKINTERN(__rsh__)
+			MKINTERN(__xor__)
+			MKINTERN(__or__)
+			MKINTERN(__sub__)
+			MKINTERN(__repr__)
+			MKINTERN(__module__)
+			MKINTERN(x)
+			MKINTERN(y)
+			MKINTERN(i)
+			MKINTERN(j)
+			MKINTERN(pyc)
+			MKINTERN(compile)
+			MKINTERN(compileFile)
+			MKINTERN(eval_ast)
+			MKINTERN(func_code)
+			MKINTERN(co_filename)
+			MKINTERN(exec)
+			MKINTERN(eval)
+			MKINTERN(__eq__)
+			MKINTERN(compileFile_internal)
+			MKINTERN(type)
+			MKINTERN(str)
+			MKINTERN(unyield)
+			MKINTERN(func_name)
+			MKINTERN(__builtin__)
+			MKINTERN(string)
+			MKINTERN(co_code)
+			MKINTERN(co_lnotab)
+			MKINTERN(f_locals)
+			MKINTERN(f_globals)
+			MKINTERN(write)	
+			MKINTERN(keys)
+			MKINTERN(func_globals)
+			MKINTERN(line)
+			MKINTERN(True)
+			MKINTERN(False)
+			MKINTERN(error)
+			MKINTERN(co_consts)
+			MKINTERN(__div__)
+			MKINTERN(__not__)
+			MKINTERN(z)
+			MKINTERN(__sigbit__)
+			MKINTERN(__slots__)
+			MKINTERN(BIOS)
+			MKINTERN(lineno)
+		};
+		for (int i = 0; i < sizeof interntbl / sizeof interntbl [0]; i++)
+			*interntbl [i].s = new_interned (interntbl [i].str);
+
+		Interns._stdout = new_interned ("stdout", 6);
+		donothing_F = new FuncWrapperObj_iargc (0, donothing_v, "nutha");
+#define MSG(X,Y) X = new StringObj (Y); X->inf ()
+		MSG (MSG_LIOOR, "list index out of range");
+		MSG (MSG_LINIL, "list.index (x): x not in list");
+		MSG (MSG_SSNF, "substring not found");
+		MSG (MSG_TMVTU, "too many/few values to unpack");
+		MSG (MSG_TFA, "too few arguments to function");
+		MSG (MSG_TMA, "too many arguments to function");
+		MSG (MSG_UNBOUND, "unbound local object used!");
+	}
+};
+
+InitObj *first;
+
+void InitObj.todo ()
+{ }
+
+slowcold void initialize ()
+{
+	int i, n, j;
+	InitObj *I;
+	for (n = 0, I = first; I; I = I->next)
+		++n;
+
+	InitObj *A [n];
+	for (i = 0, I = first; I; I = I->next)
+		A [i++] = I;
+
+	/* crappula-sort */
+	for (i = 0; i < n; i++)
+		for (j = i + 1; j < n; j++)
+			if (A [i]->priority > A [j]->priority) {
+				InitObj *x = A [i]; A [i] = A [j]; A [j] = x;
+			}
+
+	for (i = 0; i < n; i++)
+		A [i]->todo ();
+}

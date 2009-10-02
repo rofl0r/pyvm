@@ -1,0 +1,393 @@
+#
+# HTML lexer
+#
+# This module provides three generators
+# Level 1: lex0 (txt)
+#	Implemented in C, from module.html.c+
+#	yields strings
+# Level 2: lex1 (txt)
+#	uses lex0() and yields tokenized HTML
+#	'data' is a token. tags are tokenized as "tagname", and
+#	a tuple of attribute-value pairs.
+# Level 3: lex2 (txt)
+#	uses lex1() and yields corrected HTML
+#	where the tags are properly nested.
+#
+# HTML is not a strict format. The browser should try to render
+# erroneous documents (instead of raising a syntax error and abort).
+# Many sites that are created automatically from web frameworks
+# are always correct.
+#
+# On the other hand, some sites (usually XXX) use completely
+# broken HTML in order to confuse robots. So the lexer has to
+# be very robust to work with broken pages too.
+#
+
+__autosem__
+from fonts import unicode
+__bind__ = ["Eutf"]
+
+############################# &references; ################################
+
+# All charsets except "utf-8" are transcoded to utf-8. The reason is that
+# a page may use character references that are outside its codepage.
+# Because we cannot know that in advance, all codepages are converted to
+# utf-8 anyway.
+# "ascii" is the same as "utf-8". It's not supposed to contain any characters
+# above 127 and this makes it valid utf-8 text. There is a definition of
+# "us-ascii" for >128 somewhere....
+
+# Entities for utf
+# Load named character references from NCR.txt
+# (XXX: according to the std, *some* references may not include the trailing ';' and still be
+# accepted. workaround for common web bug or ??)
+
+Eutf = {}
+int2utf8 = unicode.int2utf8
+for (l in open (HOME + "Lib/wwwlib/data/NCR.txt")) {
+	s, v = l.split ()
+	Eutf [s] = int2utf8 (int (v, 16))
+}
+
+def replace_utf8 (r)
+{
+	r = r.group (1)
+	if (r [0] == '#') {
+		n = r [1] in 'Xx' ? int (r [2:], 16) : int (r [1:])
+		try return unicode.int2utf8 (n)
+	} else try return Eutf [r]
+	# emit ref again
+	return '&' + r + ';'
+}
+
+refsub  = @re.replace (r'&([a-zA-Z]\w*|#(?:[xX][A-Fa-f0-9]*|\d+));', replace_utf8)
+
+def valid_charset (charset)
+	return charset in unicode.charsets or charset in ("utf-8", "latin1", "us-ascii")
+
+###########################################################################
+
+# inline elements
+FONTSTYLE = { 'tt', 'i', 'b', 'big', 'small', 's', 'u', 'strike' };
+PHRASE = { 'em', 'strong', 'dfn', 'code', 'samp', 'kbd', 'var', 'cite', 'abbr', 'acronym' };
+SPECIAL = { 'a', 'img', 'object', 'br', 'script', 'map', 'q', 'sub',
+	    'sup', 'span', 'bdo', 'font', 'basefont' };
+FORMCTRL = { 'input', 'select', 'textarea', 'label', 'button', 'legend' };
+INLINE = FONTSTYLE | PHRASE | SPECIAL | FORMCTRL;
+# block level elements
+HEADING = { 'h1', 'h2', 'h3', 'h4', 'h5', 'h6' };
+LIST = { 'ul', 'ol', 'dir', 'menu' };
+BLOCKLEV = HEADING | LIST |
+	 { 'dl', 'div', 'noscript', 'blockquote', 'form', 'hr', 'table', 'pre',
+	   'fieldset', 'address', 'noframes', 'isindex', 'center' };
+# close tag omitted and no content
+OEMPTY = { 'base', 'link', 'meta', 'col', 'param', 'area', 'hr', 'input', 'br', 'img', 'nobr',
+	# The following CDATA tags are also converted to OEMPTY tags. The CDATA text is
+	# added to attribute ">"
+	   'title', 'textarea', 'script', 'style', 'option' };
+#
+PCLOSE = { 'address', 'blockquote', 'center', 'dir', 'div', 'dl', 'fieldset', 'listing', 'menu',
+	   'ol', 'p', 'ul', 'pre', 'form', 'li', 'dd', 'dt', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+	   'table' };
+# known tag/attribute strings (for the interner)
+ATTRS = { 'name', 'id', 'class', 'width', 'size', 'align', 'valign', 'href', 'height',
+	  "src", "type", "style", "color", "bgcolor", "action", "value", "rel", "onload",
+	  "alt", "colspan", "rowspan" }
+KEYS = INLINE | BLOCKLEV | ATTRS | { 'html', 'head', 'body', 'title', 'p', 'meta', 'link', 'li',
+	'tr', 'td', 'th', 'tbody', 'thead', 'caption' } | PCLOSE
+
+from misc import interner, cache_generator;
+from html00 import lex0 as clex0
+lex0 = clex0
+
+# Use lex0 to determine the charset
+
+def find_content_type (txt)
+{
+	n = 0
+	for (t, s in lex0 (txt, {}))
+		if (t == "<") {
+			n += 1
+			if (n > 20)
+				break
+
+			tag, att = s
+			if (tag in ("body", "a"))
+				break
+			if (tag != "meta")
+				continue
+
+			d = {}
+			k = False
+			for (v in att)
+				if (k is False) k = v
+				else {
+					d [k] = v
+					k = False
+				}
+
+			if (d.get ("http-equiv", "").lower () == "content-type")
+				return d.get ("content", "text/html").lower ()
+		} else if (t == "/") {
+			if (s == "head") break
+		}
+	return "text/html"
+}
+
+def norefsub (s)
+	return s
+
+KDICT = {k:k for (k in KEYS)}
+
+# lex1 replaces entity references and interns keywords
+# may yield:
+#	"", text
+#	"<", open tag, attributes
+#	"/", close tag
+#	"@", tag, attributes for one of the no-content OEMPTY tags
+
+gen lex1 (txt, charset="", ud=None)
+{
+	if (ud) {
+		uniqd = ud.uta.update (KDICT)
+		uniqv = ud.uv
+	} else {
+		uniqd = dict (KDICT)
+		uniqv = interner ()
+	}
+	oempty = OEMPTY
+
+	T = None
+	if (charset not in ("ascii", "us-ascii", "utf-8", "", False))
+		try {
+			T = unicode.transcoder (charset)
+			print "Transcoding from %s to utf-8"% charset
+		} except
+			print "Transcoding to utf-8 impossible:", charset
+
+	entrepl = charset is not False ? refsub : norefsub
+
+	if (!T) {
+		for (t, s in lex0 (txt, uniqd))
+			if (!t) {
+				yield t, s
+			} else if (t is '/') {
+				if (s not in oempty)
+					yield '/', s
+			} else if (t is '<') {
+				tag, att = s
+				p = False
+				for (v in att)
+					if (p is False) p = v
+					else {
+						if (v) {
+							if (p is "class")
+								v = v.strip ()
+							if ("&" in v)
+								v = entrepl (v)
+							# do some interning of attribute values.
+							# that is more useful for classes, ids and
+							# labels which may exist many times.
+							if (len (v) < 18)
+								v = uniqv (v)
+							__SET_ITER__ (v)
+						}
+						p = False
+					}
+
+				if (tag in oempty)
+					yield '@', (tag, _list2tuple (att))
+				else yield '<', (tag, _list2tuple (att))
+			} else if (t is "&") {
+				yield "", entrepl (s)
+			}
+	} else {
+		# same thing transcoded to utf-8
+		for (t, s in lex0 (txt, uniqd))
+			if (!t) {
+				yield t, T (s)
+			} else if (t is '/') {
+				if (s not in oempty)
+					yield '/', s
+			} else if (t is '<') {
+				tag, att = s
+				p = False
+				for (v in att)
+					if (p is False) p = v
+					else {
+						if (v) {
+							v = T (v)
+							if (p is "class")
+								v = v.strip ()
+							if ("&" in v)
+								v = entrepl (v)
+							# do some interning of attribute values.
+							# that is more useful for classes, ids and
+							# labels which may exist many times.
+							if (len (v) < 18)
+								v = uniqv (v)
+							__SET_ITER__ (v)
+						}
+						p = False
+					}
+
+				if (tag in oempty)
+					yield '@', (tag, _list2tuple (att))
+				else yield '<', (tag, _list2tuple (att))
+			} else if (t is "&") {
+				yield "", entrepl (T (s))
+			}
+	}
+}
+
+# lex2 corrects the proper opening/closing
+# of tags.
+# ((Should be done with a DFA once we know the exact rules))
+
+gen close_until (stack, until, stop)
+try {
+	# Keep closing tags from the stack until we reach the 'until' or 'stop'
+	# elements. In the case of the 'until' element, also close that too.
+	if (stack [-1] == until) {
+		stack.pop ();
+		yield "/","";
+	} else if (stack [-1] not in stop) {
+		stack.pop ();
+		yield "/","";
+		while (stack and stack [-1] not in stop) {
+			yield "/","";
+			if (stack.pop () == until)
+				break;
+		}
+	}
+}
+
+gen lex2 (txt, charset="", ud=None, top_box=None)
+{
+	tagstack = []
+	blocklev = PCLOSE
+	delimit = { 'li', 'dd', 'dt', 'td' }; # 'tr' is special
+	pop = tagstack.pop
+	structs = { "ul", "ol", "dl", "table", "body", "html" }
+	structstack = []
+	hh = { "h1", "h2", "h3", "h4", "h5", "h6" }
+	closers = {
+		"li": ("li", {"ul", "ol", "body", "html"}),
+		"dd": ("dd", {"dl", "body", "html"}),
+		"dt": ("dt", {"dl", "body", "html"}),
+		"tr": ("tr", {"table", "thead", "tbody", "tfoot", "body", "html"}),
+		"td": ("td", {"table", "tr", "thead", "tbody", "tfoot", "body", "html"}),
+		"th": ("th", {"table", "tr", "thead", "tbody", "tfoot", "body", "html"}),
+		"thead": ("", { "table", "body", "html" }),
+		"tbody": ("", { "table", "body", "html" }),
+		"tfoot": ("", { "table", "body", "html" }),
+#		"body": ("", {"html",}),
+	}
+
+	for (t, s in lex1 (txt, charset, ud))
+		if (t is '<') {
+			t = s [0];
+			# opening <a> closes any already open <a>. However, it is
+			# possible that an <A NAME> will not have a close tag and
+			# it will include an <A HREF> in there!  OTOH, nested HREFs
+			# are broken by most browsers.
+
+			if (t is 'a') {
+				if (tagstack and tagstack [-1] is 'a') {
+					yield '/','';
+					pop ();
+				}
+			} else {
+				# elements that close <p>. should reopen in scope.
+				if (t in blocklev and 'p' in tagstack) {
+					do yield '/','';
+					while (pop () != 'p');
+				}
+				# delimiters (<li>, <dd>, etc), close previous delimiter
+				if (t in closers) {
+					for (x in close_until (tagstack, *closers [t]))
+						yield x;
+				} else if (t [0] == "h" and t in hh) {
+					if (tagstack and tagstack [-1] in hh) {
+						yield '/',''
+						pop ()
+					}
+				}
+			}
+
+			# fixup stray td nodes
+			if (t in ("td", "th") and tagstack and tagstack [-1] != "tr") {
+				tagstack.append ("tr");
+				yield "<", ("tr", ());
+			}
+
+			tagstack.append (t);
+			if (t in structs)
+				structstack.append (t);
+			yield '<', s;
+		} else if (t is '/') {
+			# semantically, forms do not obey the box model. iow, a form can be
+			# completely misnested (open inside one table and close inside another).
+			# visually, the form closes within the first table, but semantically
+			# any input nodes work! So, "forms are open until explicitly closed"
+			# and this appears to be another innovation allowed by mozilla in
+			# order to do good and confuse crawler spam bots.
+			if (s is "form" and top_box)
+				top_box.close_form ()
+
+			if (!tagstack) continue;
+			if (s in structs) {
+				if (s in structstack)
+					structstack.pop ();
+				if (s in tagstack) {
+					while (pop () != s)
+						yield '/','';
+					yield '/','';
+				}
+			} else if (s in delimit) {
+			} else if (s == tagstack [-1]) {
+				pop ();
+				yield "/", "";
+			} else if (s in tagstack) {
+				i = -2;
+				while ((t = tagstack [i]) != s) {
+					if (t in {"table", "body", "html"})
+						break
+					i -= 1
+				} else {
+					i = -i
+					tagstack.pops (i);
+					for (i in *i)
+						yield "/", "";
+				}
+			}
+		}
+		else yield t, s;
+
+	# todo: an opening H1-H6 closes any already open H1-H6
+
+	for (x in tagstack)
+		yield "/","";
+}
+
+#
+lex = lex2
+
+if (__name__ == __main__)
+{
+	F = lex0;
+	F = lex1;
+	F = lex2;
+#	F = lex;
+
+	for (f in sys.argv [1:]) {
+		print f;
+		O = 0;
+		for (i in F (readfile (f)))
+		{
+			if (i [0] == "<") O += 1;
+			else if (i [0] == "/") O -= 1;
+			print O, i;
+		}
+	}
+}

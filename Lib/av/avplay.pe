@@ -1,0 +1,675 @@
+##  Audio/Video player using ffmpeg backend
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# Many thanks to <http://www.dranger.com/ffmpeg/> for the helpful tutorial. 
+
+__autosem__
+
+import thread, os
+from audio.dev import AudioDev, volume, stereo2mono, stereo62mono
+from graphics import image
+from misc import fprint
+from av import libav as C
+
+### av stream.  In audio/visual media streams we get "packets" which can be
+### either graphics or sound.  In order to be able to get a specific kind of
+### data packet we have to use queues to store unwated packets of the other
+### kind for the other thread.
+
+# Note: Syncing.  The right way to sync (according to ffplay) is by using the
+# `dts` values.  The problem is that some video formats don't provide this
+# value (because they are broken. Could they also provide bogus values?)
+# So ffplay gets into some more trouble to try and figure out the proper `pts`
+# (presentation timestamp).  This player does not use the dts values.
+# All syncing happens from the `fps` (frames per second) value. It appears
+# to work for the few samples tested.  If proven insufficient, we should
+# go for the dts/pts values from the demuxer.  Two questions:
+#
+#	1) There are streams that may say that a frame should be repeated.
+#	   ffplay mentions MPEG2. We need a sample file. Maybe repeating
+#	   can be still done on the fps syncing?
+#	2) Are there streams where frames have irregular pts and the
+#	   linear fps does not suffice?
+
+class avstream
+{
+	method __init__ ($filename, mono=False)
+	{
+		$VD = _buffer (C.sizeof_av)
+		err = C.open_av ($VD, filename)
+		if (err) raise Error ("ffmpeg error %i" %err)
+		if (!C.has_video ($VD))
+			raise Error ("No video")
+
+		$vwidth    = C.vwidth ($VD)
+		$vheight   = C.vheight ($VD)
+		$dt        = C.vdelay ($VD)
+		$duration  = C.duration ($VD)
+
+		if ($has_audio = C.has_audio ($VD)) {
+			$sample_rate = C.asample_rate ($VD)
+			$channels    = C.achannels ($VD)
+
+			$monofunc = None
+			if (mono)
+				if ($channels == 2) {
+					$monofunc = stereo2mono
+					$channels = 1
+				} else if ($channels == 6) {
+					$monofunc = stereo62mono
+					$channels = 1
+				} else if ($channels > 1)
+					print "Can't convert to mono:", $channels
+			C.setwantaudio ($VD)
+			$audiobuf = _buffer_aligned (C.max_audio_frame_size, 16)
+			$aqueue = []
+		} else {
+			$aqueue = [""]
+			$audiobuf = 0
+		}
+		$vqueue = []
+		$vsem = thread.sem ()
+		$asem = thread.sem ()
+		$rlock = thread.xlock (True)
+		$fflock = thread.xlock (False)
+	}
+
+	method go (bpp, WxH=None)
+	{
+		if (WxH)
+			$owidth, $oheight = WxH
+		else $owidth, $oheight = $vwidth, $vheight
+		C.setbpp ($VD, bpp, $owidth, $oheight)
+		$vbufsize = $owidth * $oheight * bpp
+		$rid = thread.start_new ($runqueue)
+	}
+
+	killed = False
+	resync = False
+
+	method runqueue ()
+	{
+		pts = array ("d", 1)
+		audiopts = None
+		vbuf = _buffer_aligned ($vbufsize, 16)
+		$fflock.release ()
+		while (not $killed) {
+			try $fflock.acquire ()
+			except break
+
+			$rlock.acquire ()
+			while (!$aqueue or !$vqueue) {
+				r = C.next_frame ($VD, vbuf, $audiobuf, pts)
+				if (r == -2) {
+					if (!$aqueue) {
+						$aqueue.append ("")
+						$asem.up ()
+					}	
+					if (!$vqueue) {
+						$vqueue.append ("")
+						$vsem.up ()
+					}
+				} else if (r < 0) {
+					if ($resync) {
+						# after a seek the sync is lost. in this case
+						# we use the pts/dts values according to the
+						# ffmpeg tutorial. This only works for "good"
+						# av streams that provide proper [pd]ts values.
+						videopts = pts [0]
+						if (videopts < 0)
+							$resync = False
+						else if (audiopts is not None) {
+							# drop video frame until we are at
+							# the same time as the first queued
+							# audio frame
+							if (videopts < audiopts)
+								continue
+							$resync = False
+							audiopts = None
+						}
+					}
+					$vqueue.append (vbuf)
+					vbuf = _buffer ($vbufsize)
+					$vsem.up ()
+				} else {
+					if ($resync and audiopts is None)
+						audiopts = pts [0]
+					if ($monofunc)
+						$aqueue.append ($monofunc ($audiobuf [:r]))
+					else $aqueue.append ($audiobuf [:r])
+					$asem.up ()
+				}
+			}
+#print len ($aqueue), len ($vqueue)
+			$rlock.release ()
+		}
+		$aqueue.append ("")
+		$vqueue.append ("")
+		$asem.up ()
+		$vsem.up ()
+	}
+
+	method close ()
+	{
+		$killed = True
+		try thread.interrupt ($rid)
+	}
+
+	method seek (frac)
+	{
+		# runqueue idle
+		$rlock.acquire ()
+		# empty queues
+		if ($has_audio) while ($aqueue) {
+			$aqueue.pop ()
+			$asem.down ()
+		}
+		while ($vqueue) {
+			$vqueue.pop ()
+			$vsem.down ()
+		}
+		r = C.ffseek ($VD, frac) >= 0
+		$resync = True
+		$rlock.release ()
+		# runqueue
+		$fflock.release ()
+		$asem.ack ()
+		$vsem.ack ()
+		return r
+	}
+
+	method pull_audio ()
+	{
+		if (!$aqueue) $fflock.release ()
+		$asem.down ()
+		p = $aqueue.pop (0)
+		if (!$aqueue) $fflock.release ()
+		return p
+	}
+
+	method pull_video ()
+	{
+		if (!$vqueue) $fflock.release ()
+		$vsem.down ()
+		p = $vqueue.pop (0)
+		if (!$vqueue) $fflock.release ()
+		return p
+	}
+
+	method fetch_audio ()
+	{
+		$asem.down ()
+		return $aqueue.pop (0)
+	}
+
+	method __del__ ()
+		C.close_av ($VD)
+
+}
+
+##########################################################
+# Synchronizer Clock
+##########################################################
+
+class Clock
+{
+	method __init__ ($tick_time)
+	{
+		$paused = thread.sem ()
+		$tlock = thread.xlock (False)
+		$pack = $paused.ack
+		thread.start_new ($run)
+	}
+
+	method start ()
+	{
+		$tick_at = now ()
+		$paused.up ()
+	}
+
+	method stop ()
+		$paused.down ()
+
+	method run ()
+		while (1) {
+			$pack ()
+			$tick_at += $tick_time
+			dt = $tick_at - now ()
+			if (dt > 0)
+				sleep (dt)
+			$pack ()
+			$tlock.release ()
+		}
+
+	method tick ()
+		$tlock.acquire ()
+}
+
+##########################################################
+# audio/video application widget.
+# Todo: be able to embed this into another application....
+##########################################################
+
+import time
+import gui
+
+class time_progress (gui.widget) # (make nicer)
+{
+	elastic = False
+
+	method Init ($seek, **kw)
+	{
+		kw ['h'] = 6
+		$widget_init (**kw)
+		$lastp = 5
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+		$draw_line (5, 3, $lastp, 3, $A.color_dblue)
+		$draw_line ($lastp, 3, $w-5, 3, $A.color_txt)
+		$draw_line ($lastp, 0, $lastp, 6, $A.color_dred)
+		$draw_line ($lastp+1, 0, $lastp+1, 6, $A.color_dred)
+	}
+
+	method update (curt, tott)
+		if (0 <= curt <= tott) {
+			curp = int (($w - 10) * curt / tott)
+			if (curp != $lastp) {
+				$lastp = curp
+				return True
+			}
+		}
+
+	method onClick (x, y)
+		$seek ($w - 10, x)
+}
+
+SILENCE = "\0" * 1024
+
+class avwidget
+{
+	# Saves YUV->RGB->RGB565, to YUV->RGB565, and one memcpy
+	USE_FRAMEBUFFER = True
+
+	# Tubesite means that: this video is in progress downloading
+	# from a site like youtube and there are buttons to cancel
+	# the streaming, get the progress percentage, etc.
+
+	method __init__ ($wm, $vwidth, $vheight, $tubesite=False, fullscreen=False)
+	{
+		with (gui.vcontainer ()) {
+
+			if (tubesite)
+				gui.label (tubesite ["title"], w=vwidth, align="left",
+					   font=wm.OpenFont ("serif-b", 8))
+
+			$curfile = fullscreen ? None : gui.status (w=vwidth, align="Left")
+
+			if (fullscreen)
+				if (vheight < wm.height)
+					gui.fspace (h = (wm.height - vheight) / 2)
+
+			with (gui.vcontainer ()) {
+				if ($USE_FRAMEBUFFER) {
+					$View = gui.fb (w=vwidth, h=vheight)
+					$View.F.clear (0x101020)
+					$destbpp = $View.F.bpp
+				} else {
+					$View = gui.image (w=vwidth, h=vheight)
+					$destbpp = 3
+				}
+				$progress = time_progress ($Seek, w=vwidth)
+			}
+			$View.onWheel = $onWheel
+			with (gui.hcontainer ()) {
+				$BPAUSE = gui.togglebutton (" Play/Pause ", onToggle=$Pause, state=True)
+				gui.label (" ")
+				$FFWD = gui.togglebutton (" ffwd ", state=False, onToggle=$FastForward)
+				gui.label (" ")
+				$Vup = gui.button ("+", Action=$VolumeUp)
+				$Vol = gui.status (w="100", fg=$wm.color_brown)
+				$Vdown = gui.button ("-", Action=$VolumeDown)
+				$ShowVolume ()
+			}
+			if (tubesite)
+				gui.button ("Stop this crap")
+		}
+		$pn = 0
+	}
+
+	Audio = None
+
+	method run_vid ($vid, start_playing=False, $streamed=False, frn0=None)
+	{
+		avfile = vid.filename
+		title = "avplay: " + os.basename (avfile)
+		$wm.set_title (title)
+
+		if ($curfile)
+			$curfile.setmsg (avfile)
+		$abuf = ""
+		if (!$Audio)
+			$Audio = AudioDev ()
+		$video_clock = Clock ($vid.dt)
+
+		# start runqueue thread
+		$vid.go ($destbpp, ($vwidth, $vheight))
+		$frn = 0
+		$maxfrn = $vid.duration / $vid.dt - 2
+		if ($vid.has_audio) {
+			$audio_clock = Clock (float ($BUFFER_SIZE) /
+					 (2 * $vid.sample_rate * $vid.channels))  
+			thread.start_new ($pullvideo)
+			thread.start_new ($pullaudio)
+		} else {
+			$audio_clock = None
+			thread.start_new ($pullvideo_only)
+		}
+		$is_paused=True
+
+		if (frn0) {
+			$Seek ($vid.duration, frn0 * $vid.dt, False)
+			$progress.update ($frn * $vid.dt, $vid.duration)
+		}
+
+		if (start_playing)
+			$BPAUSE.toggle ()
+	}
+
+	method KeyCtrl (k)
+		if (k == " ")
+			$BPAUSE.toggle ()
+		else if (k == "UP")
+			$VolumeUp ()
+		else if (k == "DOWN")
+			$VolumeDown ()
+		#else if (k in "nN" and len (avfiles) > 1)
+		#	$GoNext ()
+
+	method VolumeUp ()
+		$ShowVolume (volume.mod_volume (1))
+	method VolumeDown ()
+		$ShowVolume (volume.mod_volume (-1))
+	method ShowVolume (v=None)
+		$Vol.setmsg ("%i" %(v or volume.get_volume ()))
+
+	method onWheel (a)
+	{
+		(a == "up" ? $VolumeUp : $VolumeDown) ()
+		return True
+	}
+
+	# Controls
+
+	method Pause (state)
+		if ($is_paused == state) return
+		else if ($is_paused = state) {
+			$pn += 1
+			if ($vid.has_audio)
+				$Audio.release ()
+			if ($audio_clock)
+				$audio_clock.stop ()
+			$video_clock.stop ()
+		} else {
+			$pn += 1
+			if ($vid.has_audio)
+				$Audio.grab ($vid.sample_rate, $vid.channels)
+			if ($audio_clock)
+				$audio_clock.start ()
+			$video_clock.start ()
+		}
+
+	method Seek (tot, off, p=True)
+	{
+		if(p) $Pause (True)
+		frac = float (off) / tot
+		if (frac <= 1.0)
+			if ($vid.seek (frac))
+				$frn = int (frac * $vid.duration / $vid.dt)
+		if(p) $Pause (False)
+	}
+
+	method FastForward (state)
+		if (state) {
+			if ($audio_clock)
+				$audio_clock.tick_time /= 3
+			$video_clock.tick_time /= 3
+		} else {
+			if ($audio_clock)
+				$audio_clock.tick_time *= 3
+			$video_clock.tick_time *= 3
+		}
+
+	# stream threads
+
+	BUFFER_SIZE = 4096
+
+	method pullaudio ()
+	{
+		BUFFER_SIZE = $BUFFER_SIZE
+		while (1) {
+			d = $vid.pull_audio ()
+			if (!d)
+				d = SILENCE
+			$abuf += d
+			OFFSET = 0
+			while (len ($abuf) - OFFSET >= BUFFER_SIZE) {
+				$audio_clock.tick ()
+				if (!$FFWD.state)
+					$Audio.play ($abuf [OFFSET:OFFSET+BUFFER_SIZE])
+				OFFSET += BUFFER_SIZE
+			}
+			$abuf = $abuf [OFFSET:]
+		}
+	}
+
+	method put_frame (frame)
+	{
+		if ($USE_FRAMEBUFFER)
+			$View.F.put_image (image (frame, $vwidth, $vheight, $View.F.bpp), 0, 0)
+		else
+			$View.setImage (image (frame, $vwidth, $vheight, 3))
+		try $wm.async ($View.Draw)
+	}
+
+	method pullvideo ()
+	{
+		$frn = 0
+		spf = $vid.dt
+		while (1) {
+			buff = $vid.pull_video ()
+			if.continue (!buff)
+				if ($EOF ()) break
+			$video_clock.tick ()
+			$put_frame (buff)
+			$progress.update ($frn * spf, $vid.duration)
+			try $wm.async ($progress.Draw)
+			$frn += 1
+		}
+	}
+
+	# if no audio to synchronize to
+	method pullvideo_only ()
+	{
+		$frn = 0
+		spf = $vid.dt
+		while (1) {
+			buff = $vid.pull_video ()
+			if.continue (!buff)
+				if ($EOF ()) break
+			$video_clock.tick ()
+			$put_frame (buff)
+			$progress.update ($frn * spf, $vid.duration)
+			try $wm.async ($progress.Draw)
+			$frn += 1
+		}
+	}
+
+	# EOF. For normal files, we Pause. For streaming
+	# (files whos size may increase in the meantime) we have
+	# to wait for a while until more data is available.
+	# However, once ffmpeg has reached EOF it stops there so
+	# the way to make it continue is by seeking a couple of
+	# frames back.
+
+	method EOF ()
+	{
+		if (vexit) {
+			$wm.exit ()
+			return True
+		}
+		$Pause (True)
+		if ($streamed and $frn and $frn < $maxfrn) {
+			$pn += 1
+			thread.start_new ($watch_file)
+		}
+		$video_clock.tick ()
+	}
+
+	RESUME_KB = 200
+
+	method watch_file ()
+	{
+		pn = $pn
+		size = os.getsize ($avfile)
+		for (i in *10) {
+			sleep (1)
+			if (pn != $pn)
+				return
+			if (os.getsize ($avfile) - size >= 1024 * $RESUME_KB)
+				break
+		}
+		if (os.getsize ($avfile) == size)
+			return
+		$Seek ($vid.duration, ($frn - 2) * $vid.dt, False)
+		$Pause (False)
+	}
+}
+
+##########################################################
+
+USAGE = """Usage: avplay [-options] <filename>
+Video player
+
+ -i	: show info about video and exit
+ -p	: start playing immediately
+ -s	: file is streamed, its size is checked and playback auto-resumes
+ -f	: full screen
+ -m	: mono audio
+ -e	: exit after finished
+ -2x	: double size
+ --f	: no gui. just decode everything as quickly as possible (libav* testing)
+"""
+
+if (__name__ == __main__)
+{
+	info_only, fullscreen, x2, start_play, streamed, mono, opener, vexit, ftest =
+		sys.argp.check_switches ("-i", "-f", "-2x", "-p", "-s", "-m", "-open", "-e", "--f")
+	if (@sysconfig.GETCONF ("nostereo"))
+		mono = True
+
+	if (ftest) {
+		filename  = sys.argp.filename ()
+		VD        = _buffer (C.sizeof_av)
+		err       = C.open_av (filename)
+		vwidth    = C.vwidth (VD)
+		vheight   = C.vheight (VD)
+		dt        = C.vdelay (VD)
+		duration  = C.duration (VD)
+
+		sample_rate = C.asample_rate (VD)
+		channels    = C.achannels (VD)
+		C.setwantaudio (VD)
+		audiobuf = _buffer_aligned (C.max_audio_frame_size, 16)
+		bpp = 2
+		C.setbpp (VD, bpp, vwidth, vheight)
+		vbufsize = vwidth * vheight * bpp
+		pts = array ("d", 1)
+		vbuf = _buffer (vbufsize)
+		while (1) {
+			r = C.next_frame (VD, vbuf, audiobuf, pts)
+			if (r == -2)
+				break
+			if (r == -1)
+				print "video packet"
+			else print "audio data:", r
+		}
+		print "OK"
+		exit ()
+	}
+
+	if (opener) {
+		from gui.opener import Open
+		avfile = Open ("video")
+		if (!avfile)
+			exit ()
+		start_play = True
+	} else avfile = sys.argp.filename_ex ()
+
+	vid = avstream (avfile, mono=mono)
+	print "Video:", avfile
+	wh = vid.vwidth, vid.vheight
+	width, height = wh
+	print "viewport: %ix%i" %(width, height)
+	if (width > 2000 or width < 0 or height > 2000 or height < 0) {
+		print "Unacceptable size"
+		exit ()
+	}
+	d = vid.duration
+	print "duration: %i:%02i:%02i" %(int (d / 3600), (int (d) % 3600) / 60, int (d) % 60)
+	if (vid.has_audio) print "audio: %iHz/%i" %(vid.sample_rate, vid.channels)
+	else print "No audio."
+	if (info_only)
+		exit ()
+
+	# if the video is more than 10 minutes, enter the VHS mode: resume from point
+	# where movie was stopped last time. idea from a blog.
+	if (!streamed and d > 600) {
+		VHS = @serialize.appdata2 ("vhs", os.abspath (avfile))
+		frn0 = VHS ["stopped"]
+	} else VHS = frn0 = None
+
+	def KeyCtrl (*args)
+		return avw.KeyCtrl (*args)
+
+	if (fullscreen) {
+		wm = gui.Wm (0, 0, KeyCtrl=KeyCtrl)
+		vr = float (width) / height
+		sr = float (wm.width) / (wm.height - 6)
+		if (vr > sr)
+			WxH = wm.width, int (wm.width / vr)
+		else WxH = int (wm.height * vr), wm.height
+	} else if (x2) {
+		wm = gui.Wm (2 * width + 100, 2 * height + 74, KeyCtrl=KeyCtrl)
+		WxH = 2 * width, 2 * height
+	} else {
+		wm = gui.Wm (width + 100, height + 74, KeyCtrl=KeyCtrl)
+		WxH = width, height
+	}
+
+	wm.avtheme ()
+	avw = avwidget (wm, fullscreen=fullscreen, *WxH)
+	avw.run_vid (vid, start_play, streamed, frn0)
+	wm.Start ()
+
+	if (VHS) {
+		VHS ["stopped"] = avw.frn
+		VHS.save ()
+	}
+}
+
+## TODO
+##  study pts values	(- there is a fprintf() in `ffmpg.c`. find sample with repeat)
+##  seek		(- Even without AVSEEK_FLAG_BACKWARD it works!)
+##  key control
+##  widgets		(- done/rearrange)
+##  xv extension
+##  mp3-only
+##  mute
+##  fast rewind

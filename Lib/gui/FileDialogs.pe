@@ -1,0 +1,174 @@
+# To Be Rewritten. Barely working, better than nothing.
+__autosem__
+
+# TODO:
+#	- preferences (memory)
+#	- click on last expands pulldown
+#	- close if callback not True
+#	- link-on-cache useful only for web
+#	---> separate file...
+
+import os
+from widget import widget
+from label import label
+from status import status
+from button import button
+from container import vcontainer, hcontainer
+from textin import textin
+from list import List
+from checkbox import checkbox
+
+def make_call (f1, f2, basedir, arg)
+{
+	def ff (a=None)
+		if (a is None) f2 (arg)
+		else return f1 (basedir + arg)
+	return ff
+}
+
+class Dir (widget)
+{
+	elasticW = True
+
+	method Init ($dir, **kw)
+	{
+		$font = $wm.bfont
+		kw ['h'] = $font.size ()[1]
+		$widget_init (**kw)
+		$bcolor = 0x444488	# "pen" color
+		#$bcolor = 0x223377	# "pen" color
+	}
+
+	method genitems ()
+	{
+		d = $dir
+		while ($font.isizeof (d) >= $w and d)
+			d = d [1:]
+		x0 = 0
+		for (d in d.split ("/")[:-1]) {
+			if (d) {
+				w = $font.isizeof (d)
+				yield x0, d, w
+				x0 += w
+			}
+			w = $font.isizeof ("/")
+			yield x0, "/", w
+			x0 += w
+		}
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+		for (x, txt, None in $genitems ())
+			$draw_string (txt, x, 0, txt == "/" and x != 0 ? $wm.color_txt : $bcolor,
+					 $font, $wm.color_bg)
+	}
+
+	method onClick (x, y)
+	{
+		s = None
+		for (xx, txt, w in $genitems ())
+			if (s is not None)
+				s += txt
+			else if (xx < x < xx + w and txt != "/")
+				s = ""
+		newdir = (s is not None ? $dir [:-len (s)] : "") + "/"
+		if ($dir == newdir) {
+			$nosubs = set ()
+			dl = $subdirs ($dir)
+			if (dl)
+				$wm.Run_Menu ($absx () + x, $absy () + y, dl, dtor=$clear_nosubs)
+		} else {
+			$dir = newdir
+			$Draw ()
+		}
+	}
+
+	method clear_nosubs ()
+		$nosubs = set ()
+
+	method descend (d)
+	{
+		$dir += d + "/"
+		$Draw ()
+	}
+
+	method subdirs (d)
+	{
+		dl = []
+		if (!d.ew ("/")) d += "/"
+		for (f in os.listdir (d))
+			if (os.path.isdir (d + f))
+				if ((d + f + "/") in $nosubs)
+					dl.append ([f, 1, make_call ($subdirs, $descend, d, f)])
+				else dl.append ([f, 5, make_call ($subdirs, $descend, d, f)])
+		if (!dl)
+			$nosubs.add (d)
+		return dl
+	}
+}
+
+class uborder (widget)
+{
+	method Init (**kw)
+	{
+		kw ['h'] = 5
+		$widget_init (**kw)
+	}
+	method Draw ()
+		$draw_blank ($wm.color_dblue)
+}
+
+def SaveAs (wm, filename, directory, callback)
+{
+	if (!@os.path.isdir (directory))
+		raise Error ("Not a real directory!!")
+
+	TW = 35
+	W = (TW+4) * wm.bfont.size ()[0]
+	s = wm.subWindow (wm.width / 3, wm.height / 3, W, 100)
+	with (v = vcontainer ()) {
+		uborder (w=W)
+		dd = Dir (directory, w=W)
+		with (hcontainer ()) {
+			label (" ")
+			t = textin (fixed=True, tw=TW)
+			label (" ")
+		}
+		with (hcontainer ()) {
+			s1 = button ("Save")
+			s2 = button ("Save (overwrite)")
+			button ("Cancel (esc)", Action=s.Close)
+		}
+		lcache = checkbox ("link to cache", True)
+		uborder (w=W)
+	}
+	s.Done ()
+
+	def v.preOnKey (k)
+		if (k == "ESC")
+			s.Close ()
+	def Save1 (overwrite=False)
+	{
+		path = directory + t.getText ()
+		if (!overwrite and os.access (path)) {
+			print "File exists!"
+			return
+		}
+		# if the callback return true, do not close the pulldown
+		if (callback (directory + t.getText ()))
+			return
+		s.Close ()
+	}
+
+	def Save2 ()
+		Save1 (True)
+
+#	dd.resize_w (s.w - dd.w)
+	t.onEnter = s1.Action = Save1
+	s2.Action = Save2
+	t.setText (filename)
+	t.setKeyWidget ()
+	s.Draw ()
+}

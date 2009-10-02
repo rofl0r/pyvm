@@ -1,0 +1,253 @@
+/*
+ *  Stackless vm threading and GIL control
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+#include "include.h"
+#include "mallok.h"
+
+extern int boot_pyvm (void*);
+
+#include "threading.h"
+#include "inits.h"
+#define COLS "\033[01;37m"
+#define COLE "\033[0m"
+#define PPP "["COLS"%i"COLE"] "
+
+/******************************************************************************
+	threading with two locks (GIL, WIL)
+
+	Basically, the main lock is the GIL (global interpreter lock) which
+	ensures that only one thread (the master thread) is running pyvm.
+	The master thread takes care of task switching and co-routines
+	and it is possible that we will not need any OS threads at all.
+
+	The interesting case is when the master thread will block.
+	In this case it will release GIL.  When the thread returns from the
+	blocking call, there are two possibilities:
+		- If the GIL is unlocked, it means that there is no master
+		thread either because all the other threads are blocking
+		or because none of the other threads had the time to get GIL.
+		In this case the thread re-locks GIL and becomes the master
+		- If GIL is locked, the thread waits on WIL.
+
+	If the master thread from boot_pyvm, detects that there is somebody
+	waiting on WIL, it will return, post WIL and wait on GIL.  The one
+	who gets WIL also becomes holder of the GIL implicitly.
+
+	So there are two kinds of people who want to get the Global lock:
+		1) those who gave it up and want it back, and are trying
+		   to push out the current owner of the GIL.
+		2) the volunteers who are willing to take it if there are no
+		   people from category (1) in order to keep the vm running.
+
+	In short, all this is achieved with a complex scenario where
+	a lock is locked by one thread and unlocked by another thread.
+******************************************************************************/
+
+static inline void SEM_WAIT (sem_t *sem)
+{
+	/* sem_wait() can return on CTRL-Z! */
+	while (sem_wait (sem) == -1);
+}
+
+bool multitasking;
+static sem_t CTRL;
+
+static pthread_mutex_t MutEx = PTHREAD_MUTEX_INITIALIZER;
+volatile bool ctrl_end;
+volatile static int GILers = 1, WILers;
+
+static class Lock
+{
+	bool locked;
+	pthread_cond_t	cond;
+	pthread_mutex_t	mutex;
+   public:
+	Lock (bool state=false)
+	{
+		locked = state;
+		pthread_cond_init (&cond, 0);
+		pthread_mutex_init (&mutex, 0);
+	}
+
+	void release ()
+	{
+		pthread_mutex_lock (&mutex);
+		if (locked) {
+			locked = false;
+			pthread_mutex_unlock (&mutex);
+		}
+		pthread_cond_signal (&cond);
+	}
+
+	void acquire ()
+	{
+		pthread_mutex_lock (&mutex);
+		while (locked)
+			pthread_cond_wait (&cond, &mutex);
+		locked = true;
+		pthread_mutex_unlock (&mutex);
+	}
+
+	bool tryacquire ()
+	{
+		bool ret;
+		pthread_mutex_lock (&mutex);
+		if ((ret = !locked))
+			locked = true;
+		pthread_mutex_unlock (&mutex);
+		return ret;
+	}
+};
+
+static Lock *GIL, *WIL;
+
+#define getpid pthread_self
+
+//static int GIL_owner;
+
+static void *_entry (void *v)
+{
+	int pyvm_state;
+
+	while (1) {
+		/* threads in here belong in category (2) */
+		GIL->acquire ();
+
+		--GILers;
+		pyvm_state = boot_pyvm (TAKE_OVER);
+		++GILers;
+
+		if (pyvm_state > 0) {
+			/* if have_pending () somebody's waiting on WIL
+			 * if not, nobody's waiting on WIL yet but somebody will
+			 *  and since there are no other tasks left to run,
+			 *  pre-post WIL and go to sleep
+			 */
+			WIL->release ();
+		} else if (pyvm_state == 0) {
+			/* END_THREAD */
+		} else {
+			/* END_VM */
+			ctrl_end = 1;
+			sem_post (&CTRL);
+		}
+	}
+
+	/* I'm outa here */
+	return 0;
+}
+
+extern int DoSched;
+
+// push out the current owner of the gil and get it
+void acquire_the_gil ()
+{
+	if (!GIL->tryacquire ()) {
+		/* force resched at next JUMP (think) */
+		DoSched |= 2;
+
+		// xxx: what we really want is atomic_inc()
+		// instead of a mutex...
+		pthread_mutex_lock (&MutEx);
+		++WILers;
+		pthread_mutex_unlock (&MutEx);
+
+		WIL->acquire ();
+
+		pthread_mutex_lock (&MutEx);
+		--WILers;
+		pthread_mutex_unlock (&MutEx);
+	}
+}
+
+// give up the gil
+void release_the_gil (bool wantnew)
+{
+	if (!wantnew) {
+		WIL->release ();
+		return;
+	}
+
+	/* people from category (1)?
+	   The ownership of the GIL is thus transferred to
+	   whomever will acquire the WIL. */
+	if (WILers) {
+		WIL->release ();
+		return;
+	}
+
+	if (!GILers) {
+		++GILers;
+		sem_post (&CTRL);
+	}
+	GIL->release ();
+}
+
+/*
+ */
+void main_thread ()
+{
+#ifndef CPPUNWIND
+	void *v = __lwcbuiltin_get_estack();
+#endif
+	for (;;) {
+		multitasking = 1;
+		pthread_t T;
+		pthread_attr_t A;
+		pthread_attr_init (&A);
+		pthread_attr_setdetachstate (&A, PTHREAD_CREATE_DETACHED);
+		pthread_create (&T, &A, _entry, (void*) 0);
+		SEM_WAIT (&CTRL);
+		if (ctrl_end)
+			break;
+	}
+#ifndef CPPUNWIND
+	__lwcbuiltin_set_estack (v);
+#endif
+}
+
+bool have_pending ()
+{
+	if (multitasking == -1) {
+		multitasking = 1;
+		return true;
+	}
+	return WILers > 0;
+}
+
+unsigned int ThreadPID ()
+{
+	/* XXX: How TF do we get LWP?
+	 * In the old linuxthreads, getpid() returned the PID of each task
+	 * Now with NPTL this is fsckd and getpid() returns the parent PID
+	 * which is the same for all threads. pthread_self() returns some
+	 * other ID...
+	 */
+	return pthread_self ();
+}
+
+uint NGIL ()
+{
+	return GILers;
+}
+
+////////////////////////////// initialize /////////////////////////////////
+
+static class InitThreads : InitObj {
+	int priority = INIT_LAST;
+	void todo ()
+	{
+		sem_init (&CTRL, 0, 0);
+		GIL = new Lock (false);
+		WIL = new Lock (true);
+
+	}
+};

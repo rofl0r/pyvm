@@ -1,0 +1,328 @@
+__autosem__
+
+# The layout API
+#
+# The main function of a layout module is `do_layout (url, wfb)`
+#	- url is the url as defined in "webnet" and has methods "readfile()"
+#	  and "content_type".  It should be in a "downloaded" state.
+#	- wfb is a "page_widget"
+# `do_layout` should return a "layout object" which:
+#	- it must have a method `ViewAt (yoffset)` which when called must
+#	  fill the "wfb" page widget with a view of the layout at the given offset.
+#	- it must have a method 'Goto (label)' which returns the yoffset of
+#	  the specified label or None if not supported/existing
+#	- if it has a member `images` this should be a dictionary where the
+#	  keys are urls.
+#	- if images have been requested, the layout object should have a method
+#	  `have_image(url)` which will be invoked by the main browser loop
+#	   when an image has been fetched
+#
+
+import os, re, time, thread
+from graphics     import ImageFile
+from wwwlib.dom   import produce
+from wwwlib       import css
+from wwwlib.basic import fixfont, fixfont_utf8, BaseLayout as BL, FETCHED_CSS
+
+###
+FAVICONS = set ()
+
+# Input:
+#	- an url (in downloaded state)
+#	- the relevant "page widget"
+# operation:
+#   for HTML url:
+#	- fetch css
+#	- produce dom
+#	- cascade css
+#	- generate box layout
+#	- start background downloads for images/stuff
+# output:
+#	- return View
+#
+
+def do_layout (url, wfb, mode, wrap, back=0, reloaded=0, raw=False)
+{
+	url.want_images = []
+
+	TIMEIT = 1#False
+	MEMUSE = 1#False
+
+	browser = wfb.browser
+	caching = back ? 2 : reloaded ? 0 : 1
+
+	if (url.content_type () == "unknown")
+		try {
+			header = url.readfile (45)
+			if (header.sw ("<!DOCTYPE html") or header.lower ().sw ("<html>"))
+				url.Headers ["content-type"] = "text/html"
+		}
+
+
+	if (!url.is_html ()) {
+		content_type = url.content_type ()
+		for (tt in ("text/", "message/", "audio/x-mpegurl"))
+			if (content_type.sw (tt))
+				return PlainText (wfb, url, wrap)
+		if (content_type.sw ("image/"))
+			return ImageView (wfb, url)
+		return NonHTML (wfb, url)
+	}
+
+	if (raw)
+		return PlainText (wfb, url, wrap)
+
+	try {
+		with (time.wTimer ("# gc: "))
+			sys.gc.collect ()
+
+		if (TIMEIT) T = time.Timit ()
+		dom = produce (url.readfile (), url.charset (), htmlcss=True)
+		if (TIMEIT) t1 = T.pr ("time to produce_dom: ")
+
+		if (dom.base)
+			url.set_base (dom.base)
+		dom.url = url
+
+		# there should be a seperate module "dom-preproc" for doing
+		# custom stuff on sites. For now manage youtube
+		if (url.url.sw ("http://www.youtube.com/watch?v="))
+			utube (dom)
+
+		fixed, use_external, do_tables, fonts, margins, floats, overflows = mode
+		fixed = !fixed
+		css.parse_page_css (browser, url, dom, caching, 
+					fixed=fixed,
+					use_external=use_external, do_tables=do_tables,
+					Fonts=fonts, Margins=margins, Floats=floats)
+
+		if (!url.css)
+			return False
+
+		dom.common.FULLCSS = floats
+
+		from wwwlib.box import box_layout
+		if (TIMEIT) T = time.Timit ()
+		box_layout (dom, url, wfb, wrap)
+		if (TIMEIT) t1 += T.pr ("time to layout: ")
+
+		B = dom.bx
+
+		if (TIMEIT)
+			print "T1 [%.3f]:"% t1
+		print "DOCUMENT HEIGHT:", B.height, B.width
+		del dom.ud
+		if (MEMUSE)
+			meminfo.mstat ()
+		print
+	} except (thread.Interrupt) {
+		return False
+	} except {
+		print "Error in block_layout", sys.exc_info ()
+		return ExceptionView (wfb, sys.exc_info (), url)
+	}
+
+	# All OK and this is an HTML page. Scan for images
+	I = url.want_images
+
+	if (dom.favicon and url.protocol == "http") {
+		try {
+			favurl = url.generate (dom.favicon)
+			if (favurl.url not in FAVICONS) {
+				FAVICONS.add (favurl.url)
+				favurl.layout_token = 1
+				I.append (favurl)
+			} else B.favicon = favurl
+		}
+	}
+
+	for (u in dom.url.css.bgi) {
+		# css background images are fetched once per browser runtime. neither "RELOAD" can
+		# help. only browser shutdown.
+		if (u.uid in FETCHED_CSS)
+			continue
+		u.layout_token = u.uid
+		I.append (u)
+	}
+
+	for (i in B.image_list ()) {
+		try u = url.generate (i)
+		except {
+			print "FAILED img src:", i
+			continue
+		}
+		u.layout_token = i
+		I.append (u)
+	}
+
+	return B
+}
+
+def utube (dom)
+{
+	for (k in dom.kids)
+		if (k.tag == "body")
+			break
+	# This way of injecting stuff in the dom, clearly sucks. Must think of
+	# something better!
+	T = k.common.Content ("Hi! This is pyvm. This seems to be a youtube page. "+
+	"In the Menu above there is an option to open this url with the youtube downloader!")
+	N = k.makeNode ("h1", ("style", "background:red"), k)
+	N.kids<< T
+	k.kids.insert (0, N)
+}
+
+##################################################################
+##		 Various types of non-HTML layouts		##
+##################################################################
+
+class Image
+{
+	Clip = None
+	transparent = void
+
+	method __init__ ($file, $src)
+	{
+		$I = ImageFile (file).read_image ()
+		$height = $I.h
+	}
+
+	method render_to (x, y, d)
+		d.add_image (self, x, y, $I.w, $I.h, None, $src)
+
+	method width ()
+		return $I.w
+
+	method get_image ()
+		return $I
+}
+
+class ImageView (BL)
+{
+	method __init__ ($wfb, $url)
+	{
+		$img = ImageFile (url.File)
+		$I = Image (file=url.File, src=url)
+		$width, $height = $img.size ()
+		$Title = url.url
+	}
+
+	method ViewAt ($yoffs, $xoffs, scroll=None)
+	{
+		$wfb.set_background (0)
+		$wfb.clear ($height, yoffs, $width, xoffs)
+		$I.render_to (-xoffs, -yoffs, $wfb)
+		$wfb.done ()
+	}
+}
+
+class NonHTML (BL)
+{
+	dh = fixfont.maxh
+
+	method __init__ ($wfb, $url)
+	{
+		$Title = url.url
+		$height = 100
+	}
+
+	method ViewAt ($yoffs, $xoffs, scroll=None)
+	{
+		$wfb.set_background (0)
+		$wfb.clear ($height, yoffs)
+		ct = $url.content_type ()
+		put = $wfb.add_text
+		put ("Content type is %s" %ct, 0, 0, fixfont, 0xffffff, None)
+		if (ct.sw ("audio/x-mpegurl")) {
+			# xxx convert to mp3
+			put ($url.readfile (), 0, $dh, fixfont, 0xffffff)
+			put ("Click here to download", 0, 2*$dh, fixfont, 0x2233dd, $url.readfile ())
+		}
+		# xxx (click here to view raw)
+		$wfb.done ()
+	}
+}
+
+LINKPART = re.compile (r"""http://[^$\)\]\s><"]+""", re.I).partition
+
+class PlainText (BL)
+{
+	# able to:
+	#	highlight/follow http://xxx links
+	#	line wrap mode
+	dh = fixfont.maxh
+
+	method __init__ ($wfb, $url, wrap)
+	{
+		$Title = url.url
+		l = url.readfile ().split ("\n")
+		$Width = None
+		if (!wrap) {
+			$data = l
+			# (xx: this should be utf8_len() if page is utf. otherwise transcode?)
+			$width = max ([len (l) for (l in $data)]) * fixfont_utf8.maxw
+		} else {
+			$width = None
+			f = wfb.w / fixfont_utf8.maxw
+			d = $data = []
+			for (ll in l) {
+				while (len (ll) > f) {
+					d<< ll [:f]
+					ll = ll [f:]
+				}
+				d<< ll
+			}
+		}
+		$height = len ($data) * $dh
+	}
+
+	method ViewAt ($yoffs, $xoffs, scroll=None)
+	{
+		$wfb.set_background (0)
+		$wfb.clear ($height, yoffs, $width, xoffs)
+		toffs = yoffs / $dh
+		nr = $wfb.h / $dh
+		f = fixfont_utf8
+		for (y in *nr)
+			if (y + toffs < len ($data)) {
+				text = $data [y + toffs]
+				x = -xoffs
+				if.continue ("http://" not in text)
+					$wfb.add_text (text, x, y * $dh, f, 0xe0e0e0, None)
+				l = []
+				for (p in LINKPART (text))
+					if (p.lower ().sw ("http://"))
+						if (p.ew (".")) {
+							l<< p [:-1]
+							l<< "."
+						} else l<< p
+					else if (p) l<< p
+				for (p in l) {
+					if (p.lower ().sw ("http://"))
+						color, href = 0x4444ee, p
+					else color, href = 0xe0e0e0, None
+					$wfb.add_text (p, x, y * $dh, f, color, href)
+					x += f.isizeof (p)
+				}
+			}
+		$wfb.done ()
+	}
+}
+
+class ExceptionView (PlainText)
+{
+	method __init__ ($wfb, (a, b, c), $url)
+	{
+		$Title = "Error!"
+		$data = ["An Unexpected exception occured while trying to layout",
+			 str (a), str (b)] + ["  " + x for (x in c.split ("\n"))]
+		$height = len ($data) * $dh
+	}
+}
+
+##
+#class Ligature (**Visitor0)
+#{
+#	method doText (t)
+#		try t.text = t.text.replace ("\x66\x6c", "\xef\x80\x82").replace ("\x66\x69", "\xef\x80\x81")
+#}

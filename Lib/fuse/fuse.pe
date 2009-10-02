@@ -1,0 +1,348 @@
+#
+# This is a minimal fuse implementation.
+# The right thing is to talk directly to the kernel,
+# read requests (with a Clib file), process them in python
+# and write back the results (with Clib file).
+#
+# This implementation uses the pipe bridge which for one,
+# does not allow multi-threading. However, it can be used
+# to develop interesting FUSE mounts in the meantime.
+#
+
+__autosem__
+
+import os, thread, misc
+
+UFUSE = HOME + "Lib/fuse/ufuse"
+
+def make_ufuse ()
+	if (!os.access (UFUSE) or os.getmtime (UFUSE) < os.getmtime (UFUSE + ".c")) {
+		print "Compiling ufuse binary"
+		os.remove (UFUSE)
+		cmd = "%s %s.c -o %s -Wall -O2 -lfuse" % (sys.cc, UFUSE, UFUSE)
+		print "cmd:", cmd
+		os.system (cmd)
+		if (!os.access (UFUSE)) {
+			print "* * * Unable to make ufuse. Filesystems in userspace not possible * * *"
+			exit ()
+		}
+		print "OK"
+	}
+
+####
+
+C = @DLL.Import ("stat", pelf=1)
+C.statsize = C.sizeof_stat ()
+
+# the possible callbacks
+
+cbs = [
+	"getattr", "access", "readlink", "readdir", "mknod", "mkdir", "symlink", "unlink",
+	"rmdir", "rename", "link", "chmod", "chown", "truncate", "utimens", "open", "read",
+	"write", "statfs", "release", "fsync", "create"
+]
+
+# Given a string like "drwxr--r--" generate the mode integer
+def mkmode (m)
+{
+	if (len (m) != 10)
+		raise Error ("Can't parse mode [%s]" %m)
+	mode = 0
+	for (n, mm in enumerate (list (m [1:]).reverse ()))
+		if (mm != "-") {
+			if (mm != "xwr" [n % 3])
+				raise Error ("Can't parse mode [%s]" %m)
+			mode = mode | (1 << n)
+		}
+	if (m [0] == "-")
+		mode = mode | 0100000
+	else if (m [0] == "d")
+		mode = mode | 040000
+	else raise Error ("Can't parse mode [%s]" %m)
+	return mode
+}
+
+# fill a `stat` struct from a dictionary or '-rw-r--r--' string
+BASE_TIME = int (now ())
+BASE_UID = C.myuid ()
+
+def mkstat (d, ro=False)
+{
+	if (d -> str)
+		d = { "mode":d }
+	else if (d -> tuple)
+		d = { "mode":d [0], "size":d [1] }
+
+	if (d ["mode"] -> str)
+		d ["mode"] = mkmode (d ["mode"])
+	mode = d ["mode"]
+	# if readonly, fix their permissions for them
+	if (ro) 
+		mode = mode & ~(2|16|128)
+	size = d.get ("size", 0)
+	if ("nlink" in d) nlink = d ["nlink"]
+	else nlink = mode & 040000 ? 2 : 1
+	atime = d.get ("atime", BASE_TIME)
+	mtime = d.get ("mtime", BASE_TIME)
+	ctime = d.get ("ctime", BASE_TIME)
+	uid = d.get ("uid", BASE_UID)
+	gid = d.get ("gid", BASE_UID)
+	s = _buffer (C.statsize)
+	if (size -> int)
+		C.make_stat (s, mode, size, nlink, atime, mtime, ctime, uid, gid)
+	else {
+		if (size -> Long)
+			size = long2u64 (size)
+		C.make_stat64 (s, mode, size, nlink, atime, mtime, ctime, uid, gid)
+	}
+	return s
+}
+
+# protect calls
+def guard (retval, func, *args)
+{
+	try return func (*args)
+	except print "Exception:", sys.exc_info ()
+	return retval
+}
+
+class mounter
+{
+	method __init__ (mount_point, $ops, $debug=False, debug_fuse=False)
+	{
+		make_ufuse ()
+
+		$f1 = misc.tmpfifo ()
+		$f2 = misc.tmpfifo ()
+		# check implemented functions, make bitflag
+		# (note that we search in the __dict__ of the nearest class only. not super parents)
+		bf = 0
+		impl = [x [3:] for (x in $ops.__class__.__dict__.keys ()) if (x.sw ("do_"))]
+		for (n, c in enumerate (cbs))
+			if (c in impl)
+				bf = bf | (1 << n)
+		if (debug) bf = bf | (1<<30)
+		opt = debug_fuse ? "-d" : "-f"
+		os.execbin_bg (UFUSE, "-o", "sync_read", opt, mount_point, $f1.fnm, $f2.fnm, "%x" %bf)
+		$f1.openr ()
+		$f2.openw ()
+		$write = $f2.write
+	}
+	base_init = __init__
+
+	method read (n)
+	{
+		os.remove ($f1.fnm)
+		os.remove ($f2.fnm)
+		return ($read = $f1.read) (n)
+	}
+
+	method read_int ()
+		return ord32l ($read (4))
+
+	method read_path ()
+		return $read ($read_int ())
+
+	method writes (*args)
+		$write ("".join ([a -> int ? "%ai"%a : a for (a in args)]))
+
+	method run ()
+	{
+		while (byte = $read (1)) {
+			req = ord (byte)
+
+			if ($debug)
+				print "GOT request type:", req
+
+			if.continue (req == 1) {
+				d = guard (None, $ops.do_getattr, $read_path ())
+				if.continue (!d)
+					$writes (-2)
+				$writes (0, mkstat (d, $ops.ReadOnly))
+			}
+			if.continue (req == 2) {
+				l = guard (None, $ops.do_readdir, $read_path ())
+				if.continue (l is None)
+					$writes (-2)
+				for (dd in ("..", "."))
+					if (dd not in l)
+						l.insert (0, dd)
+				$writes (0, len (l))
+				for (i in l) {
+					i += "\0"
+					$writes (len (i), i)
+				}
+			}
+			if.continue (req == 3) {
+				flags = $read_int ()
+				path = $read_path ()
+				if.continue ($ops.ReadOnly and flags & 3)
+					$writes (-C.eacces)
+				if (!flags) mode = "r"
+				else {
+					trunc = flags & 512
+					creat = flags & 64
+					if (flags & 3 == 3)
+						mode = trunc ? "w+" : "a+"
+					else mode = trunc ? "w" : "a"
+				}
+				rez = guard (None, $ops.do_open, path, mode)
+				i = rez ? 0 : rez is None ? -2 : -3
+				$writes (i)
+			}
+			if.continue (req == 4) {
+				offset = $read_int ()
+				size = $read_int ()
+				path = $read_path ()
+				data = guard (None, $ops.do_read, offset, size, path)
+				if.continue !(data -> str)
+					$writes (-2)
+				$writes (0, len (data), data)
+			}
+			if.continue (req == 5) {
+				if.continue ($ops.ReadOnly)
+					$writes (-C.eacces)
+				offset = $read_int ()
+				size = $read_int ()
+				path = $read_path ()
+				data = $read (size)
+				rez = guard (-1, $ops.do_write, path, offset, data)
+				$writes (rez)
+			}
+			if.continue (req == 6) {
+				if.continue ($ops.ReadOnly)
+					$writes (-C.eacces)
+				mode = $read_int ()
+				path = $read_path ()
+				rez = guard (False, $ops.do_create, path, mode) ? 0 : -2
+				$writes (rez)
+			}
+			if.continue (req == 7) {
+				if.continue ($ops.ReadOnly)
+					$writes (-C.eacces)
+				size = $read_int ()
+				path = $read_path ()
+				if.continue (size) {
+					print "Truncate to non-zero size NI"
+					$writes (-2)
+				}
+				rez = guard (False, $ops.do_truncate, path, size) ? 0 : -2
+				$writes (rez)
+			}
+			if.continue (req == 8) {
+				if.continue ($ops.ReadOnly)
+					$writes (-C.eacces)
+				mode = $read_int ()
+				path = $read_path ()
+				rez = guard (False, $ops.do_mkdir, path, mode) ? 0 : -2
+				$writes (rez)
+			}
+			break
+		}
+	}
+}
+
+class unionfs
+{
+	ReadOnly = False
+
+	method __init__ ($subfs);
+
+	method do_getattr (path)
+	{
+		base, None, sub = path [1:].partition ("/")
+		if (!base) return "dr--r--r--"
+		if (base in $subfs)
+			return sub ? $subfs [base].do_getattr ("/" + sub) : "dr--r--r--"
+	}
+
+	method do_readdir (path)
+	{
+		base, None, sub = path [1:].partition ("/")
+		if (!base) return [x for (x in $subfs)]
+		if (base in $subfs)
+			return  [x for (x in $subfs [base].do_readdir ("/" + sub))]
+	}
+
+	method do_open (path, flags)
+	{
+		base, None, sub = path [1:].partition ("/")
+		if (base in $subfs)
+			return $subfs [base].do_open ("/" + sub, flags)
+	}
+
+	method do_read (offset, size, path)
+	{
+		base, None, sub = path [1:].partition ("/")
+		if (base in $subfs)
+			return $subfs [base].do_read (offset, size, "/" + sub)
+	}
+}
+
+# instead of passing a fuse "ops" instance we get a dict of fuse ops.
+class union_mounter (**mounter)
+	method __init__ (mount_point, subs, **kw)
+		$base_init (mount_point, unionfs (subs), **kw)
+
+# example hello filesystem
+# see also: CD.pe, torfs.pe and sshfs.pe
+
+class hello_fs
+{
+	# As long as this is true, calls that write (write, mkdir, creat, truncate)
+	# will be forbidden even if subclasses declare the relevant methods.
+	# Also, all permissions will be automatically fixed to remove 'w'.
+	ReadOnly = True
+
+	Hello = "Hello world!\n"
+
+	# may return:
+	#	- a string "-r--r--r--"
+	#	- a dict with various fields
+	#	- a tuple for (mode, size)
+	# the `size` may be an int, Long or string (8 bytes, u64 host endian)
+	method do_getattr (path)
+		if (path == "/" or path == "/dir")
+			return "dr--r--r--"
+		else if (path == "/file" or path == "/dir/file")
+			return "-r--r--r--", len ($Hello)
+
+	# return list of entries 
+	#  at the moment, readdir does not return the `stat` thing. We should
+	#  implement that. The ufuse binary should be notified through bflags
+	#  about it. We might also implement a class option AutoGenStats that
+	#  will generate them by calling do_getattr.
+	method do_readdir (path)
+		if (path == "/")
+			return ["file", "dir"]
+		else if (path == "/dir")
+			return ["file"]
+
+	# True if OK
+	method do_open (path, flags)
+		if (path == "/file" or path == "/dir/file")
+			return True
+
+	# string: data
+	method do_read (offset, size, path)
+		if (path == "/file" or path == "/dir/file")
+			return $Hello [offset:offset+size]
+}
+
+# mount the "hello world" filesystem. test
+
+if (__name__ == __main__)
+{
+	USAGE = """Usage: pyvm fuse <mount-point>
+mounts the "hello-world" filesystem for testing whether fuse works"""
+	mp = sys.argp.one ()
+	f = mounter (mp, hello_fs (), 1, 1)
+	f.run ()
+}
+
+# TODO
+#	64bit sizes & offsets
+#	autogen stats at readdir
+#	write/...
+#	access
+#	statfs

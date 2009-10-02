@@ -1,0 +1,926 @@
+The Whitespaceless Python (.pe)
+===============================
+
+PE is a whitespace-insentsitive python frontend to pyvm.
+
+PE was made because there is interest in implementing some new
+extensions to the python language (syntactic and new vm
+features). However, if we add these on the classic python
+syntax things will become very confusing because: we will
+have to maintain a documentation of "extensions" and advise
+people not to use them if they want their program to be
+portable.  We'd still risk forking and incompatibilities.
+Moreover, now that python 3000 is in the works, we would
+have three sets of features: python 2.x, py3k and pyvm!
+This would be a lot of trouble.  So instead of pretending
+to look like python, we can have a completely different
+frontend for it.
+
+pyvm will support both frontends.
+
+* The classic python frontend which is a subset of python and
+aims towards catching up with the new stuff; programs written
+in this form should run with python 2.4 if possible.
+
+* The PE no-whitespace frontend which is already something
+else, and we can go wild. Of course it is possible to import
+classic python from PE and PE from classic python.
+
+It is possible to compile PE files with:
+
+	pyvm -cc prog.pe
+
+to generate prog.pyc which can be imported from python -- if
+they do not use custom pyvm features (which is not true for
+most of the files in the pyvm source tree)
+
+Syntax
+======
+
+The syntax of PE looks like C, so statements are delimited
+with semicolons "`;`" and compound statements are defined
+with curly braces "`{}`" (and a "compound statement" is a
+"statement". That means that braces are optional when they'd
+contain just one statement.  If fact, the programmer is
+supposed to try to minimize the number of curly braces used!)
+
+A first example:
+
+	def Fib (n)
+	{
+		if (n < 2)
+			return 1;
+		return Fib (n - 2) + Fib (n - 1);
+	}
+
+	# or even
+
+	def Fib (n) { if (n < 2) return 1; return Fib (n - 2) + Fib (n - 1); }
+
+Because python's "`:`" is gone parenthesis *must* be used in
+the expression of `if` to separate it from the following
+statement.  The same happens for `while`, `for`, `with`
+and `except`. Some examples
+
+	while (x < y)
+		foo ();
+
+	for (i in X) {
+		if (i == 1) break;
+	} else print "Not found";
+
+	[x for (x in Y) if (x > 100)]
+
+	try foo ();
+	except (IndexError) ;
+	except print "The default handler does not need parenthesis";
+
+If the body of `def` is a single statement braces are not
+required. So we could write the `Fib` function as:
+
+	def Fib (n)
+		if (n < 2) return 1;
+		else return Fib (n-2) + Fib (n-1);
+
+	# or even
+
+	def Fib (n) return n < 2 ? 1 : Fib (n-2) + Fib (n-1);
+
+The same happens for `class` with the exception that if the
+first token after the class-name is `(`, it'll be used for
+base classes.
+
+Other consequences of the non-whitespace mode are that:
+
+`elif` is not used. We can write
+
+	if (x) foo ();
+  	else if (y) bar ();
+  	else if (z) zoo ();
+  	else pak ();
+
+which in normal python would increase the levels of indentation.
+(people coming from C, python or perl, should be careful with
+`else`: it matches with the inner `if`, `while`, `for`,
+`try-except`)
+
+`pass` is not used. An empty statement is `;` or `{ }`.
+
+	try foo ();
+	except { }
+
+There is no `exec` statement. Use `eval (compile (...))`.
+
+The dictionary ambiguity
+------------------------
+
+In python, the tokens `{` and `}` are used to make a dictionary
+and therefore there is an ambiguity since the parser cannot know
+if `{` starts a compound statement or a dictionary. In order to
+work around this, when the parser _expects_ a statement, `{` is
+taken as a compound statement block. This means that a toplevel
+expression cannot be a dictionary (which is OK since we almost
+never do that anyway). For instance
+
+	print "Hello world";
+	{1:2};	# this is an error
+	({1:2}); # OK
+
+Assignments in expressions
+--------------------------
+
+Assignments can be expressions. However things are a bit more
+complicated because in python the comma operator "`,`" has a
+higher priority than assignments "`=`" and consequently
+
+	x,y=y,x;
+
+means
+
+	(x,y)=(y,x);
+
+In PE this happens in `tuple context`. The `tuple context` is
+when `,` would create a tuple. In other cases where `,` is used
+as a delimiter (list and dictionary makers, and `print`),
+the comma has lower priority. For example in:
+
+	[a,b=c,d];
+
+the assignment is evaluated first and this means that the
+result is a list with three items.
+
+	[a,(b=c),d];
+
+In function calls, `=` is used for keyword arguments and it's
+not an operator, unless it is nested in parenthesis:
+
+	foo (x=1);	# keyword 'x'
+	foo ((x=1));	# assign 'x' and pass to first parameter
+
+Finally, the comma in subscripts is in a `tuple context`, so
+
+	x [1,2];
+
+is the same as:
+
+	x [(1,2)];
+
+Conditional expressions
+-----------------------
+
+Conditional is done with the operators `?:`. The priority of
+the conditional operator is above the comma or the assignment
+and below anything else. So
+
+	1, x or y ? 2 : 3, 4
+is
+
+	1, ((x or y) ? 2 : 3), 4
+
+Everything else is pythonic.
+
+	=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=* =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+
+Extensions
+==========
+
+Namespaces
+----------
+
+PE supports namespaces with the `namespace` keyword (because
+"Namespaces are a good idea"). For example:
+
+	namespace Foo
+	{
+		x=1;
+		y=2;
+	}
+
+	print Foo.x;
+	Foo.z=1;
+
+namespaces are just a way to organize the name-space and they
+are not related to object oriented programming (no magic
+methods, etc). In a dynamic language like python, namespaces
+make much more sense than in a static language like C++.
+
+For functions defined in a namespace, the global scope is the
+*module* scope. For example:
+
+	x = 1;
+	namespace N {
+		x = 2;
+		def f () print x;
+	}
+	N.f ();
+
+will print `1`.  There are plans to have an attribute to
+specify that a function should use the namespace as its
+global scope, but still, the default behaviour is to work
+on the module scope.
+
+Methods
+-------
+
+The keyword `method` is a reserved word which can be used
+instead of `def`. It will create a function but will also
+add a hidden first argument `self`. So
+
+	method foo (x)
+		return self.x;
+
+is exactly the same as
+
+	def foo (self, x)
+		return self.x;
+
+Self operator
+-------------
+
+Inside methods we can use the `$` operator which must be
+followed by a symbol and it will convert this to an attribute
+of `self` (or in other words, of the first argument of the
+function). All these are the same:
+
+	def foo (self, x) return self.x;
+	method foo (x) return self.x;
+	method foo (x) return $x;
+
+Generally, `method` and `$` are useful for class functions,
+as in:
+
+	class A
+	{
+		method __init__ (x)
+			$x = x;
+		method inc (d):
+			$x += d;
+	}
+
+	# but not only
+	method foo (x) return $x;
+	A.foo = foo;
+
+With `method` and `$`, `self` becomes a kind of reserved word:
+it's not really reserved but it should not be used in
+function arguments. Currently in
+
+	method foo ()
+		def bar (x, self)
+			return $y;
+
+`bar` returns the attribute `y` of its second argument and
+*not* of `foo`'s first argument. This is allowed at the moment.
+
+Function names can be attributes
+--------------------------------
+
+The function name in `def` and `method`, can be an attribute
+expression. For example:
+
+	def A.foo (self)
+		return self.x;
+
+This is equivalent to:
+
+	def some_tmp_name (self)
+		return self.x;
+	A.foo = some_tmp_name;
+	del some_tmp_name;
+
+and the `func_name` of the function is `foo`.
+This allows us to define methods outside class
+definitions and even in other modules. It is suggested
+to define big functions outside their class.  Like:
+
+	class A {}
+
+	method A.foo ()
+		return $x;
+
+This also works for class and namespace names, like in:
+
+	method __init__ ()
+	{
+		namespace $defaults {
+			Z = 1;
+			X = Y = 2;
+		}
+	}
+
+Argument names can be members
+-----------------------------
+
+Only for `method`s, the argument names can be preceded by `$`.
+This is automatic assignment of instance attributes that have
+the same name with the argument. Very useful for `__init__`
+methods. For example:
+
+	class A
+	{
+		method __init__ ($x, $y, $z)
+			;
+	}
+
+is exactly the same as:
+
+	class A
+	{
+		method __init__ (x, y, z)
+		{
+			$x = x;
+			$y = y;
+			$z = z;
+		}
+	}
+
+There are real local variables `x`, `y` and `z`
+and can be called as keyword arguments:
+
+	method A.__init__ ($x)
+		print $x, x;
+
+	a = A (x=123);
+
+* `!` is accepted as a boolean `not` operator but it has a higer
+  priority than `not`.
+
+`isinstance` and `typeof` operators
+-----------------------------------
+
+`=>` is the `isinstance` operator and `->` is the `typeof` operator
+
+	if (a => A)
+
+is the same as:
+
+	if (a.__class__ is A)
+
+and:
+
+	if (x -> str)
+	if (x !-> str)
+
+are the same as:
+
+	if (type (x) is str)
+	if (type (x) is not str)
+
+`try` without `except`
+----------------------
+
+A `try` statement without an `except` or `finally` clause (and
+no `else` clause either), just silently eats the exception. So
+
+	try x = foo ();
+
+is the same as the python code
+
+	try:
+		x = foo ()
+	except:
+		pass
+
+storing on `None`
+-----------------
+
+`None` is officially special (and should be highlighted as a
+reserved word by editors).  Storing on `None` simply discards
+the value. So
+
+	# these are the same
+	None = foo ();
+	foo ();
+
+This is useful for discarding values during unpacking. For
+example
+
+	None, x, y, None = foo ();
+	user, None, domain = addr.partition ('@');
+	firstline, None, None = txt.partition ('\n');
+
+Set Literals
+------------
+
+As in:
+
+	s = {1,2,3,4};
+
+For the empty set, use `set()`.
+
+Expanded inheritance
+--------------------
+
+The base classes in a class declaration can be preceded by `*`.  This has
+the effect that the objects of the base class are expanded in the namespace
+of the class.  For those who understand how classes work, in the code:
+
+	class A
+		method f () return "A";
+
+	class B (*A);
+
+class `B` would be the same as:
+
+	class B (A)
+		locals.update (A.__dict__);
+
+And printing the value of `B.__dict__` will show that the method `f` is
+also part of it.  If the rare case of multiple expanded inheritance, the
+base classes are expanded in reverse order; for instance:
+
+	class A method f () return "A";
+	class B method f () return "B";
+
+	class C (*A, *B);
+
+	print C().f();
+
+will print `A`.
+
+The operator `**` is strongly expanded inheritance.  The new class's
+dictionary includes all the parent's items but it is not a subclass of
+it.  For example,
+
+	class B (**A);
+
+is almost the same as:
+
+	class B
+		locals.update (A.__dict__);
+
+and `isinstance (A(), B)` will return false.
+
+Automatic Semicolon Insertion
+-----------------------------
+
+This is an experimental mode where semicolons are inserted automatically
+by the parser in "reasonable" places.  Because however it can result in
+confusing error messages for newcomers, the feature is by default deactivated.
+In order to enable automatic semicolon insertion you must place the
+line
+
+	__automatic_semicolon__
+	# or
+	__autosem__
+
+near the start of the file.  The basic rule is:
+
+	If, while parsing an expression an invalid token is encountered
+	and this token is the first token of its line and there are no
+	open `(`, `[` or `{`, the token is pushed back in the stream and
+	a semicolon is inserted instead.
+
+This rule does the right thing most of the times.
+Additionally, semicolons are inserted automatically
+
+ * after `break` and `continue` if their next token is not `;`.
+ * after `return` and `raise` if there are no other tokens in the same line
+ * after `import ..` and `from .. import ..`
+
+One dangerous case is
+
+	def foo ()
+	def bar ()
+
+which is received as:
+
+	def foo () def bar ();
+
+so it is a good idea to *use* `;` for the "empty statement".
+
+Another dangerous case is:
+
+	x = y
+	(cond ? f1 : f2) ()
+
+which is received as:
+
+	x = y (cond ? f1 : f2) ()
+
+If you know what you are doing, you can enable this feature, but be prepared
+for -rare- unexpected errors some times.  Usually, we prefer to work in the
+autosemicolon mode for toplevel scripts.
+
+To Do
+ [[There are some plans to switch from automatic semicolon insertion to
+   "explicit semicolon non-insertion". That is, the parser will automatically
+   insert semicolons at newlines after: the end of a complete expression,
+   break, continue, return and raise. This can be avoided by using a backslash
+   at the end of line...]]
+
+
+xrange operator
+---------------
+
+The unary `*` is used as the `xrange` operator.  In python, unary prefix `*` is
+already the "args" operator that is used to unpack a list of arguments to a
+function call, like:
+
+	foo (*x)
+
+In other cases besides function arguments, the `*` is used to apply `xrange`
+on the expression it's applied on.  In simple words,
+
+	for (i in *16)
+		print i
+
+is the same as:
+
+	for (i in xrange (16))
+		print i
+
+It has been observed that `xrange()` is a very frequently used function and
+this special syntax is definitely worth it (especially for temporary test
+programs).  The xrange operator works for the case xrange would be invoked
+with only one argument to iterate from 0 to that number-1.  For a different
+offset/step, `xrange` must be used.
+
+The priority of the `xrange` operator is the same as that of `!`. (may be revised)
+
+Bound Namespaces
+----------------
+
+A namespace declared in a class behaves like a function, which means
+that when we get it through the instance it becomes "bound" to the
+instance.  Getting attributes from a bound namespace, returns bound
+attributes with the same rule.  For example:
+
+	class A
+	{
+		def foo (self)
+			print 1, self;
+
+		namespace bar
+		{
+			def foo (self)
+				print 2, self;
+		}
+	}
+
+	a = A ()
+
+	# a method bound to instance "a"
+	bound_function = a.f
+	print bound_function
+
+	# a namespace bound to instance "a"
+	bound_ns = a.bar
+	print bound_ns
+
+	# gettting methods from the bound namespace
+	# returns bound methods to "a"
+	bound_function2 = bound_ns.foo
+	print bound_function2
+	bound_function2 ()
+
+	# The usual usage
+	a.bar.foo ();
+
+Setting attributes on bound namespaces puts the attribute in the
+*common* class namespace and *not* the bound namespace.  In other
+words, the bound namespace is not duplicated in the instance.
+That can be confusing and there is the possibility to forbid
+setattr on bound namespaces if it leads to errors. We'll see.
+
+This rule is recursive for namespaces included in the namespace:
+they are all bound to the instance.
+
+(are non-bound class namespaces useful?  should we implement support
+for them?)
+
+Extended `else` keywords
+------------------------
+
+There are four new keywords
+
+	else.for
+	else.while
+	else.try
+	else.if
+
+which can be used to specify the corresponding statement on which
+the `else` clause operates.  For example:
+
+	for (x in "abc")
+		if (x == c) {
+			print "Found"
+			break
+		}
+	else.for
+		print "not found"
+
+because a plain `else` would work on the `if` and we'd have to use braces.
+
+Extended `if` keywords
+----------------------
+
+There are two new keywords
+
+	if.break
+	if.continue
+
+which add an implicit `break` or `continue` at the end of the `if` statement.
+So:
+
+	for (x in "abc")
+		if.break (x == c)
+			print "found"
+
+is the same as:
+
+	for (x in "abc")
+		if (x == c) {
+			print "found"
+			break
+		}
+
+if/while not
+------------
+
+The syntax of the `if` statement really is:
+
+	`if` [`!`]`(`expression`)` statement
+
+This means that it is valid to write:
+
+	if !(x = foo ())
+
+instead of:
+
+	if (!(x = foo ()))
+
+Same for `while`.
+
+	=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=* =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+
+More exotic extensions
+======================
+
+Import machinery -- the `@` operator
+------------------------------------
+
+The operator `@` is used to replace the `import ...` and `from ... import`
+statements.  `@` is a prefix operator that must be followed by a name list
+separated with dots.  In this context, `@` has a higher priority than `.`.
+For example in:
+
+	build_packet = @net.ssh.base.BuildPacket;
+
+`@` is applied on the name list `net.ssh.base.BuildPacket`.
+
+The operation of `@` is to automatically import the module of the first
+name in the name-list.  For the other names, if any, `@` will try to
+either load an attribute with that name, or if that fails, import a
+sub-module with that name.
+
+Therefore, when we previously had:
+
+	import misc;
+	from binascii import hexlify;
+	import net.tls as SSL;
+	from net.ftp import FTP as client;
+
+we can now say:
+
+	misc = @misc;
+	hexlify = @binascii.hexlify;
+	SSL = @net.tls;
+	client = @net.ftp.FTP;
+
+But `@` is more powerful since we can say:
+
+	KeyPress = @gui.backends.xlib.XConst.KeyPress
+
+in this case the constant `KeyPress` is returned from `XConst` which
+is a namespace in the module `xlib`.  So `@` falls back to simple
+attribute access once it has stopped importing modules.
+
+Importing files
+---------------
+
+The token after the `import` and `from` keywords, can be a
+reserved word or a string literal.  For instance:
+
+	import class as Class;
+	from 'foo-bar' import zoo;
+
+Will import the files `class.pyc` and `foo-bar.pyc` which are
+valid filenames.
+
+Augmented assignments and globals
+---------------------------------
+
+In normal python (and up to 2.4) an augmented assignment makes a
+variable local. For example in
+
+	def foo ():
+		x += 1
+
+`x` is taken as a local (uninitialized) variable. This doesn't
+make much sense since python does not automatically initialize
+locals with some value. In PE, augmented assignments only, do
+not mark a variable local. So in
+
+	def foo () x += 1;
+
+will increment the *global* `x`.
+
+`do-while`
+-----------
+
+PE has the `do-while` statement.  For example:
+
+	i = 0;
+	do {
+		print i;
+		i += 1;
+	} while (i < 3)
+
+(unlike C, we don't need a semicolon after `while`)
+`do-while` can have an `else` clause just like `while`.
+
+Global object (Observed brokeness. Use with caution)
+-------------
+
+`global` can be used as an object followed by `.` and a symbol
+name. Thus
+
+	global.x = 1;
+
+is the same as
+
+	global x;
+	x = 1;
+
+Anonymous functions
+-------------------
+
+Anonymous functions are expressions created with `def`, without a function
+name and they may contain only one expression.  For example,
+
+	f1 = def (x) x + 1;
+	f2 = def () 123;
+	f3 = def (**kw) kw.keys();
+
+Dynamic Attributes
+------------------
+
+This is a very advanced feature and people shouldn't use it unless
+they are sure that they need it.
+
+In normal python, only a symbol may follow the dot `.` for
+attribute access.
+
+Dynamic attributes is when a parenthesized expression follows
+the attribute access.  For example:
+
+	A.(X+Y);
+	A.($X) = 1;
+	$($ATTR);
+
+These expressions will be converted to:
+
+	getattr (A, X+Y);
+	setattr (A, $X, 1);
+	getattr (self, $ATTR);
+
+Please do not use this feature instead of `getattr`/`setattr`.
+`Getattr`/`setattr` are often used together with `hasattr`.
+The dynamic attributes are not designed to work with such cases
+where we check the existance of attributes.
+They are useful in rare cases of "mirror polymorphism".
+
+Or-Except operator	(may be removed)
+------------------
+
+The or-except operator is `??`.  It will return the value on its left side
+unless an exception occurs during its evaluation.  If so, it will evaluate
+the expression on its right side.  For illustration,
+
+	x = foo () ?? bar ();
+
+is functionally the same as:
+
+	try x = foo ();
+	except x = bar ();
+
+The priority of `??` is even lower than that of `?:`.
+
+This operator should be used with caution.  Generally we should *not* use
+`??` when there is a possibility of unexpected exceptions happening due to
+bugs or during the early development of the program.  The operator should
+be used in cases where the code is trivial and nothing can go unexpectedly
+wrong.
+
+namespace `__constant__`
+-------------------------
+
+The keyword `__constant__` can follow the name of a namespace.  Values used
+from this namespace are replaced at compile time in the program, if they
+evaluate to a constant.  For example in:
+
+	namespace D __constant__
+	{
+		DEBUG_NET = False;
+	}
+
+	if (D.DEBUG_NET)
+		print "Debugging...";
+
+`D.DEBUG_NET` will be replaced by `False` and then the entire `if`
+statement will be discarded.
+
+`__constant__`, actually means that "Values which are constant at compilation
+time are not supposed to be modified at run time, so it is safe to replace
+references to them by their value.  Also, such a namespace is not supposed
+to be `shadowed` at runtime".
+
+This code however has to be executed at compile-time -- before the program
+is compiled.  This evaluation is supposed to happen by evaluation of AST
+nodes.  For now, evaluation of statements it not really implemented. Thus
+so far, it is only safe to use "NAME = VALUE" expressions.
+
+	=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=* =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+
+NOTES
+=====
+
+* `raise` does not accept the old form 'class, instance, tb'
+  if you pass comma-separated elements they will be converted
+  to a tuple.
+* adjacent string literals are *not* allowed (they are a syntaxt error).
+  Concatenation be achieved using `+` instead:
+	'string1'+'string2'
+  The concatenation will happen at compile time due to constant folding.
+  This is how it happens on a dynamic language.
+* `__LINE__` works.
+
+	=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=* =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+
+TODO (maybe)
+============
+
+
+if (LVALUE from A in B)
+
+ex:
+	if !(x from cs in $nodes)
+		x = $nodes [cs] = cs
+	if !(x ?= cs in $nodes)
+
+* dictionary & set -> filters dictionary
+* switch-case
+	switch (foo ()) {
+	case (1) bar (); break;
+	case (x) znot (); break;
+	case () default ();
+	}
+
+ PE implements the switch-case construct. In C, a switch-case
+ is a very useful structure which is implemented with a table
+ and achieves O(1) lookups which are needed in many algorithms.
+ In dynamic languages like python, a switch-case should probably
+ be more dynamic and that's why it is harder to define how it
+ should work.
+
+ In PE, the switch-case is basically a syntactic shortcut for
+ if-else statements. The only advantage besides the syntax is that
+ the expression is evaluated only once and its result is stored
+ on the stack for the duration of the switch. Apart from that,
+ the cases are checked *in order* as if they where if-else statements.
+
+ A first example:
+
+	switch (foo ()) {
+		case (0) raise Error;
+		case (x) matches (); break;
+		case (nextprime ()) bar (); break;
+		case () print "Default!";
+	}
+ 
+ Here, `nextprime` will not be called if any of the first two tests
+ matches.  The default handler will be invoked after all the tests
+ have been performed.
+
+ As an exception, the implementation *may* reorder the cases and
+ compare the constant expressions *first* with a dictionary, if
+ there are enough of them.  For example,
+
+	switch (foo ()) {
+		case (1) ...
+		case (2) ...
+		case (4) ...
+		case (bar ()) ...
+		case (None) ...
+		case ('*') ...
+	}
+
+ The implementation may use a dictionary to lookup the result in
+ {1,2,4,None,'*'} but that will definitelly happen before it calls
+ `bar ()`.
+
+BUGS:
+====
+
+def Foo.Bar.Zoo ()  # fix

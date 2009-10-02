@@ -1,0 +1,123 @@
+##  Lexical tokenizer for javascript
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import re, time
+
+R = re.compile (r"[ \t\r\f\a]*(" + "|".join ([
+		r"[0-9]+\.(?:\d+(?:[Ee][+-]?\d+)?|[Ee][+-]?\d+)?",
+		r"[a-zA-Z0-9_]+",
+		r"[{}(?:)[\];,\$~]",
+		r"\.\d+(?:[Ee][+-]?\d+)?",
+		r"\.",
+		r"/\*.*?\*/",
+		r'"(?:\\.|[^\\"])*"',
+		r"'(?:\\.|[^\\'])*'",
+		r"!=?=?",
+		r"==?=?",
+		r"[*%\^]=?",
+		r"\+\+|\+=|\+",
+		r"-[-=]?",
+		r"&&|&=?",
+		r"\|\||\|=?",
+		r">>=|>=|>>|>",
+		r"<<=|<=|<<|<",
+		r"//.*?\n",
+		r"/=?",
+		r"\n"
+		]) + ")", re.DOTALL)
+
+# In the grammar of javascript, the character '/' may be either:
+#	1) division ('/' or '/=')
+#	2) start of a regular expression ('/.../')
+# what depends on whether the parser expects an operand or a (binary) operator
+
+# to do: parse the "flags" after /../flags
+Rx = re.compile (r"(?:\\.|[^/])*/")
+
+reserved = set(("break,case,catch,continue,default,delete,do,else,finally,for,function,"+
+	"if,in,instanceof,new,return,switch,this,throw,try,typeof,var,void,while,with").split (","))
+
+OperandAfter = {
+	"(", "&&", "||", "!", "?", ":", "+", "-", "*", "/", "%", "[", "{"
+} | reserved
+
+for (x in ["this", "void"])
+	del OperandAfter [x]
+
+gen jslex (data)
+{
+	# what takes time is that for each match we create a "match object".
+	# we can create a custom m1pos() method to the internal regex object
+	# that returns a tuple with `(m [1], m.end())` or `None`
+	o = 0
+	r = R.match
+	rx = Rx.match
+	p = "+"
+	opa = OperandAfter
+	while (m = r (data, o)) {
+		tok = m [1]
+		o = m.end ()
+		if (tok in ("/", "/="))
+			if (p [-1] == "=" or p in opa) {
+				# is regex
+				m = rx (data, o)
+				tok += m [0]
+				o = m.end ()
+			}
+		yield tok
+		p = tok
+	}
+}
+
+# js reindentor. Because websites obfuscate their js code with the excuse
+# of "www optimization" and we want to inspect js code. This is a crappy
+# reindentor with a lot of room for improvements.
+
+def indent (indata)
+{
+	cc = @cStringIO.StringIO()
+	w = cc.write
+	I = ""
+	for (t in jslex (indata)) {
+		if.continue (t == "}") {
+			I = I [:-1]
+			w ("\n" + I + "}\n" + I)
+		}
+		if (t == "{" or t == "in") w (" ")
+		w (t)
+		if (t in reserved or t == ",") w (" ")
+		if (t == ";")
+			w ("\n" + I)
+		else if (t == "{") {
+			I += "\t"
+			w ("\n" + I)
+		}
+	}
+	return cc.getvalue ()
+}
+
+USAGE = "jslex [-i <infile> <outfile>]
+jslex [-q] <infile>
+
+ In the first form it will do reindentation of js code.
+ <outfile> can be '-' for stdout.
+ In the second form it prints the tokens. -q for quiet (timing)
+"
+
+if (__name__ == __main__)
+	if (sys.argp.check_switch ("-i")) {
+		infile, outfile = sys.argp.nargs (2)
+		t = indent (readfile (infile))
+		if (outfile == "-") print t
+		else open (outfile, "w").write (t)
+	} else if (sys.argp.check_switch ("-q"))
+		with (time.wTimer ("time: "))
+			for (t in jslex (sys.argp.Readfile ())) { }
+	else.if for (t in jslex (sys.argp.Readfile ()))
+		print "--[[ %s ]]" %t

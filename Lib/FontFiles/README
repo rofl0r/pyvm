@@ -1,0 +1,24 @@
+Except from the 8x16 bitmap fonts, the choices for nice scallable fonts are:
+
+	- Builtin PDF fonts (urw). These are the only fonts distributed
+	  and ready to use. The limitation is that they don't have international
+	  characters.
+
+For best quality:
+
+	- MS core fonts for the web. Will require download. see corefonts/README
+
+	- MS Windows fonts that can be copied from a nearby windows partition.
+	  See ms/README
+
+Free solutions that may be distirbuted in the future:
+
+	- lucida
+	- liberation
+	- vera
+
+To do:
+	- The Latin Modern family is *very* interesting but it's not easy
+	  to understand which are the right files and what glyphs they contain
+	  for use by the CSS model
+		(sans, serif, mono)x(regular, bold, italic, bolditalic)

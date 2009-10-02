@@ -1,0 +1,775 @@
+##  core git subsystem
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+zlib      = @zlib
+unpack    = @struct.unpack
+os        = @os
+SHA       = @sha.digest
+fprint    = @misc.fprint
+
+# Base access to a git repository.  With this module we can write little
+# scripts to work with git repositories and easilly perform all the git
+# commands (and much more).  However, this is not optimized for very big
+# projects.
+#
+# It is important that this is compatible with git, so if this code
+# breaks, we'll use the official git to recover from self-hosting.
+#
+# packs are not implemented. symlinks and strange files, neither.
+
+##
+## Low level
+##
+
+# read a file but do not follow symbolic links
+def ReadFile (path)
+	return os.path.islink (path) ? os.readlink (path) : readfile (path)
+
+class repository
+{
+	method __init__ ($BASEDIR)
+	{
+		if ($BASEDIR [-1] != "/") $BASEDIR += "/"
+		$IDX = INDEX ($BASEDIR, self)
+		$base_init ()
+	}
+
+	method base_init ()
+	{
+		# regenerate git object classes so the current repository
+		# is a -common- class member
+		class $commit (**commit) repo = self
+		class $tree   (**tree)   repo = self
+		class $blob   (**blob)   repo = self
+		class $tag    (**tag)    repo = self
+		$ctors = { "commit":$commit, "tree":$tree, "blob":$blob, "tag":$tag }
+	}
+
+	# overridable for remote repos
+	method access (f)   return os.access ($BASEDIR + f)
+	method readfile (f) return readfile ($BASEDIR + f)
+	method listdir (d)  return os.listdir ($BASEDIR + d)
+	method mkdir (d)    os.mkdir ($BASEDIR + d)
+	method writefile (fnm, data) open ($BASEDIR + fnm, "w").write (data)
+
+	#
+	method readhead (h)
+		return $readfile ("refs/heads/" + h)
+	method readobj (o)
+		return $readfile ("objects/" + o)
+
+	method F (f)
+		return $BASEDIR + f
+
+	# which commit is branch
+	method branch (h)
+		return $open ($readhead (h).strip ())
+
+	method branches ()
+		return [i, $readhead (i).strip () for (i in $listdir ("refs/heads"))]
+
+	# which branch is HEAD
+	method HEAD_is ()
+	{
+		try ll = os.readlink ($F ("HEAD"))
+		except ll = $readfile ("HEAD").strip () [5:]
+		if (!ll.sw ("refs/heads/"))
+			raise Error ("Messing with the internals?")
+		return ll [11:]
+	}
+
+	# which commit is HEAD
+	method HEAD (sig=None)
+	{
+		h = $readfile ("HEAD")[:-1]
+		if (h.sw ("ref: "))
+			h = $readfile (h [5:])[:-1]
+		return h
+	}
+
+	method write_HEAD (sig)
+		$writefile ("refs/heads/" + $HEAD_is (), sig + "\n")
+
+	method write_branch (branch, sig)
+		$writefile ("/refs/heads/" + branch, sig + "\n")
+
+	# set HEAD to point to a different branch
+	method set_HEAD (branch)
+	{
+		try os.remove ($BASEDIR + "HEAD")
+		os.symlink ("refs/heads/" + branch, $BASEDIR + "HEAD")
+	}
+
+	method haveobj (sig)
+		return $access ("objects/" + sig [:2] + "/" + sig [2:])
+
+	method openobj (sig, want=None)
+	{
+		r = $_openobj (sig)
+		if (want and r.kind != want)
+			raise Error ("Object %s is not a '%s'" %(sig, want))
+		return r
+	}
+	open = openobj
+	
+	method findsig (s)
+	{
+		if (len (s) == 40) return s
+		try c = $listdir ("objects/" + s [:2])
+		except raise Error ("Ambiguous hash: %s" %s)
+		if (s2 = s [2:]) c2 = [i for (i in c) if (i.sw (s2))]
+		else c2 = c
+		if (len (c2) == 1) return s [:2] + c2 [0]
+		raise Error ((c2 ? "Ambiguous hash: %s" : "No object starts with: %s") %s)
+	}
+
+	method _openobj (sig)
+	{
+		d = zlib.decompress ($readobj (sig [:2] + "/" + sig [2:]))
+		if (SHA (d).hexlify () != sig)
+			raise Error ("Repository inconsistent")
+		hdr, None, data = d.partition ("\0")
+		typ, None, siz = hdr.partition (" ")
+		# (xxx: could use this in advance to allocate exact buffer)
+		if (int (siz) != len (data))
+			raise Error ("Repository inconsistent")
+		if (typ in $ctors)
+			return $ctors [typ](sig, data)
+		print "UNKNOWN OBJECT", typ
+		print data
+		raise Error ("Unknown git object")
+	}
+
+	method openblob (sig)
+		return $open (sig).data
+
+	method write_object (sig, data)
+	{
+		dir = "objects/" + sig [:2]
+		path = dir + "/" + sig [2:]
+		if ($access (path))
+			return #print "%s exists" %sig;
+		if (!$access (dir))
+			$mkdir (dir)
+		$writefile (path, zlib.compress (data))
+	}
+
+	method write (kind, data)
+	{
+		blob = "%s %i\0" %(kind, len (data)) + data
+		sig = SHA (blob).hexlify ()
+		$write_object (sig, blob)
+		return sig
+	}
+
+	method create_tag (tag_name, sig)
+		$writefile ("/refs/tags/" + tag_name, sig + "\n")
+
+	method do_commit (message, tree, parents)
+	{
+		t = "tree %s\n" %tree
+		for (p in parents)
+			t += "parent %s\n" %p
+		t += message
+		return $write ("commit", t)
+	}
+
+	# The string can be: a hash, a partial hash, a branch name, a tag name or nothing (HEAD).
+	# all produce a hash
+
+	method open_commit (s=None)
+	{
+		if (s is None)
+			return $open ($HEAD ())
+		for (i in s)
+			if (i not in "0123456789abcdef")
+				return $branch (s)
+		return $open ($findsig (s))
+	}
+
+	# files that differ between the cache and the wd
+	method diff_files ()
+	{
+		F = []
+		for (k, mts in [(k, v [2])
+			for (k, v in $IDX.D.items ().sort ())])
+				try if (os.stat (k).st_mtime > mts)
+					F.append (k)
+				except F.append (k)
+		return F
+	}
+
+	method diff_trees (t1, t2)
+	{
+		oldfiles = $openobj (t1).lsfiles_r (self)
+		newfiles = dict ($openobj (t2).lsfiles_r (self))
+		for (f, sig in oldfiles)
+			if (f not in newfiles)
+				yield f, $openobj (sig), None
+			else if (newfiles [f] != sig)
+				yield f, $openobj (sig), $openobj (newfiles [f])
+		for (f in set (newfiles.keys ()) - set (dict (oldfiles).keys ()))
+			yield f, None, $openobj (newfiles [f])
+	}
+
+	# diff trees but detect renames
+	method diff_trees2 (t1, t2)
+	{
+		removed = {}
+		added = {}
+		diffs = []
+		for (f, old, new in $diff_trees (t1, t2)) {
+			if (!new) removed.gather (old.sig, f)
+			else if (!old) added.gather (new.sig, f)
+			else diffs<< (f, old, new)
+		}
+		renames = []
+		for (r in set (added.keys ()) & set (removed.keys ()))
+			if (len (added [r]) == len (removed [r]))
+				for (f1, f2 in zip (removed.pop (r), added.pop (r)))
+					renames.append ((f1, f2, r))
+		added = [f, b for (b, fs in added.items ()) for (f in fs)]
+		removed = [f, b for (b, fs in removed.items ()) for (f in fs)]
+		return added, removed, renames, diffs
+	}
+}
+
+# Remote read-only
+class http_repository (repository)
+{
+	method __init__ (url)
+	{
+		$base_init ()
+		from net import http
+		p = http.urlparse (url)
+		host = p ["host"]
+		port = p ["port"] or 80
+		$C = http.Connection (host, port)
+		$BP = ewslash (p ["path"])
+	}
+
+	method readfile (f)
+	{
+		status, headers, file = $C.get ($BP + f, {})
+		if (status != "200")
+			raise Error ("Can't fetch object via HTTP!")
+		return file.read ()
+	}
+	method NA (*args) raise Error ("Not available in HTTP repo")
+	access = listdir = mkdir = writefile = NA
+
+}
+
+def RemoteRepo (r)
+{
+	if (r.sw ("http://"))
+		return http_repository (r)
+	if ("://" in r)
+		raise Error ("only local and HTTP repositories supported")
+	return repository (r)
+}
+
+#
+# Git objects
+#  we basically create a `repository` instance and then
+#  open objects from it. Sample usage:
+#	c = repo.open_commit ("f23da");
+#	par = repo.open (c.parents [0]);
+#	t = repo.open (par.tree);
+#	f = repo.open (t.files ["foo.c"]);
+#	print f.data;
+#  to print the contents of file "foo.c" of the parent commit of
+#  commit "f23da".
+#  Initial point can be obtained with:
+#	c = repo.open_commit ("master");
+#  Arbitary objects can be opened with:
+#	o = repo.open (repo.findsig ("d2f367"));
+#	print o.kind;
+#
+
+GETDATE = @re.re (r"author.*?\ncommitter.*?>\s*(\d+)");
+
+class commit
+{
+	# A commit has:
+	#	$tree:    the hash of the tree
+	#	$parents: a tuple with parent commit hashes
+	#	$message: commit message
+	# in the message we are expecting to find the date which is
+	# required in order to find the nearest common ancestor of two
+	# branches for merging.
+
+	kind = "commit"
+
+	method __init__ ($sig, $data)
+	{
+		if (!data.sw ("tree ")) raise "Bogus commit object";
+		$tree = data [5:45];
+		i = 46;
+		p = [];
+		while (data [i:i+7] == "parent ") {
+			p.append (data [i+7:i+47]);
+			i += 48;
+		}
+		$parents = tuple (p);
+		$headers, None, $message = data [i:].partition ("\n\n")
+	}
+
+	method Parents ()
+		for (p in $parents)
+			yield $repo.openobj (p)
+	method Tree ()
+		return $repo.openobj ($tree)
+
+	method __str__ ()
+		return "commit: %s" %$sig;
+
+	method date ()
+	{
+		m = GETDATE ($headers)
+		if (m) return int (m [1])
+		return 0
+	}
+
+	method title ()         return $message [:$message.find ("\n")]
+	method author ()        return $headers.split ("\n")[0][7:].partition (">")[0] + ">"
+	method authorName ()    return $author ().partition (">")[0]+">"
+	method committer ()     return $headers.split ("\n")[1][10:].partition (">")[0] + ">"
+	method committerName () return $committer ().partition (">")[0]+">"
+
+	method objs ()
+	{
+		yield $tree
+		for (i in $parents)
+			yield i
+	}
+}
+
+gen parse_tree (data)
+{
+	p = 0
+	di = data.index
+	try while (1) {
+		i = di ("\0", p)
+		perm, None, name = data [p:i].partition (" ")
+		p = i + 1
+		sig = data [p:p+20].hexlify ()
+		p += 20
+		yield name, perm, sig
+	}
+}
+
+def search_tree (data, file)
+{
+	# can do in C, although the real problem is the cold cache
+	p = 0
+	di = data.index
+	try while (1) {
+		i = di ("\0", p)
+		perm, None, name = data [p:i].partition (" ")
+		p = i + 1
+		if (name == file)
+			return perm, data [p:p+20].hexlify ()
+		p += 20
+	}
+}
+
+class tree
+{
+	# A tree has:
+	#	$files: a dictionary of {'name': permissions, hash}
+	#		opening the `hash` may return another tree
+	#		object or a blob.
+	kind = "tree";
+	__slots__ = "sig", "data", "files";
+
+	method __init__ ($sig, $data);
+
+	method rfiles ()
+		return $files or ($files = {name:(perm, sig) for (name, perm, sig in parse_tree ($data))})
+
+	method objs ()
+		for (None, s in $rfiles ().values ())
+			yield s
+
+	method Objects ()
+	{
+		oo = $repo.openobj
+		for (None, s in $rfiles ().values ())
+			yield oo (s)
+	}
+
+	method __str__ ()
+		return "tree: %s" %$sig;
+
+	method lsfiles_r (repo, path="")
+	{
+		F = [];
+		for (k, (mod, sig) in $rfiles ().items ().sort ())
+			if (int (mod, 8) & 040000)
+				F.extend (repo.open (sig).lsfiles_r (repo, path + k + "/"));
+			else F.append ((path + k, sig));
+		return F;
+	}
+
+	method lsmodes_r (repo, path="")
+	{
+		F = [];
+		for (k, (mod, sig) in $rfiles ().items ().sort ())
+			if (int (mod, 8) & 040000)
+				F.extend (repo.open (sig).lsmodes_r (repo, path + k + "/"));
+			else F.append (mod);
+		return F;
+	}
+
+	method lsr (repo, path="")
+	{
+		F = [];
+		for (k, (mod, sig) in $rfiles ().items ().sort ())
+			if (int (mod, 8) & 0170000 == 040000) {
+				# git doesn't track directories. here we emit a fake directory
+				# with no hash and rwxr-xr-x permissions.
+				F.append ((path + k + "/", None, 493));
+				F.extend (repo.open (sig).lsr (repo, path + k + "/"));
+			} else F.append ((path + k, sig, int (mod, 8)));
+		return F;
+	}
+
+	method ls_r (repo)
+	{
+		F = [];
+		for (k, (mod, sig) in $rfiles ().items ().sort ())
+			if (int (mod, 8) & 040000)
+				F.append ((k, (repo.open (sig).ls_r (repo), mod)));
+			else F.append ((k, (sig, mod)));
+		return F;
+	}
+
+	# locate the blob of a file.
+	method find (path)
+	{
+		if ("/" not in path)
+			ls, path = path, ""
+		else ls, None, path = path.partition ("/")
+		if !(r = $files ? $files.get (ls) : search_tree ($data, ls))
+			return
+		mode, sig = r
+		if (!path)  # (xxx: test that it's a file and not a dir)
+			return sig
+		if !(int (mode, 8) & 040000)
+			return
+		return $repo.openobj (sig).find (path)
+	}
+}
+
+class blob
+{
+	# a blob has $data
+	kind = "blob"
+	__slots__ = "sig", "data"
+
+	method __init__ ($sig, $data);
+	method objs () return ()
+	method __str__ ()
+		return "blob: %s" %$sig
+}
+
+class tag
+{
+	kind = "tag"
+	__slots__ = "sig", "data"
+
+	method __init__ ($sig, $data)
+		$commit = data [7:47]
+
+	method objs ()
+		return [$commit]
+
+	method verify ()
+		verify_tag ($data)
+
+	method __str__ ()
+		return "tag: %s" %$sig
+}
+
+# Chronological history of parents (generator).
+# `p` is a commit object
+
+method repository.History (p)
+{
+	# (this works as long as dates -which are signed ints- don't wrap
+	# around 2^31 and become negative, some time in the future)
+	l = [(p.date (), p)]
+	s = set ()
+
+	while (l) {
+		p = l.pop ()
+		yield p
+		# (xxx, remove old from set)
+		for (x in p [1].parents) {
+			if (x in s) continue
+			s.add (x)
+			x = $open (x)
+			l.append ((x.date (), x))
+		}
+		l.sort ()
+	}
+}
+
+# master branch history (not counting merges)
+method repository.MainHistory (p, progress=False)
+	while (1) {
+		if (progress)
+			fprint ("\r" + p.sig)
+		yield p
+		if (!p.parents)
+			break
+		p = $open (p.parents [0])
+	}
+
+# walk all commits in arbitary order
+method repository.walk_all_commits (p)
+{
+	uh = unhexlify
+	seen = set ()
+	sadd = seen.add
+	brseen = set ()
+	bradd = brseen.add
+	br = [p]
+
+	while (br) {
+		p = br.pop ()
+		while (1) {
+			up = uh (p)
+			if (up in seen)
+				break
+			yield p
+			sadd (up)
+			p = $open (p)
+			if (!p.parents)
+				break
+			for (pp in p.parents [1:]) {
+				upp = uh (pp)
+				if (upp not in brseen) {
+					bradd (upp)
+					br<< pp
+				}
+			}
+			p = p.parents [0]
+		}
+	}
+}
+
+# history of file (in master branch, or linear history project)
+method repository.file_history_master (c, file)
+{
+	b = None
+	for (c in $MainHistory (c)) {
+		b2 = c.Tree ().find (file)
+		if (b2 != b) {
+			yield c
+			b = b2
+		}
+	}
+}
+
+##
+## The Index file (cache)
+##  Git (the concept) could work without an index file.
+##  The index file is an optimization but we have to support it for compatibility with `git`.
+##  The index file has entries:
+##	stats hash filename
+##  from these we can create a dictionary of
+##	{ 'filename': (`hash`, `modification-time`, etc) }
+##  `hash` is the hash of the file in the repository.  If different
+##  from the hash of the file in the working directory, we'll need
+##  to diff/import/checkin, etc.
+##
+
+class INDEX
+{
+	method __init__ ($BASEDIR, $repo)
+		$read_index ()
+
+	method read_index ()
+	{
+		try f = readfile ($BASEDIR + "index");
+		except {
+			$D = {};
+			return;
+		}
+
+		dts = @datastream.data_parser (f);
+		sig, ver, entries = dts.rn (4), dts.r32b (), dts.r32b ();
+		if (sig != "DIRC" or ver != 2)
+			raise "Error: Bad Index";
+		if (SHA (f [:-20]) != f [-20:])
+			raise "Error: CRC error in index file";
+
+		D = {}
+		for (None in *entries) {
+			cts, ctn, mts, mtn, dev, ino, mode, uid, gid, size = dts.rbeints (10)
+			sh = dts.rn (20).hexlify ()
+			flags = dts.r16b ()
+			namelen = flags & 0xfff
+			name = dts.rn (namelen)
+			ce_size = (62 + namelen + 8) & 0xff8
+			dts.skip (ce_size - (62 + namelen))
+			D [name] = cts, ctn, mts, mtn, dev, ino, mode, uid, gid, size, sh
+		}
+		$D = D
+	}
+
+	method lsfiles ()
+		return [k, v [-1] for (k, v in $D.items ())].sort ()
+
+	method update (path)
+	{
+		s = os.lstat (path);
+		sig = $repo.write ("blob", ReadFile (path));
+		p = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
+			 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig;
+		$D [path] = p;
+	}
+
+	method remove (path)
+		del $D [path];
+
+	method write_index ()
+	{
+		t = [];
+		for (f in $D.keys ().sort ()) {
+			namelen = len (f);
+			cts, ctn, mts, mtn, dev, ino, mode, uid, gid, size, sig = $D [f];
+			ce = "%MI%MI%MI%MI%MI%MI%MI%MI%MI%MI" % (cts, ctn, mts, mtn,
+					 dev, ino, mode, uid, gid, size) + unhexlify (sig)
+				+ "%MH" %namelen + f;
+			ce_size = (62 + namelen + 8) & 0xff8;
+			ce += "\0" * (ce_size - len (ce));
+			t.append (ce);
+		}
+		t = "DIRC%MI%MI" %(2, len (t)) + "".join (t);
+		open ($BASEDIR + "index", "w").write (t + SHA (t));
+	}
+
+	method readfile (f)
+		return $repo.open ($D [f][-1]).data;
+
+	####
+	method write_tree ()
+	{
+		L = nest_tree ([(k, v [6], v [-1]) for (k, v in $D.items ().sort ())]);
+		return $write_tree_rec (L);
+	}
+
+	method write_tree_rec (L)
+	{
+		t = [];
+		for (path, mode, sig in L) {
+			if (sig -> list) sig = $write_tree_rec (sig);
+			t.append ("%o %s\0%s" %(mode, path, unhexlify (sig)));
+		}
+		t = "".join (t);
+		return $repo.write ("tree", t);
+	}
+
+	#
+	method read_tree (t)
+	{
+		D = {};
+		for ((path, sig), mode in zip (t.lsfiles_r ($repo), t.lsmodes_r ($repo)))
+			D [path] = 0, 0, 0, 0, 0, 0, int (mode, 8), 0, 0, 0, sig;
+		$D = D;
+	}
+
+	method check_out ()
+	{
+		for (path in $D) {
+			sig = $D [path][-1];
+			if ("/" in path)
+				if (!os.access (path.rpartition ("/")[0])) {
+					d = "";
+					for (dd in path.split ("/")[:-1]) {
+						d += dd + "/";
+						try os.mkdir (d);
+					}
+				}
+print 'wrote:', path;
+			open (path, "w").write ($repo.openblob (sig));
+			s = os.stat (path);
+			$D [path] = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
+				 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig;
+		}
+	}
+}
+
+# helper function
+def nest_tree (L)
+{
+	L2 = []
+	indir = ""
+	for (path, mode, sig in L) {
+		if (indir) {
+			if.continue (path.sw (pdir))
+				SUB.append ((path [len (indir)+1:], mode, sig))
+			L2.append ((indir, 16384, nest_tree (SUB)))
+			indir = ""
+		}
+		if ("/" in path) {
+			indir, None, rest = path.partition ("/")
+			pdir = indir + "/"
+			SUB = [(rest, mode, sig)]
+		} else
+			L2.append ((path, mode, sig))
+	}
+	if (indir)
+		L2.append ((indir, 16384, nest_tree (SUB)))
+	return L2
+}
+
+# GPG signed tags
+
+def verify_tag (data)
+{
+	# the tag must be signed and the public key must be in our gpg
+	# database. If the signature is OK, the commit id is returned.
+
+	d = zlib.decompress (data)
+	hdr, None, data = d.partition ("\0");
+	typ, None, siz = hdr.partition (" ");
+	# (xxx: could use this in advance to allocate exact buffer)
+	if (int (siz) != len (data))
+		raise Error ("Bad tag object")
+	if (typ != "tag")
+		raise Error ("Not a tag object")
+	if ("-----BEGIN PGP SIGNATURE-----" not in data)
+		raise Error ("Tag not signed")
+
+	rdata, None, signature = data.partition ("--")
+	signature = "--" + signature
+	from pgp.gpg import VERIFY
+	VERIFY ("tag.asc", "tag", signature, rdata)
+
+	if (!data.sw ("object "))
+		raise Error ("Can't parse tag object")
+
+	return data [7:47]
+}
+
+def make_tag (commit_id, tag_name, tag_msg, tagger)
+{
+	tag =
+"object %s
+type commit
+tag %s
+tagger %s
+
+%s" %(commit_id, tag_name, tagger, tag_msg)
+	return tag + @pgp.gpg.SIGN (tag)
+}

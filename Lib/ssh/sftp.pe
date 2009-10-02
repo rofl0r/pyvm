@@ -1,0 +1,370 @@
+##  SFTP
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from ssh.base import BuildPacket, Byte, Raw
+from datastream import data_parser
+
+# The SFTP protocol is a general application layer protocol for
+# file transfer.  It is not depending on SSH, although until now
+# SFTP is always invoked on SSH channels.  "Secure" probably
+# refers to "file has been trasmitted completely and w/o errors".
+#
+# Still though, it's not the best protocol in the world.
+# This is a client implementation of base SFTP and SFTP on SSH,
+# useful for connecting to a UNIX server and backing up our files.
+
+namespace FXP
+{
+	INIT     = 1
+	VERSION  = 2
+	OPEN     = 3
+	CLOSE    = 4
+	READ     = 5
+	WRITE    = 6
+	LSTAT    = 7
+	OPENDIR  = 11
+	READDIR  = 12
+	REMOVE   = 13
+	MKDIR    = 14
+	REALPATH = 16
+	STAT     = 17
+	READLINK = 19
+	SYMLINK  = 20
+
+	STATUS = 101
+	HANDLE = 102
+	DATA   = 103
+	NAME   = 104
+	ATTRS  = 105
+}
+
+class Error (Exception);
+
+def parse_attr (P)
+{
+	A = {}
+	f = P.rint ()
+	if (f & 1) A ['size'] = P.u64 ()[1]
+	if (f & 2) {
+		A ['uid'] = P.rint ()
+		A ['gid'] = P.rint ()
+	}
+	if (f & 4) A ['mode'] = P.rint ()
+	if (f & 8) {
+		A ['amtime'] = P.rint ()
+		A ['mmtime'] = P.rint ()
+	}
+	if (f & 0x80000000)	# ignore
+		for (j in *P.rint ())
+			P.rstr (), P.rstr ()
+	return A
+}
+
+def parse_name (P)
+{
+	name = P.rstr ()
+	D = {'longname' : P.rstr ()}
+	D.update (parse_attr (P))
+	return name, D
+}
+
+ERR = {
+	1: "EOF",
+	2: "No such file or directory",
+	3: "Permission denied",
+	4: "Failure",
+	5: "Bad message (protocol implementation Error!!)",
+	6: "No connection",
+	7: "Connection lost in the highway",
+	8: "Unsupported operation",
+}
+
+def checkstatus ((sid, s))
+{
+	if (sid != FXP.STATUS)
+		raise Error ("Was expecting STATUS")
+	status = ord32b (s [:4])
+	if (!status) return
+	raise Error (ERR [status])
+}
+
+class SFTP
+{
+	# (xxx: we'd like to cache the result of listdir and use it for stat())
+
+	method __init__ ($chan)
+	{
+		$chan.send (packet (Byte (FXP.INIT), 3))
+		ver = $recv ()
+		if (ord (ver [0]) != FXP.VERSION)
+			raise "Error"
+		$rqid = 1
+	}
+
+	method recv ()
+	{
+		p = $chan.recv ()
+		if (!p) return ""
+		l = ord32b (p [:4])
+		while (l > len (p) - 4) {
+			if !(d = $chan.recv ())
+				return ""
+			p += d
+		}
+		return p [4:]
+	}
+
+	method send_command (cmd, *args)
+	{
+		$chan.send (packet (Byte (cmd), $rqid, *args))
+		rep = $recv ()
+		status = ord (rep [0])
+		rid = ord32b (rep [1:5])
+		$rqid += 1
+		return status, rep [5:]
+	}
+
+	method listdir (d)
+	{
+		r = $send_command (FXP.OPENDIR, d)
+		if (r [0] != FXP.HANDLE)
+			raise Error ("No such directory [%s]" %d)
+		handle = r [1][4:]
+		L = {}
+		while (1) {
+			r = $send_command (FXP.READDIR, handle)
+			if (r [0] != FXP.NAME)
+				break
+			P = ppacket (r [1])
+			count = P.rint ()
+			for (i in *count) {
+				name, attrs = parse_name (P)
+				L [name] = attrs
+			}
+		}
+		checkstatus ($send_command (FXP.CLOSE, handle))
+		return L
+	}
+
+	method readfile (f, offset=0, size=None, progress=None)
+	{
+		r = $send_command (FXP.OPEN, f, 1, 0)
+		if (r [0] != FXP.HANDLE)
+			raise Error ("No such directory [%s]" %f)
+		handle = r [1][4:]
+		data = []
+		datalen = 0
+		while (1) {
+			r = $send_command (FXP.READ, handle, 0, offset, 65536)
+			if (r [0] != FXP.DATA) {
+				checkstatus (r)
+				break
+			}
+			r = r [1][4:]
+			data.append (r)
+			datalen += len (r)
+			offset += len (r)
+			if (progress)
+				progress (offset)
+			if (len (r) < 65536)
+				break
+			if (size is not None and datalen >= size)
+				break
+		}
+		checkstatus ($send_command (FXP.CLOSE, handle))
+		if (size is not None)
+			return "".join (data) [:size]
+		return "".join (data)
+	}
+
+	method writefile (f, data, offset=0, creat=True, trunc=True, mode=None)
+	{
+		flags = 2
+		if (creat) flags |= 8
+		if (trunc) flags |= 16
+
+		if (mode is None)
+	 		r = $send_command (FXP.OPEN, f, flags, 0)
+		else 
+			r = $send_command (FXP.OPEN, f, flags, 4, mode & 0x1ff)
+
+		if (r [0] != FXP.HANDLE)
+			checkstatus (r)
+		handle = r [1][4:]
+		bo = offset
+		offset = 0
+		while (offset < len (data)) {
+			to = min (offset + 8192, len (data))
+			r = $send_command (FXP.WRITE, handle, 0, bo + offset, data [offset:to])
+			offset = to
+		}
+		checkstatus ($send_command (FXP.CLOSE, handle))
+	}
+
+	method _stat (f, cmd)
+	{
+		r = $send_command (cmd, f)
+		if (r [0] != FXP.ATTRS)
+			raise Error ("No such file or dir [%s]" %f)
+		return parse_attr (ppacket (r [1]))
+	}
+
+	method stat (f) return $_stat (f, FXP.STAT)
+
+	method lstat (f) return $_stat (f, FXP.LSTAT)
+
+	method access (f)
+		try {
+			$stat (f)
+			return True
+		} except
+			return False
+
+	method readlink (f)
+	{
+		status, reply = $send_command (FXP.READLINK, f)
+		if (status != FXP.NAME)
+			raise Error ("Not a link %s" %f)
+		return parse_name (ppacket (reply [4:])) [0]
+	}
+
+	method symlink (l, f)
+		raise Error ("symlink over SFTP not implemented")
+
+	method remove (f)
+		checkstatus ($send_command (FXP.REMOVE, f))
+
+	method mkdir (d, mode=None)
+		if (mode is None)
+			checkstatus ($send_command (FXP.MKDIR, d, 0))
+		else checkstatus ($send_command (FXP.MKDIR, d, 4, mode & 0x1ff))
+
+	method realpath (p)
+	{
+		status, reply = $send_command (FXP.REALPATH, p)
+		if (status != FXP.NAME)
+			raise Error ("Bad path %s" %p)
+		return parse_name (ppacket (reply [4:])) [0]
+	}
+}
+
+def packet (*args)
+{
+	p = BuildPacket (*args)
+	return "%MI" % len (p) + p
+}
+
+class ppacket (**data_parser)
+{
+	rint = r32b
+	method rstr ()
+		return $read ($r32b ())
+	method u64 ()
+		return $rint (), $rint ()
+	rbyte = r8
+}
+
+##
+##
+
+def SSH_SFTP (host, port, user, pass, privkey)
+{
+	from ssh.applayer import Connect
+	C = Connect (host, port, user, pass, privkey)
+	c = C.OpenChannel ("session")
+	c.send_request ("subsystem", True, "sftp")
+	return SFTP (c)
+}
+
+# extremely simple interactive sftp client
+
+if (__name__ == __main__)
+{
+	USAGE = "sftp <host-alias>"
+	from misc import fprint
+	import os
+
+	hostname, username, password, privkey = @ssh.hostalias.get (sys.argp.one_arg ())
+
+	try S = SSH_SFTP (hostname, 22, username, password, privkey)
+	except {
+		print sys.exc_info ()
+		exit ()
+	}
+
+	def progress (offset)
+		fprint ("   \rread %i bytes" %offset)
+
+	Help = """
+For the remote host:
+	ls <dir>
+	get <file>
+	put <file>
+	pwd
+	cd [<dir>]
+For the local system:
+	lls
+	lcd
+	lpwd
+Misc:
+	help
+	exit
+	quit
+"""
+
+	print "Conneted:\ntype '?' for help\n"
+	cwd = S.realpath (".")
+
+	while (1) {
+		try cmd = raw_input (cwd + " > ")[:-1]
+		except break
+
+		cmd, None, args = cmd.partition (" ")
+
+		try {
+			if (cmd == "ls") {
+				files = S.listdir (args or cwd)
+				for (f in files.keys ().sort ())
+					print " ", f
+			} else if (cmd == "get") {
+				# Progress bar
+				data = S.readfile (args, progress=progress)
+				print "OK saved %i bytes to %s" %(len (data), args)
+				writefile (args, data)
+			} else if (cmd == "put") {
+				#progress bar
+				S.writefile (args, readfile (args))
+			} else if (cmd == "pwd") {
+				print cwd
+			} else if (cmd == "cd") {
+				cwd2 = S.realpath (args ? cwd + "/" + args : ".")
+				try {
+					S.listdir (cwd2)
+					cwd = cwd2
+					print cwd
+				} except print "Not a directory?"
+			} else if (cmd == "exit" or cmd == "quit") {
+				break
+			} else if (cmd == "lcd") {
+				os.chdir (args)
+			} else if (cmd == "lpwd") {
+				print os.getcwd ()
+			} else if (cmd == "lls") {
+				for (f in os.listdir (".").sort ())
+					print " ", f
+			} else if (cmd == "help") {
+				print Help
+			}
+		}
+		except {
+			print "Failed:", sys.exc_info ()[1]
+			continue
+		}
+	}
+}

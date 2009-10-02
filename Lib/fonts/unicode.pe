@@ -1,0 +1,216 @@
+##  Utilities for Unicode and UTF-8
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from _unicode import utf8_n, utf82int, transcode
+
+def int2utf8 (i)
+{
+	# could do in C, but not used that often anyway
+	if (i < 0x80)
+		return chr (i)
+	if (i < 0x800) 
+		return chr (((i>>6) & 0x1F) | 0xC0) +
+			chr ((i & 0x3f) | 0x80)
+	if (i < 0x10000)
+		return chr (((i>>12) & 0x0F) | 0xE0) +
+			chr (((i>>6) & 0x3f) | 0x80) +
+			chr ((i & 0x3f) | 0x80)
+	if (i < 0x20000)
+		return chr ((i>>18) | 0xF0) +
+			chr (((i>>12) & 0x3f) | 0x80) +
+			chr (((i>>6) & 0x3f) | 0x80) +
+			chr ((i & 0x3f) | 0x80)
+	raise Error ("Too much utf")
+}
+
+ulen = ( # for codes >= 192
+	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+	2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,5,5,0,0
+)
+
+# slice a utf-8 string. This operation is O(N) compared to the standard string slice
+# which is O(1).  Should be used on smaller strings hopefuly
+
+def utf8_slice (s, start, n)
+{
+	if (n < 0 or start < 0)
+		raise Error ("negative indexes not supported")
+	c1 = utf8_n (s, 0, start)
+	c2 = utf8_n (s, start, n)
+	return s [c1:c1+c2]
+}
+
+def utf8_break (s, point)
+{
+	if (point < 0)
+		raise Error ("negative indexes not supported")
+	c = utf8_n (s, 0, point)
+	return s [:c], s [c:]
+}
+
+# Loader of uni codepage maps
+
+def parse_uni (f)
+{
+	d = {}
+	for (l in open (f))
+		if (l.strip () and l [0] != "#") {
+			x, y = l.split ()
+			if (y != "idem") {
+				y = int (y [2:], 16)
+				if ("-" in x) raise Error
+				d [int (x, 16)] = y
+			} else {
+				a, None, b = x.partition ("-")
+				for (i in xrange (int (a, 16), int (b, 16) + 1))
+					d [i] = i
+			}
+		}
+	return d
+}
+
+def mktab (d)
+{
+	t = []
+	for (i in *256)
+		if (i in d) {
+			s = int2utf8 (d [i])
+			s += (4 - len (s)) * "\0"
+			t.append (s)
+		} else t.append ("\0\0\0\0")
+	return "".join (t)
+}
+
+unimaps = {
+	"ascii":"iso01.uni",
+	"latin1":"iso01.uni",
+	"iso8859-1":"iso01.uni",
+	"iso8859-2":"iso02.uni",
+	"iso8859-3":"iso03.uni",
+	"iso8859-4":"iso04.uni",
+	"iso8859-5":"iso05.uni",
+	"iso8859-6":"iso06.uni",
+	"iso8859-7":"iso07.uni",
+	"iso8859-8":"iso08.uni",
+	"iso8859-9":"iso09.uni",
+	"iso8859-10":"iso10.uni",
+	"iso8859-15":"iso15.uni",
+	"iso-8859-1":"iso01.uni",
+	"iso-8859-2":"iso02.uni",
+	"iso-8859-3":"iso03.uni",
+	"iso-8859-4":"iso04.uni",
+	"iso-8859-5":"iso05.uni",
+	"iso-8859-6":"iso06.uni",
+	"iso-8859-7":"iso07.uni",
+	"iso-8859-8":"iso08.uni",
+	"iso-8859-9":"iso09.uni",
+	"iso-8859-10":"iso10.uni",
+	"iso-8859-15":"iso15.uni",
+	"windows-1250":"cp1250.uni",
+	"windows-1251":"cp1251.uni",
+	"windows-1252":"cp1252.uni",
+	"windows-1253":"cp1253.uni",
+}
+
+charsets = unimaps.keys ()
+
+def UNI (p)
+	return HOME + "Lib/fonts/unimaps/" + p
+
+def load_codepage (cp)
+	return mktab (parse_uni (UNI (unimaps [cp])))
+
+def load_rcodepage (cp)
+{
+	d = parse_uni (UNI (unimaps [cp]))
+	d2 = {}
+	for (k, v in d.items ())
+		if (k >= 160)
+			d2 [v] = k
+	return d2
+}
+
+# for study...
+
+def all_unichars ()
+{
+	L = []
+	for (v in unimaps.values ())
+#		if (v.sw ("iso"))
+			L.extend (parse_uni (UNI (v)).values ())
+	return list (set (L)).sort ()
+}
+
+def all_codepages ()
+	return [(v, parse_uni (UNI (v))) for (v in unimaps.values ())]
+
+# A transcoder takes some text written in a specific charset and
+# converts it to utf-8
+
+Charsets = {}
+
+def transcoder (charset)
+{
+	try cp = Charsets [charset]
+	except cp = Charsets [charset] = load_codepage (charset)
+	def f (text)
+		return transcode (cp, text)
+	return f
+}
+
+transcoders = {}
+
+def to_utf (charset, text)
+{
+	charset = charset.lower ()
+	if (charset in ("utf-8", "us-ascii"))
+		return text
+	if (charset not in transcoders)
+		try transcoders [charset] = transcoder (charset)
+		except {
+			print "Unknown charset:", charset
+			transcoders [charset] = def (x) x
+		}
+	return transcoders [charset](text)
+}
+
+# reverse transcoder, from utf-8 to a specific charset. since utf-8
+# is a superset of all charset, this function returns the new text
+# and the  number of glyphs that do not belong in the target charset.
+# comparing if the N/A characters are much more than the OK characters
+# can be a hint as to whether we're doing something wrong.
+
+def r_transcode (charset, text)
+{
+	d = load_rcodepage (charset)
+	from _unicode import utf8_iter
+	na = ok = 0
+	from cStringIO import StringIO
+	cc = StringIO ()
+	ww = cc.write
+	for (c in utf8_iter (text)) {
+		if (c < 160)
+			ww (chr (c))
+		else try {
+			ww (chr (d [c]))
+			ok += 1
+		} except na += 1
+	}
+
+	return ok, na, cc.getvalue ()
+}
+
+#
+if (__name__ == __main__)
+{
+	for (f in sys.argv [1:])
+		print ords(mktab (parse_uni (f)))
+
+	load_codepage ("iso-8859-7")
+}

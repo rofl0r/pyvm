@@ -1,0 +1,149 @@
+# The diffstat utility
+#
+# This diffstat has the option --color which is interesting!
+# red signs are +/- 100 lines.  blue signs are +/- 10
+# the output is useless for copy-pasting and viewing in
+# displays that don't understand ansi color sequences.
+
+__autosem__
+
+class rewinder
+{
+	method __init__ ($iterable)
+		$buffer = []
+
+	method __iter__ ()
+		while (1) {
+			if ($buffer) yield $buffer.pop (0)
+			else yield $iterable.next ()
+		}
+
+	method peek (n)
+		try {
+			L = $buffer [:n]
+			while (len (L) < n) {
+				try x = $iterable.next ()
+				except x = ""
+				$buffer.append (x)
+				L.append (x)
+			}
+			return L
+		}
+
+	method skip1 ()
+		try $buffer.pop (0)
+}
+
+def common_prefix (s1, s2)
+{
+	if (!s1 or !s2) return ""
+	for (i in xrange (min (len (s1), len (s2))))
+		if (s1 [i] != s2 [i]) break
+	ss = s1 [:i]
+	if (!ss) return ""
+	if (ss [-1] != "/")
+		ss = ss.rpartition ("/")[0] + "/"
+	return ss
+}
+
+def diffstat (R, maxw, color=False)
+{
+	R = rewinder (iter (R))
+
+	cur = added = removed = 0
+	rez = {}
+
+	for (i in R) {
+		if (i.sw ("---")) {
+			l1, l2 = R.peek (2)
+			if.continue (l1.sw ("+++") and l2.sw ("@")) {
+				if (cur) rez [cur] = added, removed, added+removed
+				R.skip1 ()
+				cur = i [6:].split ()[0]
+				added = removed = 0
+			}
+		}
+		if (i.sw ("+"))
+			added += 1
+		else if (i.sw ("-"))
+			removed += 1
+	}
+	if (cur) rez [cur] = added, removed, added+removed
+	if (!rez) {
+		yield " 0 files changed"
+		return
+	}
+
+	files = rez.keys ().sort ()
+
+	if (len (files) > 1) {
+		prefix = files [0]
+		for (f in files)
+			prefix = common_prefix (prefix, f)
+	} else prefix = ""
+
+	ff = {}
+	for (f in files)
+		ff [f [len (prefix):]] = f
+	files = ff
+
+
+	maxl = max ([len (x) for (x in files)])
+	fs = " %%-%is | %%4s %%s" %maxl
+
+	totadd = totrmv = 0
+	if (!color) {
+		wleft = max (maxw - (maxl + 10), 10)
+		maxh = max ([x [2] for (x in rez.values ())])
+		if (maxh <= wleft) factor = 1.0
+		else factor = float (wleft) / maxh
+
+		for (f in files.keys().sort()) {
+			added, removed, total = rez [files [f]]
+			totadd += added
+			totrmv += removed
+			yield fs % (f, total, "+"*int(added*factor) + "-"*int(removed*factor))
+		}
+		yield " %i files changed, %i insertions (+), %i deletions (-)" %(len (files), totadd, totrmv)
+	} else {
+		from ttycolor import color
+		def coldr (sign, n)
+		{
+			n0 = n / 1000
+			n = n % 1000
+			n1 = n / 100
+			n2 = n % 100
+			n3 = n2 / 10
+			n4 = n2 % 10
+			return color (sign, "g") * n0 + color (sign, "r") * n1 + color (sign, "b") * n3 + sign * n4
+		}
+
+		for (f in files.keys().sort()) {
+			added, removed, total = rez [files [f]]
+			pluses = coldr ("+", added)
+			minuses = coldr ("-", removed)
+			totadd += added
+			totrmv += removed
+			yield fs % (f, total, pluses + "/" + minuses)
+		}
+		yield fs %('='*maxl, totadd+totrmv, coldr ("+", totadd) + "/" + coldr ("-", totrmv))
+		yield " %i files changed, %i insertions (+), %i deletions (-), %+i difference, %i mods" %
+			(len (files), totadd, totrmv, totadd-totrmv, totadd+totrmv)
+	}
+}
+
+USAGE = "usage: diffstat [--color] [<file>]"
+
+gen stripnl (it)
+	for (i in it)
+		yield i [:-1]
+
+if (__name__ == __main__) {
+	# get from sys.tty_size
+	maxw = 80
+
+	color = sys.argp.check_switch ("--color")
+	input = sys.argp.have_args () ? open (sys.argp.filename_ex ()) : iter (sys.stdin)
+	for (l in diffstat (stripnl (input), maxw, color=color))
+		print l
+}

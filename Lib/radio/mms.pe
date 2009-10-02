@@ -1,0 +1,289 @@
+##  mms streaming
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# The code of libmms was used as a valuable guide.
+
+# Currently this code plays only HTTP MMS.
+
+__autosem__
+
+from datastream import data_parser_le as dp, socketfile_parser_le as sockparser
+
+VERBOSE = 0
+def vprint (*args)
+	if (VERBOSE) {
+		for (a in args [:-1])
+			print a,
+		print args [-1]
+	}
+
+PacketType = {
+	0x4824: ("HEADER",8),
+	0x4324: ("RESET",4),
+	0x4424: ("DATA",8),
+	0x4524: ("END",4),
+}
+
+guids = {unhexlify (k):v for (k, v in [
+	("3026b2758e66cf11","header"),
+	("2c22bd911cf27a49","File Transfer media"),
+	("74d40618dfca0945","padding"),
+	("3326b2758e66cf11","content description"),
+	("11d2d3abbaa9cf11","reserved_1"),
+	("c0cfda59e659d011","command media"),
+	("b503bf5f2ea9cf11","header extension"),
+	("e3cb1a4b0b10d011","reserved script command"),
+	("20dbfe4cf675cf11","reserved marker"),
+	("9107dcb7b7a9cf11","stream header"),
+	("d03fb73c4a0c0348","timecode index"),
+	("301afb1e620bd011","script command"),
+	("ce75f87b8d46d111","stream bitrate properties"),
+	("e07d903515e4cf11","Degradable JPEG media"),
+	("00e11bb64e5bcf11","JFIF media (JPEG)"),
+	("022ae2d6da35d111","mutex unknown"),
+	("a1dcab8c47a9cf11","file properties"),
+	("3626b2758e66cf11","data"),
+	("012ae2d6da35d111","mutex bitrate"),
+	("01cd87f451a9cf11","marker"),
+	("40a4f149ce4ed011","audio conceal none"),
+	("e265fb3aef47f240","Binary media"),
+	("4152d1861d31d011","codec comment1 header"),
+	("40a4d0d207e3d211","extended content description"),
+	("0057fb20555bcf11","no error correction"),
+	("90080033b1e5cf11","simple index"),
+	("409e69f84d5bcf11","audio media"),
+	("f803b1fead12644c","media object index"),
+	("c0ef19bc4d5bcf11","video media"),
+	("4052d1861d31d011","codec list"),
+	("14e68a292226174c","extended content encryption"),
+	("d329e2d6da35d111","index"),
+	("50cdc3bf8f61cf11","audio spread"),
+	("3526b2758e66cf11","error correction"),
+	("d129e2d6da35d111","asf 2.0 header"),
+	("dc29e2d6da35d111","bitrate mutual exclusion")
+])}
+
+# ASF stream parser. The argument `d` must be something with the @datastream.data_parser
+# API. This can be made more generic and probably belongs in 'av/'. But for the moment
+# it's just in here for the internet radio which is the only client.
+
+class asf_parser
+{
+	method __init__ ($d)
+	{
+		$packet_len = 0
+		$audio_stream = None
+		$streams = {}
+	}
+
+	method next ()
+	{
+		d = $d
+		try t = d.r16 ()
+		except return
+
+		size = d.r16 ()
+		type, ehl = PacketType [t]
+
+		exhdr = d.read (ehl)
+		data = d.read (size - ehl)
+
+		if (type == "HEADER") {
+			cc = dp (data)
+			cc.skip (30)
+			L = []
+			while (cc.left () > 24) {
+				guid = guids.get (cc.read (8))
+				d4 = cc.read (8)
+				l0 = cc.r32 ()
+				l1 = cc.r32 ()
+				data2 = cc.read (l0 - 24)
+				if (guid == "file properties") {
+					$packet_len = ord32l (data2 [68:72])
+					vprint ("  PACKET LENGTH:", $packet_len)
+				} else if (guid == "stream header") {
+					dd = dp (data2)
+					guid2 = guids.get (dd.read (8))
+					dd.skip (40)
+					stream_id = dd.r8 ()
+					encrypted = dd.r8 ()
+					$streams [stream_id] = guid2, encrypted
+					if (encrypted)
+						raise Error ("Encrypted stream not implemented")
+					if (guid2 == "audio media")
+						$audio_stream = stream_id
+				} else vprint (" unhandled GUID:", guid)
+			}
+		} else if (type == "DATA") {
+			if ($packet_len is None)
+				raise Error ("packet lengh has not been set")
+			cc = dp (exhdr)
+			chs = cc.r32 ()
+			cc.r8 ()
+			mse = cc.r8 ()
+			l2 = cc.r16 ()
+			if (size - ehl < $packet_len)
+				data += "\0" * ($packet_len - (size - ehl))
+		}
+
+		return type, data
+	}
+
+	method __iter__ ()
+		while (x = $next ())
+			yield x
+}
+
+##############################################################
+import re, socket
+from random import hrandstr
+
+UR = re.re (r"mms://([^/:]+)(:?)([^/]*)(.*)", re.I)
+HTTP = re.re (r"HTTP/\d\.\d\s+(\d\d\d)")
+UA = "User-Agent: NSPlayer/4.1.0.3856\r\n"
+
+FirstRequest = "GET %s HTTP/1.0\r\n"+
+"Accept: */*\r\n"+
+ UA+
+"Host: %s:%d\r\n"+
+"Pragma: no-cache,rate=1.000000,stream-time=0,stream-offset=0:0,request-context=%u,max-duration=0\r\n"+
+"Pragma: xClientGUID={%s}\r\n"+
+"Connection: Close\r\n\r\n"
+
+LiveRequest = "GET %s HTTP/1.0\r\n"+
+"Accept: */*\r\n"+
+ UA+
+"Host: %s:%d\r\n"+
+"Pragma: no-cache,rate=1.000000,request-context=%u\r\n"+
+"Pragma: xPlayStrm=1\r\n"+
+"Pragma: xClientGUID={%s}\r\n"+
+"Pragma: stream-switch-count=%d\r\n"+
+"Pragma: stream-switch-entry=%s\r\n"+
+ # is that needed?
+"Connection: Close\r\n\r\n"
+
+def check_http200 (s)
+{
+	l = s.readline_rstr ()
+	if (!HTTP (l)) {
+		print "Bad HTTP header:", l
+		return
+	}
+	status = int (HTTP (l) [1])
+	if (status != 200) {
+		print "HTTP status not 200:", status
+		return
+	}
+	return True
+}
+
+class mms_radio
+{
+	method __init__ ($url)
+	{
+		try {
+			$host, None, port, path = UR (url).groups ()
+			$port = port ? int (port) : 80
+			$path = path or "/"
+		} except raise Error ("Bad url [%s]"%url)
+		$status = "off"
+		$myuid = "-".join ([hrandstr (i) for (i in (4, 2, 2, 2, 6))])
+	}
+
+	method tune ()
+	{
+		R = FirstRequest % ($path, $host, $port, 0, $myuid)
+		s = socket.Connect ($host, $port, 10)
+		s.send (R)
+		s = s.socketfile ()
+		if (!check_http200 (s))
+			$error ("bad HTTP response")
+		live = None
+		for (r in s.readlines_rstr ())
+			if (!r) break
+			else {
+				r = r.lower ()
+				if (r.sw ("location:"))
+					$error ("location redirection not implemented")
+				if (r.sw ("pragma:"))
+					for (p in r [7:].split (","))
+						if (p.strip ().sw ("features="))
+							live = "broadcast" in p
+			}
+		if (!live)
+			$error ('Not a "live" stream. (not implemented)')
+		P = asf_parser (sockparser (s))
+		# parse one packet which is expected to be a header describing
+		# the available streams.
+		P.next ()
+		if (P.audio_stream is None)
+			$error ("No audio streams")
+
+		# make request for streaming
+		R = LiveRequest % ($path, $host, $port, 1, $myuid, 1, "ffff:%i:0"%P.audio_stream)
+		s = socket.Connect ($host, $port, 10)
+		s.send (R)
+		s = s.socketfile ()
+		if (!check_http200 (s))
+			$error ("bad HTTP response (step 2)")
+		for (r in s.readlines_rstr ())
+			if (!r) break
+		$P = asf_parser (sockparser (s))
+	}
+
+	method error (msg)
+	{
+		print msg
+		raise Error (msg)
+	}
+
+	method next_packet ()
+		return $P.next ()
+}
+
+USAGE = "mms [-s file][-d hh:mm] <mmsurl>
+
+Save the streaming from the given mms url to the
+specified file or 'OUT.asf'.
+
+-s file		: save to file (asf audio)
+-d hh:mm	: stop after this duration
+"
+
+if (__name__ == __main__)
+{
+	from misc import fprint
+	VERBOSE = 1
+
+	filename = sys.argp.check_vswitch ("-s") or "OUT.asf"
+	duration = sys.argp.check_vswitch ("-d")
+	url = sys.argp.one ()
+
+	if (duration) {
+		hh, None, mm = duration.partition (":")
+		stop_at = now () + (int (hh) * 60 + int (mm)) * 60
+	} else  stop_at = None
+
+	M = mms_radio (url)
+	print "tunning to %s..." %url
+	M.tune ()
+	print "OK"
+
+	print "Saving to:", filename
+	f = open (filename, "w")
+	pn = 0
+	while (1) {
+		t, d = M.next_packet ()
+		pn += 1
+		f.write (d)
+		fprint ("PACKET %i\r"%pn)
+		if (stop_at and stop_at < now ())
+			break
+	}
+	print
+	f.close ()
+}

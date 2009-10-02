@@ -1,0 +1,74 @@
+torrent
+========
+
+This is a simple bittorrent client.
+
+Bittorrent and the other peer-2-peer systems belong in the category
+of things that work with the logic that: if you want to *get* the only
+thing you can do is *give*.  Or, more generally, if you want your problem
+to be solved you can try solving somebody else's problem.
+
+This is by definition the way the specific problems work, because the
+root of the problem is that one cannot solve the problem for himself
+while it is easy for him to solve the problem for someone else.
+
+-----
+
+Usage
+-----
+
+You will need a 'torrent' file. Then run
+
+	pyvm torrent -g file.torrent
+
+This will begin getting pieces from the torrent and give pieces to
+those who request them.  If the entire torrent has been fetched, it
+will just give pieces (seed it).
+
+If you stop the client for some reason, the next time you start you
+should be at the same directory in order for "torrent" to resume.
+So it is best to create a directory somewhere:
+
+	~/mytorrents/
+
+copy the 'file.torrent' in there and start "torrent" from
+inside that directory.
+
+For downloading another torrent, another instance of "torrent"
+must be started. It will use a different port too.
+
+With '-g' the program show a small graphical progress interface.
+It's possible to press ctrl-z to view the log while in it.
+Otherwise, it just prints what's happening on the console.
+
+
+Technical
+---------
+
+Technically, this implementation tries to give.
+In order to give, of course, it must take and thus eventually the entire
+file may appear.
+
+Requesting more peers from the tracker happens as long as the download
+rate is below 50kb/s.
+
+Uploading doesn't chocke. Instead a delay is inserted to try to keep the
+upload rate below 24kB/s.
+
+Some complex situations are solved with biased randomness.
+
+
+TorFS
+-----
+
+torfs can mount torrent directories into the filesystem. In other
+words it is possible to use the contents of downloaded torrents
+without having to extract them; this encourages seeding.
+
+At the moment, torfs can be used only if the download is
+complete.  Showing files as they appear is a TODO item, but
+because of the random fetching of BT, we can't expect to
+see any files until 97% of the entire torrent is OK.
+
+Finally, torfs doesn't work very well if there are files > 2GB.
+To be fixed with "the better FUSE library"

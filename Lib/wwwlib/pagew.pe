@@ -1,0 +1,659 @@
+__autosem__
+
+import thread, gui, time
+from basic import fixfont_utf8
+
+# webpage widget API
+# This widget resizes once on wm setup.  From then on its size is fixed.
+# The pagew `widget` works as follows: first we call `clear()` on it and then
+# we start adding drawable elements (text, images or even embedded widgets like
+# buttons and text editors). Then we call `done()`.  Upon `Draw()` from the
+# wm the widget will "paint all the drawables", and `onClick()` will invoke
+# callbacks (actually, "all the drawables are painted" after a scroll to a
+# framebuffer, the `Draw()` method just blits this framebuffer on the screen)
+#  Some methods:
+#
+#	clear (total-height, y-offset)
+#		empty the area of its contents and prepare it for adding new ones
+#
+#	add_text (txt, x, y, font, fg, href)
+#		if `href` is not none, upon click it will be used (see code)
+#	add_image (image, x, y, w, h, onclick, src)
+#		`image` should be something with a method `get_image()`
+#		that returns an RGB rawimage thing
+#	add_line, add_widget, add_bgrect, etc.
+#
+#	done ()
+#		when done adding widgets.
+#
+#	on_screen (image)
+#		if the image is on screen (has been added with `add_image`)
+#		it will be updated.
+#	is_on_screen (image)
+#		returns true if the image is on the widget
+#
+# The widget is aware of the `$browser`, to whom various click/keypress events
+# must be sent.
+#
+# Note that drawing the text/images/backgrounds on screen is not speed critical.
+# What really takes time is calculating the total height of the page.
+
+# first the embedded widgets for Form elements
+
+class VImage
+{
+	has_value = False
+	method __init__ ($img, $href, $BG, $x, $y, $src) { }
+	method xy_in (x, y)   return $x <= x <= $x + $img.width () and $y <= y <= $y + $img.height
+	method get_img ()     return $img.get_image () 
+	method transparent () return $img.transparent ()
+	method get_clip ()    return $img.Clip
+}
+
+class VButton (gui.button)
+{
+	has_value = False
+	method Init (text, **kw) $button_init (text, **kw)
+	method Action () 
+		try $form.go ($vwidget)
+		except {
+			print "form submission failed:"
+			print sys.exc_info ()
+		}
+}
+
+class VTextInput (gui.textin)
+{
+	has_value = True
+
+	method Init (size, gw, **kw)
+	{
+		if (gw is None)
+			kw ["tw"] = max (size-2, 1)
+		else kw ["w"] = gw
+		$textin_init (**kw)
+	}
+
+	method onEnter ()
+		$form.go_text ($vwidget)
+
+	namespace Form
+	{
+		method GetValue ()
+			return $getText ()
+
+		method SetValue (v)
+			$setText (v)
+	}
+}
+
+class VTextArea (gui.editor)
+{
+	has_value = True
+
+	method Init (cols, rows, **kw)
+	{
+		kw ["tw"] = cols
+		kw ["th"] = rows
+		$editor_init (**kw)
+	}
+
+	namespace Form
+	{
+		method GetValue ()
+			return $get_text ()
+
+		method SetValue (v)
+			$load_text (v)
+	}
+}
+
+class VCheckBox (gui.checkbox)
+{
+	has_value = True
+
+	method Init ($value, checked, **kw)
+		$checkbox_init ("", checked, **kw)
+
+	namespace Form
+	{
+		method GetValue ()
+			return $state ? $value : None
+
+		method SetValue (v)
+			$setstate (v)
+	}
+}
+
+class VRadioBox (gui.radiobox)
+{
+	has_value = True
+
+	method Init ($value, checked, text="", **kw)
+		$radiobox_init (text, checked, **kw)
+
+	namespace Form
+	{
+		method isSelected ()
+			return $state
+
+		method GetValue ()
+			return $state ? $value : None
+
+		method SetValue (v)
+			$setstate (v)
+	}
+}
+
+class VComboBox (gui.combo)
+{
+	has_value = True
+
+	method Init ($vitems, selected, **kw)
+		$combo_init ([x [0] for (x in vitems)], selected, font=fixfont_utf8, **kw)
+
+	namespace Form
+	{
+		method hasValue ()
+			return $selected is not None
+
+		method GetValue ()
+		{
+			s = $vitems [$selected]
+			return s [1] or s [0]
+		}
+	}
+}
+
+# The web browser widget.  This widget is actually a framebuffer where
+# all the HTML rendering does any drawing.  This framebuffer acts as a
+# buffering of graphics operations and in the end, it will "flush"
+# modified areas to the gui.
+# At the same time, the framebuffer widget can be a container of other
+# normal widgets (textinputs, checkboxes, etc).  Drawing of these ends
+# up in the framebuffer.
+
+class page_widget (gui.basecontainer)
+{
+	PageBG = 0
+	elastic = True
+	ExtraH = 0
+
+	# Upon initialization, the method setTVO must be supplied.
+	# This method is used by the scrollbar to slide the view.
+	# The scrollbar widget is attached to this widget by some
+	# other code, currently the main browser loop, as attribute
+	# `ybar`.  It is optional.
+
+	method Init ($browser, $setTVOh=None, $setTVOv=None, **kw)
+	{
+		$base_init (**kw)
+		$c = []
+		$clickareas = []
+		$page_height = $page_offset = 0
+		$page_width = $xoffset = 0
+		$wm.Domain.pop_packer (self)
+	}
+
+	method getTVOv ()
+		return $page_width, $w, $xoffset
+
+	method preOnClick (x, y)
+		$setKeyWidget ()
+
+	#
+
+	# ----- fill up -----
+
+	method Free ()
+	{
+		$leaveKeyWidget ()
+		$c = []
+		$clickareas = []
+		$images = []
+		$iframes = []
+	}
+
+	method clear ($page_height, $page_offset, $page_width=None, $xoffset=0)
+	{
+		if (page_width is None)
+			$page_width = $w
+
+		$sub_offset = 0
+
+		$FB.clear ($PageBG)
+		# Move all persistent widgets out of the visible area
+		for (w in $c)
+			w.y = $h
+		$c = []
+		$clickareas = []
+		$images = []
+		$iframes = []
+		$wm.Domain.begin (self, $wm)
+	}
+
+	method add_text (txt, x, y, font, fg, href, spacing=0, decoration=False, bg=None)
+	{
+		cy1 = $FB.stdclip [1]
+		cy2 = cy1 + $FB.stdclip [3]
+		h = font.maxh
+		if !(y > cy2 or y + h < cy1) {
+			if (bg is not None)
+				$FB.fill_rect (x, y, font.isizeofsp (txt, spacing), h, bg)
+			font.render_to_ws ($FB, x, y, txt, fg, spacing)
+			if (decoration) {
+				yy = y + (h - 2)
+				$FB.draw_line (x, yy, x + font.isizeofsp (txt, spacing), yy, fg)
+			}
+		}
+
+		if (href)
+			$clickareas.append ((x, y, font.isizeofsp (txt, spacing), h, href))
+	}
+
+	method add_image (img, x, y, w, h, href, src)
+	{
+		i = VImage (img, href, $PageBG, x, y, src)
+		$images.append (i)
+		img = i.get_img ()
+		$FB.put_image (img, int (i.x), int (i.y))
+
+		if (href)
+			if (href -> list) {
+				for (x, y, w, h, href in href)
+					if (href)
+						$clickareas.append ((x, y, w, h, href))
+			} else $clickareas.append ((x, y, w, h, href))
+	}
+
+	method add_bg_image (img, x, y, w, h, (px, py), repeat, fpx)
+	{
+		iw, ih = img.w, img.h
+		if (px -> float)
+			px = int (px * (w - iw))
+		else if (px -> str)
+			px = int (float (px) * fpx)
+		if (py -> float)
+			py = int (py * (h - ih))
+		else if (py -> str)
+			py = int (float (py) * fpx)
+
+		puti = $FB.put_image
+		if (repeat == "no-repeat") {
+			$FB.push_clip ((x, y, w, h))
+			try puti (img, x+px, y+py)
+			$FB.pop_clip ()
+		} else {
+			img2 = img.mega_tile (img, repeat)
+			$FB.push_clip ((x, y, w, h))
+			ww, hh = img2.w, img2.h
+			if (repeat != "repeat-x")
+				while (py > 0) py -= hh
+			if (repeat != "repeat-y")
+				while (px > 0) px -= ww
+
+			if (repeat == "repeat-x") {
+				while (px < w) {
+					puti (img2, x+px, y+py)
+					px += ww
+				}
+			} else if (repeat == "repeat-y") {
+				while (py < h) {
+					puti (img2, x+px, y+py)
+					py += hh
+				}
+			} else {
+				pxx = px
+				while (py < h) {
+					px = pxx
+					while (px < w) {
+						puti (img2, x+px, y+py)
+						px += ww
+					}
+					py += hh
+				}
+			}
+
+			$FB.pop_clip ()
+		}
+	}
+
+	method add_bgrect (x, y, w, h, col)
+		$FB.fill_rect (x, y, w, h, col)
+
+	method add_clickarea (x, y, w, h, href)
+		$clickareas.append ((x, y, w, h, href))
+
+	method add_iframe (x, y, w, h, src)
+	{
+		$add_bgrect (x, y, w, h, 0xff0000)
+		try $add_text ("iframe: %s"%src, x, y, $wm.dfont, 0, None)
+		$iframes<< (x, y, w, h, src)
+	}
+
+	# Form controls widget factory
+	namespace Make
+	{
+		method button (text)
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VButton (text, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			return b
+		}
+
+		method textinput (size, value, gw)
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VTextInput (size, gw, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			if (value) b.Form.SetValue (value)
+			return b
+		}
+
+		method textarea (cols, rows, value)
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VTextArea (cols, rows, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			if (value) b.Form.SetValue (value)
+			return b
+		}
+
+		method checkbox (value, checked)
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VCheckBox (value, checked, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			return b
+		}
+
+		method radiobox (value, checked, text="")
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VRadioBox (value, checked, text, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			return b
+		}
+
+		method bind_radios (radios)
+			gui.transistor (radios)
+
+		method select (items, selected)
+		{
+			$wm.Domain.begin ($root, $wm)
+			b = VComboBox (items, selected, x=0, y=$h, p=self)
+			$wm.Domain.end ()
+			return b
+		}
+	}
+
+	method add_widget (w, x, y)
+	{
+		w.x = x
+		w.y = y
+
+		$domod = False
+		w.Draw ()
+		$domod = True
+		$c.append (w)
+		$clickareas.append ((x, y, w.w, w.h, w.onClick))
+	}
+
+	method done ()
+	{
+		$clickareas.reverse ()
+		$wm.Domain.end ()
+		$ybar.modTVO ()
+		$xbar.modTVO ()
+	}
+
+	# An image's content has been changed. If on screen, redraw it.
+	method on_screen (image)
+		for (c in $images)
+			if (c.img is image) {
+				$show_image (c.get_img (), c.x, c.y)
+				return True
+			}
+
+	method is_on_screen (image)
+		for (c in $images)
+			if (c.img is image)
+				return True
+
+	method follow_href (url, x, y)
+		$browser.follow_href (url, x, y)
+
+	# If none of the subwidgets consumes the key, forward custom stuff to browser
+
+	method cOnKey2 (k)
+		return $browser.on_key (k)
+
+	# for the scrollbar (Total-Visible-Offset, horizontal)
+	method getTVOh ()
+		return $page_height, $h, $page_offset
+
+	method __setup__ ()
+	{
+		$elastic = False
+		from graphics.framebuffer import ClippingFB as FrameBuffer
+		$virtualH = $h + $ExtraH
+		$FB = FrameBuffer ($w, $virtualH, $wm.bpp)
+
+		# decode images to specific bpp at once.  atm, do this only
+		# for 2bpp
+		from wwwlib.box import Image
+		from wwwlib.cascade_dom import css_image_db
+		css_image_db.SCREEN_BPP = Image.SCREEN_BPP = $wm.bpp == 2 ? 2 : 3
+
+		$browser.haveWfb ()
+		$setKeyWidget ()
+		$PLOCK = thread.xlock (False)
+		$GLOCK = thread.rlock ()
+		$ModArea = [0, 0, $w, $h]
+		$RefreshID = thread.start_new ($Refresh)
+	}
+
+	method HaveScroll (yoffset)
+	{
+		if (!$ExtraH)
+			return
+		if (yoffset >= $page_offset and yoffset < $page_offset + $ExtraH) {
+			$sub_offset = yoffset - $page_offset
+			$mod_area (0, 0, $w, $h)
+			return True
+		}
+	}
+
+	method scroll (dy)
+	{
+		$FB.vscroll (dy)
+		if (dy > 0)
+			$FB.push_clip ([0, $FB.h - dy, $FB.w, dy])
+		else $FB.push_clip ([0, 0, $FB.w, -dy])
+	}
+
+	method done_scroll ()
+		$FB.pop_clip ()
+
+	PageBG = 0xffffff
+
+	method RenderPage ()
+		$mod_area (0, 0, $w, $h)
+
+	method Draw ()
+		# Theoreticaly we should GLOCK the framebuffer and copy
+		# its contains to a new buffer.  In practice if contents
+		# change we'll get a new Refresh request real soon.
+		$p.show_image ($FB.as_image (), $x, $y, 0, 0, $w, $h, self)
+
+	method onRedraw (x, y, w, h)
+	{
+		with ($GLOCK)
+			image = $FB.sub_image (x, y, w, h)
+		$p.show_image (image, $x+x, $y+y, 0, 0, w, h, self);
+	}
+
+	method find_clickarea (x, y)
+		for (xx, yy, w, h, href in $clickareas)
+			if (xx <= x <= xx+w and yy <= y <= yy+h)
+				return xx, yy, href
+
+	method onClick (x, y)
+	{
+		$leaveKeyWidget ()
+		$setKeyWidget ()
+		if (aa = $find_clickarea (x, y)) {
+			xx, yy, href = aa
+			if (href -> str)
+				$follow_href (href, $absx (x), $absy (y))
+			else href (x-xx, y-yy)
+		}
+		return True
+	}
+
+	method onWheel (x)
+	{
+		$browser.scrollview (x)
+		return True
+	}
+
+	method onRightClick (x, y)
+		if (!gui.basecontainer.onRightClick (self, x, y)) {
+			M = []
+			def linkdownload (url)
+			{
+				def f ()
+				{
+					url.link_downloaded ()
+					$browser.Message ("OK. Linked from download area to webcache")
+				}
+				return f
+			}
+
+			if (aa = $find_clickarea (x, y)) {
+				xx, yy, href = aa
+				if (href -> str)
+					M = [
+						["Open in new tab", 1, def () $browser.NewTab (href)],
+						["Open in new tab (no referrer)", 1,
+							 def () $browser.NewTab (href, False)],
+						["Download Link", 1, def () $browser.BgDownload (href)],
+						["Save As", 6, void],
+					]
+				else print "NON string href!!:", href
+			}
+			for (c in $images)
+				if.break (c.xy_in (x, y) and c.src) {
+					if (M) M.append (["", 0, 0])
+					url = c.src -> str ? $browser.url.generate (c.src) : c.src
+					M.append (["Save Image", 1, linkdownload (url)])
+				}
+
+			for (xf, yf, wf, hf, src in $iframes)
+				if.break (xf < x < xf + wf and yf < y < yf + hf) {
+					url = $browser.url.generate (src).url
+					M.append (["Open iframe in new tab", 1,
+						    def () $browser.NewTab (url)])
+				}
+
+			if (M) M.append (["", 0, 0])
+			M.extend ([
+					["Save Page", 1, linkdownload ($browser.url)]
+				])
+			if (M) $wm.Run_Menu ($absx (x), $absy (y), M)
+			return True
+		} else return True
+
+	method pointer_href ()
+		if (aa = $find_clickarea (*$relxy (*$wm.where ())))
+			return aa [2]
+		else return ""
+
+	#### Framebuffering #####
+	method Refresh ()
+		try while ($FB) {
+			$PLOCK.acquire ()
+
+			while ($need_refresh) {
+				$need_refresh = False
+				sleep (0.001)
+			}
+
+			with ($wm.LOCKED) with ($GLOCK) {
+				if.continue (!$isVisible ())
+					$ModArea = [$w, $h, 0, 0]
+
+				x0, y0, x1, y1 = $ModArea
+				x0 = max (x0, 0)
+				y0 = max (y0, 0)
+				x1 = min (x1, $w)
+				y1 = min (y1, $h)
+
+				if (x1 < x0 or y1 < y0)
+					continue
+
+				$ModArea = [$w, $h, 0, 0]
+				image = $FB.sub_image (x0, y0, x1-x0, y1-y0)
+
+				$p.show_image (image, $x+x0, $y+y0, 0, 0, x1-x0, y1-y0, self)
+				$wm.flush ()
+			}
+		}
+		except (SystemExit) ;
+
+	method mod_area (x0, y0, x1, y1)
+	{
+		$ModArea [0] = min (x0, $ModArea [0])
+		$ModArea [1] = min (y0, $ModArea [1])
+		$ModArea [2] = max (x1, $ModArea [2])
+		$ModArea [3] = max (y1, $ModArea [3])
+		$need_refresh = True
+		$PLOCK.release ()
+	}
+
+	method set_background ($PageBG);
+
+	domod = True
+	# --- these are used by the drawing functions of contained widgets--controls
+
+	method fill_rect (x, y, w, h, col=None, c=None)
+		with ($GLOCK) {
+			$FB.fill_rect (x, y, w, h, col)
+			if ($domod)
+				$mod_area (x, y, x+w, y+h)
+		}
+
+	method draw_string (s, x, y, fg=None, font=None, bg=None, c=None)
+	{
+		img =font.ImageText (s, fg, bg)
+		with ($GLOCK) {
+			# Conversion to screen bpp!
+			$FB.put_image (img, x, y)
+			if ($domod)
+				$mod_area (x, y, x+img.w, y+img.h)
+		}
+	}
+
+	method show_image (image, x, y, sx=0, sy=0, w=1000, h=1000, c=None)
+		with ($GLOCK) {
+			# Conversion to screen bpp!
+			try $FB.put_image (image, x, y, sx, sy, w, h)
+			except print "FUX", sys.exc_info ()
+			if ($domod)
+				$mod_area (x, y, x+image.w, y+image.h)
+		}
+
+	method draw_line (x0, y0, x1, y1, col=None, c=None)
+		with ($GLOCK) {
+			$FB.draw_line (x0, y0, x1, y1, col)
+			if ($domod)
+				$mod_area (x0, y0, x1+1, y1+1)
+		}
+
+	method Shutdown ()
+	{
+		thread.interrupt ($RefreshID, SystemExit)
+		$FB = None
+	}
+}

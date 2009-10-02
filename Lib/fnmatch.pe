@@ -1,0 +1,44 @@
+#
+# covert glob patterns to regular expressions
+#
+# This is not python's glob module. Generally, depending
+# on libc to provide us with 'glob', while we have a
+# regular expression engine, is a needless dependancy.
+#
+# We'd like to convert glob patterns to regexp patterns
+# as a first step, and then provide python's glob over
+# this.
+#
+
+def _translate (pat)
+{
+	L = [];
+
+	pati = iter (pat);
+	for (i in pati)
+		if (i in '\\(') raise NotImplemented ("hack glob.pe");
+		else if (i == '[') {
+			s = '';
+			for (i in pati)
+				if (i == ']' and s) break;
+				else s += i;
+			s = s.replace ("\\", "\\\\");
+			if (s [0] == '!') s = '^' + s [1:];
+			else if (s [0] == "^") s = "\\" + s;
+			L.append ("[%s]"%s);
+		} else if (i in '.|+$') L.append ('\\' + i);
+		else if (i == '*') L.append ('.*');
+		else if (i == '?') L.append ('.');
+		else L.append (i);
+
+	return ''.join (L);
+}
+
+def translate (*pats)
+	if (len (pats) == 1) return _translate (pats [0]) + "$";
+	else return "(?:" + "|".join ([_translate (i) for (i in pats)]) + ")$";
+
+def compile (p, f=0)
+	return @re.compilef (translate (p), f);
+
+#

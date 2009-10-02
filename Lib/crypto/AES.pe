@@ -1,0 +1,110 @@
+##  Wrapper to AES in C
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+namespace C
+{
+	if (@DLL.ARCH_586 () and 0) {
+		locals ().update (@DLL.Clib ("asm/aes-x86", "", pelf=1))
+		sizeof_ctx = 255
+	} else locals ().update (@DLL.Clib ("aes", "-O2 -Wall", pelf=1))
+}
+
+namespace parameters
+{
+	block_size = 16
+	iv = 16
+	key_size = 16, 24, 32
+	header = None
+}
+
+def encryptor (key, IV=None, mode="cbc")
+{
+	if (IV is None)
+		IV = _buffer (16, 0)
+	AK = _buffer (C.sizeof_ctx)
+	if (C.set_encrypt_key (key, len (key) * 8, AK))
+		raise Error ("AES: bad key size")
+	cbc_encrypt = mode == "cbc" ? C.cbc_encrypt : mode == "cfb" ? C.cfb_encrypt : Raise (Error ())
+
+	def enc (data, outdata=None)
+	{
+		# in most cases, clients request in-place operation. The encrypted
+		# cipher is placed over the plaintext.  If not, we *still* do in-place
+		# by strcpying the plaintext in the output buffer prior to encryption.
+		if (outdata is None)
+			outdata = _buffer (data)
+		else if (outdata is not data)
+			strcpy (outdata, data)
+		cbc_encrypt (outdata, outdata, len (data), AK, IV, 1)
+		return outdata
+	}
+	return enc
+}
+
+def decryptor (key, IV=None, mode="cbc")
+{
+	if (IV is None)
+		IV = _buffer (16, 0)
+	AK = _buffer (C.sizeof_ctx)
+	if (mode == "cbc") {
+		if (C.set_decrypt_key (key, len (key) * 8, AK) < 0)
+			raise Error ("AES: bad key size")
+		cbc_encrypt = C.cbc_encrypt
+	} else if (mode == "cfb") {
+		if (C.set_encrypt_key (key, len (key) * 8, AK) < 0)
+			raise Error ("AES: bad key size")
+		cbc_encrypt = C.cfb_encrypt
+	} else raise Error ()
+
+	def dec (data, outdata=None)
+	{
+		# same thing. in-place again
+		if (outdata is None)
+			outdata = _buffer (data)
+		else if (outdata is not data)
+			strcpy (outdata, data)
+		cbc_encrypt (outdata, outdata, len (data), AK, IV, 0)
+		return outdata
+	}
+	return dec
+}
+
+def decrypt (key, IV, data, mode)
+	return decryptor (key, IV, mode)(data)
+def encrypt (key, IV, data, mode)
+	return encryptor (key, IV, mode)(data)
+
+if (__name__ == __main__)
+{
+	def OK (a, b)
+		if (a == b)
+			print "OK"
+		else {
+			print "Broken!:", a, b
+			exit ()
+
+		}
+	for (mode in ["cbc", "cfb"]) {
+		E = encryptor ("0123456789abcdef", _buffer (16, 10), mode=mode)
+		D = decryptor ("0123456789abcdef", _buffer (16, 10), mode=mode)
+		S = "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb"
+		OK (D (E (S)), S)
+		D = 10*1024*"a"
+		E = decryptor ("0123456789abcdef")
+		N = 100
+		t = @time.Timit ()
+		for (i in *N)
+			E (D, D)
+		t.mbpsr (len (D) * N)
+	}
+
+	OK (encryptor ("0123456789abcdef", _buffer (16, 0))("foo").hexlify (), "3f72c9")
+	OK (encryptor ("0123456789abcdef", _buffer (16, 0), "cfb")("foobarzoo").hexlify (),
+		 "6df47ab82a36da9a7a")
+}

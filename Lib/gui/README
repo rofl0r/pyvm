@@ -1,0 +1,63 @@
+GUI
+======
+
+GUI is a widget set written entirely in python and capable of
+being easilly adapted to different backends (X11, SDL, GDI, etc)
+
+
+Placement
+=========
+
+At the moment the placement is done exclusively with
+horizontal and vertical containers.  From the time that
+the wm (window manager) is created until we call
+
+	wm.Start ()
+
+there is a "currently open container".  New widgets are
+added to this container.  For example:
+
+	wm = gui.Wm ()
+	with (gui.hcontainer ()) {
+		gui.button ()
+		with (gui.vcontainer ()) {
+			gui.button ()
+			gui.button ()
+		}
+	}
+	wm.Start ()
+
+For Developers
+==============
+
+GUI uses the, Input/Output trampoline man-in-the-middle runs
+with scissors around shifting barrels, technique.
+
+Output events (drawing) are passed from a widget to its parent
+and that goes on until the event reaches the backend drawing
+routines.
+
+Input events (key/mouse) start from the backend and go to
+the root widget and then from parent to child widget until
+they are handled.
+
+
+On speed
+========
+
+Generally a GUI toolkit is an application that's mostly idle.
+Even then, 95% of the time is spent in C routines that copy
+buffers, blit, convert images from RGB to other formats, etc.
+
+So it doesn't make any sense to try to optimize the python
+code of GUI.  Suppose, user clicks button and python code
+is executed until a C function that fills a rectangle is
+triggered.  Right now that may require 500 bytecode instructions
+(or ~10000 CPU instructions).  There is no reason to try to
+reduce this number to 400.
+
+In fact, it is preferrable to search for premature optimizations
+and remove them, possibly _increasing_ the number to 600!
+
+A gui toolkit is a _very_ complex application and our main
+goal is to make it as simple as possible.

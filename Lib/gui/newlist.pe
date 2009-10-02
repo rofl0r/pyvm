@@ -1,0 +1,161 @@
+__autosem__
+from scrollbarz import hscrollable
+
+# This is the real good list implementation. The other one is to be removed
+
+class list2 (hscrollable)
+{
+	ClickIsOpen = False
+
+	method Init (nrows=0, **kw)
+	{
+		$font = "font" in kw ? kw.pop ("font") : $wm.dfont
+		if (nrows)
+			kw ['h'] = nrows * $font.maxh + 6
+		else if ('h' not in kw)
+			$elasticH = True
+		if ('w' not in kw)
+			$elasticW = True
+		$parent_init (**kw)
+		$offset = 0
+		$items = []
+		$current = None
+	}
+
+	list_init = Init
+
+	method ty (y)
+		return y / $font.maxh
+
+	method setitems ($items, $current, $offset=0)
+	{
+		$ybar.modTVO ()
+		$Draw ()
+	}
+
+	method getTVOh ()
+		return len ($items), $h / $font.maxh, $offset
+
+	method setTVOh (d, o)
+	{
+		nrows = $h / $font.maxh
+		if (d in (1, -1))
+			o = $offset + d
+		else if (d)
+			o = $offset + d * nrows
+		o = minmax (0, o, max (len ($items) - nrows, 0))
+		if (o != $offset) {
+			$offset = o
+			$Draw ()
+		}
+	}
+
+	method draw_ith (i)
+	{
+		p = $offset + i
+		bg = p == $current ? 0x9999ff : 0xffffff
+		if (p < len ($items)) {
+			$clipped.draw_string ($items [p], 1, i * $font.maxh, 0, $font, bg)
+			l = $font.isizeof ($items [p])
+		} else l = 0
+		if (l < $w)
+			$clipped.fill_rect (l, i * $font.maxh, $w - l, $font.maxh, bg)
+	}
+
+	method Draw ()
+	{
+		for (i in *($h / $font.maxh + 1))
+			$draw_ith (i)
+		$outline (col=0)
+	}
+
+	method onClick (x, y)
+	{
+		$setKeyWidget ()
+		i = $offset + $ty (y)
+		$Select (i)
+		if ($ClickIsOpen and i < len ($items))
+			$onEnter (i)
+		return True
+	}
+
+	method onKey (k)
+		if (k == "ENTER") {
+			if ($current is not None)
+				$onEnter ($current)
+			return 1
+		} else if (k in ("UP", "DOWN", "PAGEUP", "PAGEDOWN") and $items) {
+			if ($current is None) $current = 0
+			nrows = $h / $font.maxh
+			m = k == "UP" ? -1 : k == "DOWN" ? 1 : k == "PAGEUP" ? -nrows : nrows
+			c = minmax (0, $current + m, len ($items) - 1)
+			if (c != $current) {
+				if (m == 1 and c - $offset <= nrows / 2);
+				else if (m == -1 and c - $offset >= nrows / 2);
+				else $offset = minmax (0, $offset + m, len ($items) - nrows)
+				$Select (c)
+				$ybar.modTVO ()
+			}
+			return 1
+		} else return $onListKey (k)
+
+	method Select (i)
+		if (i < len ($items) and $current != i) {
+			$current = i
+			$Draw ()
+			$onSelect (i)
+		}
+
+	method onSelect (i)
+		return
+	method onEnter (i)
+		return
+	method onListKey (k)
+		return
+
+	# todo onredraw
+	# follow mouse on option
+	# set font
+}
+
+# The scrolling list that pops up from combo boxes
+# (todo: this thing and the pulldown menu share a little code and'd better have the
+# same base class to make it more consistent)
+class PDList (list2)
+{
+	ClickIsOpen = True
+
+	method Init ($combo, nrows, **kw)
+	{
+		kw ['w'] = combo.w
+		kw ['font'] = combo.font
+		$list_init (nrows, **kw)
+	}
+
+	method MouseAt (x, y)
+	{
+		x, y = $relxy (x, y)
+		if ($xy_in (x, y))
+			if ($offset + $ty (y) != $current)
+				$Select ($offset + $ty (y))
+	}
+
+	method Key (k)
+		if (k == "ESC") {
+			$p.p.Close ()
+			$wm.Menu = None
+		} else $onKey (k)
+
+	method ClickAt (x, y)
+		if (!$p.xy_in (*$p.relxy (x, y))) {
+			$p.p.Close ()
+			$wm.Menu = None
+		} else $p.onClick (*$p.relxy (x, y))
+
+	method onEnter (i)
+	{
+		$p.p.Close ()
+		$wm.Menu = None
+		$combo.set_selected (i)
+	}
+}

@@ -1,0 +1,17 @@
+Compilation
+-----------
+
+After the initial bootstrap, most files can be just edited and
+they'll be re-compiled automatically when they are imported.
+
+The exception is the files under pyc/ and some other *.py files.
+If these are modified you'll have to run something like
+
+	make rebuild
+
+There are still some possibilities that the bootstrap will be
+broken. In this case you'll need python (tested only with 2.4)
+and run the script
+
+	mkimage.sh
+

@@ -1,0 +1,160 @@
+##  unified diff patcher
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+system = @os.system;
+tmpfile = @misc.tmpfile;
+
+NONL = "\n\\ No newline at end of file";
+header = @re.compile (r"---(.*?)\n\+\+\+(.*?)\n").match;
+mark = @re.compile (r"@@ -(\d*)").search;
+
+#
+# Again, we have the external path and a custom patch implementation
+#
+
+##
+def split_hunk (h)
+{
+	h = h.split ("\n");
+	if (!h [-1]) h.pop ();
+	h0, h = h [0], h [1:];
+	offset = int (mark (h0)[1]) - 1;
+	orig = [];
+	deltas = [];
+	dlt = [];
+	new = [];
+	ppos = None;
+	for (i in h) {
+		if (!i or i [0] == " ") {
+			orig.append (i [1:]);
+			if (ppos is not None) {
+				deltas.append ((offset + ppos, len (dlt), new));
+				ppos = None;
+				dlt = [];
+				new = [];
+			}
+		} else if (i [0] == "-") {
+			if (ppos is None) ppos = len (orig);
+			dlt.append (i [1:]);
+			orig.append (i [1:]);
+		} else {
+			if (ppos is None) ppos = len (orig);
+			new.append (i [1:]);
+		}
+	}
+	if (ppos is not None)
+		deltas.append ((offset + ppos, len (dlt), new));
+	return (offset, orig), deltas;
+}
+
+gen findall (txt, s, p=0)
+{
+	txt = txt.index;
+	try while (1) {
+		yield i = txt (s, p);
+		p = i + 1;
+	}
+}
+
+def split_diff (diff)
+{
+	H = header (diff);
+	if (!H) return False;
+	p = len (H [0]);
+	ORIG = [];
+	DELTAS = [];
+	for (i in findall (diff, "\n@@", p+1)) {
+		o, m = split_hunk (diff [p:i]);
+		ORIG.append (o);
+		DELTAS.extend (m);
+		p = i + 1;
+	}
+	diff = diff [p:-1];
+
+	# special cases with newlines at the end of file(s)
+	# -1 means add newline
+	# +1 means remove newline
+	RMVNL = 0;
+	if (NONL in diff) {
+		if (diff.ew (NONL)) {
+			RMVNL = 1;
+			diff = diff [:-len (NONL)];
+		}
+		if (NONL in diff) {
+			RMVNL -= 1;
+			diff = diff.replace (NONL, "");
+		}
+	}
+
+	o, m = split_hunk (diff);
+	ORIG.append (o);
+	DELTAS.extend (m);
+	return ORIG, DELTAS, RMVNL;
+}
+
+def verify_file (lines, parts)
+{
+	for (off, txt in parts)
+		if (lines [off:off+len (txt)] != txt)
+			return False;
+	return True;
+}
+
+def do_patch (lines, deltas, rmvnl)
+{
+	for (ofs, dl, new in deltas)
+		lines [ofs:ofs+dl] = new;
+	patched = "\n".join (lines);
+	# do newline hacks
+	if (rmvnl)
+		if (rmvnl == 1) patched = patched [:-1];
+		else patched += "\n";
+	return patched;
+}
+
+def xpatch (orig, diff)
+{
+	ORIG, DELTAS, RMVNL = split_diff (diff);
+	lines = orig.split ("\n");
+	if (!verify_file (lines, ORIG))
+		return False;
+	return do_patch (lines, reversed (DELTAS), RMVNL);
+}
+
+##
+def patch (orig, diff)
+{
+	f1 = tmpfile ();
+	f2 = tmpfile ();
+	f3 = tmpfile ();
+	f1.write (orig);
+	f2.write (diff);
+	system ("patch --quiet %s %s -o %s" %(f1.fnm, f2.fnm, f3.fnm));
+	return f3.read ();
+}
+
+##
+def test (orig, diff)
+{
+	if (xpatch (orig, diff) != patch (orig, diff)) {
+		print "CRAPOLI";
+		open ("CRAP1", "w").write (patch (orig, diff));
+		open ("CRAP2", "w").write (xpatch (orig, diff));
+		return True;
+	} else print "OK";
+}
+
+pypatch = xpatch;
+if (__name__ == __main__)
+{
+	argv = @sys.argv;
+	orig = readfile (argv [1]);
+	diff = readfile (argv [2]);
+#	print pypatch (orig, diff),;
+print pypatch (orig, diff) == patch (orig, diff);
+test (orig, diff);
+}

@@ -1,0 +1,38 @@
+Download the corefonts either from:
+
+	http://corefonts.sourceforge.net
+
+or from
+
+	http://students.ceid.upatras.gr/~sxanth/corefonts/
+
+For the latter, just get the files arial32.exe, courie32.exe, times32.exe
+plus the cabextract program. extract the files like
+	Arial.TTF
+and copy them into this directory.
+
+
+Legal
+-----
+
+Since the css spec permits absolute metrics as well as metrics relative
+to the fonts, and many web designers make their pages with trial and error,
+and the css spec does not define the fonts metrics, it is not possible
+to implement a conforming browser without the correct fonts.
+
+It's believed that the Microsoft EULA that covers the corefonts is
+not evil. Just like an open source developer, microsoft does not want:
+	- others taking their code and claiming its theirs
+	- others taking their code, modifying it (possibly adding a trojan)
+	  and claiming it's microsoft's code.
+	- others taking their code and making a profit out of it
+	  (GPL may permit this, but it's not nice)
+
+So, given the above interpretation, it will be probably OK to distribute
+the corefonts in a future pyvm distribution, under the spirit of good
+faith and interoperability for the web.
+
+A tarball that includes the corefonts will not be able to be included
+in distributions that are for sale. pyvm by its own is not a product.
+
+We'll see.

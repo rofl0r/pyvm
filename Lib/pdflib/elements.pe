@@ -1,0 +1,117 @@
+##  Wrappers for PDF types of objects
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from builtins import faryield, far_yield_acceptor
+from stream import stream
+from misc import tmpfile
+from base import WARNING
+
+#
+#
+
+class PDFObj
+{
+	REQUIRED = OPTIONAL = ()
+
+	method __init__ (attrs)
+	{
+		for (a in $REQUIRED)
+			try $(a) = attrs [a]
+			except print "Missing required attribute [%s]" %a
+
+		for (a in $OPTIONAL)
+			$(a) = attrs.get (a, None)
+
+		$init ()
+	}
+
+	init = void
+}
+
+#
+# Document elements
+#
+
+class Pages (*PDFObj)
+{
+	REQUIRED = "Kids",;
+
+	method iterkids ()
+		for (i in $Kids)
+			if (i ["Type"] == "Pages")
+				Pages (i).iterkids ()
+			else faryield (Page (i))
+}
+
+class Page (*PDFObj)
+{
+	OPTIONAL = "Contents", "Resources","MediaBox"
+
+	method init ()
+		$PageFonts = {}
+
+	method open_fonts (Fonts)
+	{
+		if ($Resources) {
+			if ("Font" in $Resources) {
+				# fonts are opened (freetype'd) once, on demand.
+				# font "F8" for page 1, may be different
+				# from font "F8" for page 2.  iow, two
+				# different fonts can have the same name.
+				# we update the names->fonts dict for the
+				# current page.
+				from font import Font
+				for (k, v in $Resources ["Font"].iteritems ()) {
+					try f = Fonts [id (v)]	# already opened
+					except f = Fonts [id (v)] = Font (v)
+					$PageFonts [k] = f
+				}
+				del $Resources ["Font"]
+			}
+		}
+	}
+
+	method code ()
+	{
+		if ($Contents)
+			if ($Contents => stream)
+				return $Contents.decode ()
+			else if ($Contents -> list)
+				return ' '.join ([i.decode () for (i in $Contents)])
+		WARNING ("page does not have Contents")
+	}
+}
+
+class Document (PDFObj)
+{
+	REQUIRED = "Root",;
+	OPTIONAL = "Info",;
+
+	method init ()
+	{
+		$Fonts = {}
+		$Pages = [p for (p in far_yield_acceptor (Pages ($Root ["Pages"]).iterkids))]
+	}
+
+	method dims ()
+		try return $Pages [0].MediaBox [2:]
+		except return $Root ["Pages"]["MediaBox"][2:]
+
+	method n_pages ()
+		return len ($Pages)
+
+	method page (i)
+	{
+		p = $Pages [i]
+		p.open_fonts ($Fonts)
+		return p
+	}
+
+	method Title ()
+		return $Info ["Title"] ?? "untitled"
+}

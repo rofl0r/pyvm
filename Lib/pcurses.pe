@@ -1,0 +1,311 @@
+##  Bindings for ncurses
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+__autosem__
+# ncurses constants. universal
+namespace consts
+{
+	A_REVERSE = 262144
+	A_BOLD    = 2097152
+	KEY_UP    = 259
+	KEY_DOWN  = 258
+	KEY_LEFT  = 260
+	KEY_RIGHT = 261
+	KEY_HOME  = 262
+	KEY_BS    = 263
+	KEY_DEL   = 330
+	KEY_NPAGE = 338
+	KEY_PPAGE = 339
+	KEY_END   = 360
+}
+
+# ncurses functions
+
+try nclib = @DLL.dllopen ('libncurses.so')
+except {
+	print "CANNOT LOAD libncurses.  Is it installed?  And where?"
+	raise
+}
+
+for (i in """
+	x initscr x
+	x move ii
+	x refresh x
+	x noecho x
+	x cbreak x
+	x keypad ii
+	x endwin x
+	x nodelay ii
+	i wgetch i
+	x attron i
+	x attroff i
+	x clear x
+	x wclear i
+	x flash x
+	i newwin iiii
+	x scrollok ii
+	x idlok ii
+	x wmove iii
+	x wprintw iss
+	x wrefresh i
+	x delwin i
+	x wattron ii
+	x wattroff ii
+	""".split ('\n') [1:-1]) {
+	rv, nm, arg = i.strip ().split ()
+	globals () [nm] = nclib.link ((rv == 'x' ? '' : rv, nm, arg == 'x' ? '' : arg))
+}
+
+#
+# Special functions
+#
+
+#
+# we don't have printw with format. Use our own formatting with
+# the modulo operator. printw() prints one string.
+#
+
+_printw = nclib.link (('', 'printw', 'ss'))
+def printw (s, rev=False)
+{
+	if (rev)
+		attron (consts.A_REVERSE)
+	_printw ("%s", s)
+	if (rev)
+		attroff (consts.A_REVERSE)
+}
+
+#
+# for some very peculiar reason, over here, getch() is
+# non-blocking and it returns -1 instantly if no key
+# is pressed (even with nodelay, etc). ?!
+#
+# Maybe it's because we've set the stdout/stdin non-blocking
+# for pyvm....
+#
+# We'll sleep $x seconds until we get a key.
+# That's not very bad because $x secs is a lot
+# of idleness and the GIL is properly released.
+#
+# Must download ncurses source, add printfs, compile
+# install and run to see what happens.
+#
+
+_getch = nclib.link (('i', 'getch', ''))
+def getch ()
+{
+	while ((k = _getch ()) == -1)
+		sleep (0.013)
+	return 0 < k < 256 ? chr (k) : k
+}
+
+#
+# global values of the ncurses library.
+# we have to call a function to fetch them.
+#
+def stdscr ()
+	return nclib.val ('stdscr')
+
+def COLS ()
+	return nclib.val ('COLS')
+
+def LINES ()
+	return nclib.val ('LINES')
+
+#
+class win
+{
+	method __init__ ($NL, $NC, by, bx, scrolling=False)
+	{
+		if (!($w = newwin (NL, NC, by, bx)))
+			raise "Error!!"
+		if (scrolling) {
+			scrollok ($w, True)
+			idlok ($w, True)
+		}
+	}
+
+	method printw (s)	wprintw ($w, "%s", s)
+	method refresh ()	wrefresh ($w)
+	method move (y, x)	wmove ($w, y, x)
+	method clear ()		wclear ($w)
+	method attron (a)	wattron ($w, a)
+	method attroff (a)	wattroff ($w, a)
+
+	method printa (a, s)
+	{
+		$attron (a)
+		$printw (s)
+		$attroff (a)
+	}
+
+	method readline (py, px=0, prompt='')
+		return readline (self, py, $NC, px, prompt)
+
+	method gets (py, px=0, prompt='')
+		return readline (self, py, $NC, px, prompt).readone ()
+
+	method __del__ ()
+		if ($w) {
+			delwin ($w)
+			$w = 0
+		}
+}
+
+class Stdscr (win)
+{
+	method __init__ ()
+	{
+		$NL = LINES ()
+		$NC = COLS ()
+		$w = stdscr ()
+	}
+	method __del__ ()
+		return
+}
+
+def gets (*args, **kwargs)
+	return Stdscr ().gets (*args, **kwargs)
+
+#
+# readline object
+# usually, we'll use win.readline() to get one.
+#
+
+class readline
+{
+	method __init__ ($W, $py, $L0, $px=0, $prompt='')
+	{
+		$txt = ''
+		$curs = $offs = 0
+		$pxx = len (prompt)
+		$L = $L0 - len (prompt)
+		$draw ()
+	}
+
+	method setprompt ($prompt)
+	{
+		$pxx = len (prompt)
+		$L = $L0 - len (prompt)
+	}
+
+	method draw ()
+	{
+		$W.move ($py, $px)
+		$W.printw ($prompt)
+		ss = $txt
+		of = $offs
+		ss = ss [of:of+$L]
+		if (len (ss) < $L)
+			ss += ' ' * ($L - len (ss))
+		$W.printw (ss)
+		$putcursor ()
+	}
+
+	method putcursor ()
+	{
+		$W.move ($py, $pxx + $curs - $offs)
+		$W.refresh ()
+	}
+
+	method adj ()
+	{
+		if ($curs > $offs) {
+			if ($curs - $offs > $L)
+				$offs = $curs - $L
+			else return False
+		} else $offs = $curs
+		return True
+	}
+
+	method clear ()
+	{
+		$txt = ''
+		$curs = $offs = 0
+		$draw ()
+	}
+
+	method completion ();
+	method history (up);
+
+	method readone ()
+		while (42) {
+			c = getch ()
+			txt = $txt
+			curs = $curs
+			if (c == '\n') return txt
+
+			if (c == "\x7f")
+				c = consts.KEY_BS
+			if (c -> str) {
+				txt = txt [:curs] + c + txt [curs:]
+				curs += 1
+			} else if (c == consts.KEY_LEFT) {
+				if (curs) curs -= 1
+			} else if (c == consts.KEY_RIGHT) {
+				if (curs < len (txt)) curs += 1
+			} else if (c == consts.KEY_DEL) {
+				if (curs < len (txt))
+					txt = txt [:curs] + txt [curs+1:]
+			} else if (c == consts.KEY_BS) {
+				if (curs) {
+					if ($offs)
+						$offs -= 1
+					curs -= 1
+					txt = txt [:curs] + txt [curs+1:]
+				}
+			} else if (c == consts.KEY_HOME) {
+				curs = 0
+			} else if (c == consts.KEY_END) {
+				curs = len (txt)
+			} else if (c == '\t') {
+				$completion ()
+			} else if (c in (consts.KEY_UP, consts.KEY_DOWN)) {
+				$history (c == consts.KEY_UP)
+			} else {
+				print "IT WAS [%s]" %str (c)
+				$flash ()
+			}
+
+			$curs = curs
+			if ($adj () or txt != $txt) {
+				$txt = txt
+				$draw ()
+			} else $putcursor ()
+		}
+}
+
+# WITH CONTEXT
+
+class ENTER (@misc.SAVE_STDOUT)
+{
+	method init () initscr ()
+	method finish () endwin ()
+}
+
+ENTER = ENTER ()
+
+##############
+if (__name__ == '__main__')
+{
+	with (ENTER)
+	{
+		clear ()
+		noecho ()
+		refresh ()
+		keypad (stdscr (), True)
+		w = win (LINES()-10, COLS(), 1, 0, scrolling=True)
+		print "I WANT TO SEE THIS!!!"
+		for (i in list (open ('pcurses.pe')) [:20]) {
+			w.printa (consts.A_BOLD, i)
+			w.refresh ()
+			sleep (0.01)
+		}
+		R = readline (w, 1, COLS ()-1, prompt='what >> ')
+		x = R.readone ()
+	}
+	print "x was [%s]" %x
+}

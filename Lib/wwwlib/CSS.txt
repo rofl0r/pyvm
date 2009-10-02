@@ -1,0 +1,155 @@
+CSS rendering engine
+--------------------
+
+The fact is that "writting a CSS rendering engine" is an impossible
+problem.
+
+The reason why it's impossible is because the goal is not well defined.
+What the programmer would have to do is write a program that takes
+pages from the internet and renders them exactly like Mozilla.
+However, how Mozilla renders them is not known.
+
+For one both the HTML and the CSS "standards" are not proper
+standards. If one tries to write the code that implements them,
+he is going to come against thousands of cases where something
+is not defined according to the standard and he will have to
+do "something reasonable" instead because web pages never
+stop because of rendering errors. And traditionally, Mozilla
+and IE have been trying to be user friendly and do their best to
+render a page as its author intended, despite errors and
+unreasonable constructs.
+
+So what we have here is a program with millions of lines of code
+and a constant addition of incremental features due to high demand
+for something more exotic than plain HTML. At the same time, since
+the specifications are fuzzy and many web designers lazy, many
+pages are often designed with trial-and-error on Moz/IE and
+the web designer discovers features of each rendering engine
+in practice.
+
+A document that fully described the behavior of mozilla would
+probably have to be bigger than mozilla itself! Even in this
+case, some "undefined features" are the way they are because
+it was convenient to implement them this way based on the
+existing code. If somebody tried to implement a rendering
+engine differenly, those features would be very hard to
+implement or very slow, etc. In the end, the only sane
+way to write a rendering engine, is probably to fork
+mozilla:)
+
+On the other hand, we have the internet. There, there are billions
+of web pages already written and it is not possible to contact
+every author and force them to rewrite their page according
+to come "correct" standard. And a web browser that's not
+backwards compatible and can't show the old Web 0.x pages
+is useless. So given the vast number of existing pages
+and the fact that a css rendering engine cannot be automatically
+tested, we can say that in a way, the input cannot be described
+by a specification.
+
+The existing HTML and CSS specifications are more like tutorials
+that document some of the well known behaviour of the Moz/IE
+rendering engines and say "what the good web designer should
+do in a perfect world". However, they are not adequate for the
+implementation of a real web browser that works. For example,
+the CSS2.1 spec sais that all lengths MUST be followed by a
+unit specifier (like "px"); however, mozilla accepts lengths
+without a unit specifier, so if one made a "conforming user
+agent" that did not accept those values, its program would
+not render pages properly (and such a tiny error can have
+a catastrophic effect on the layout) and its users would call
+it crap and refuse to use it. As another example, mozilla
+accepts C++ style comments "//" in CSS, while the standard
+makes no mention of that. And these are two very basic and
+simple things. You can't even imagine the mess that's going
+on in more complex stuff like positioned boxes and tables!
+
+Finally, experience with attempting to implement a css
+rendering engine has shown that the vast majority of pages
+on the internet depend on obscure underdocumented features.
+
+And we'd better not even discuss plugins...
+
+Web 2.0
+-------
+
+Generally, web 2.0 is not about pages but about the web
+platform. Facebook, for example, is not a website; it's a
+program that runs on the Mozilla platform.
+
+The source code of web 2.0 programs is neither open
+nor closed. It's "live source", where every time you
+connect you may get a different source code file that's
+usually obfuscated.  This platform has builtin networking
+and its I/O is the webpage DOM (which as we saw is fuzzy
+and its standards are implementation derrived).
+
+Web browsers auto-update themselves and add more exciting
+new features as time goes on, and exactly because of that
+web sites are willing to adapt new features quickly, knowning
+that the user has only to click a button in order to update
+his web browser and be able to use the latest goodies.
+
+As this platform advances, its developers would like us be able
+to do everything inside the web browser, like read the usenet
+play games with 3D graphics, do WYSIWYG word processing and
+maybe even virtualization of other operating systems, although
+they are seriously restricted by security and this VM cannot
+save files on the disk or access the filesystem!
+
+The fact is that Web browsers are quickly evolving software
+platforms with vague specifications where "programs" work
+only on the browsers they are tested.
+
+
+
+The good news
+-------------
+
+The good news is that it does not really matter
+
+There was demand for something better than plain old HTML
+and since this subject is too unscientific be solved with
+proper methods in time, things at least evolved and today
+we can enjoy great services like MyFace, etc.
+It's better that things evolved and we've got something
+much better to use and look at, even though technically
+it's a huge mess and certainly not what the first pioneers
+of computer science had envisioned.
+
+Also, web 2.0 is not the *content* and what really matters
+is only the content. CSS/HTML is just the channel that
+carries the content to the audience. For example, in the
+case of youtube the valuable thing is the videos and maybe
+even the DB of junk user comments. This data is not tied to
+CSS/HTML and could in the future be extracted and transferred
+with other APIs. So Web 2.0 can be seen as a temporary
+hack that works.
+
+For some major sites like GoogleEarth and wikipedia,
+making a custom application that uses their API may
+be a better way to proceed. Also, sites like pwnyoutube
+have a great future as dynamic web2.0 to web2.0
+translators. If all else fails, the user just just
+see the plain old HTML or just go ahead and use
+mozilla which is free and all.
+
+
+What about WebKit, Safari, Chrome, Konqueror, etc?
+==================================================
+
+With sufficient effort and many man-hours it is possible
+to create a rendering engine that's conforming 98% with
+Mozilla. Even then, it depends on the influence a new
+web browser can have on making web designers test their
+pages with it.
+
+In any case, writting a css rendering engine is furstrating,
+boring, very hard to test, and in a way pointless as it's
+something that works around something very hairy for no
+good reason. Programmers generally prefer to work on
+more interesting things. Nevertheless, pyvm's css
+engine is supposed to go through a second rewrite at
+some point. The existing version is more like a testing
+playground which can be used to discover the various
+algorithms.

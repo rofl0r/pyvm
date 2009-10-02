@@ -1,0 +1,86 @@
+__autosem__
+
+# The profile measurements are gathered if pyvm is compiled with the
+# macro PPROFILE enabled.
+#
+#  To enable, edit `pyvm/hutil.h`, uncomment the `#define PPROFILE` line,
+#  type `make cclean; make o3`. Optionally copy the file `~/bin/pyvm` to
+#  `~/bin/pyvm-profiled` or something. Finally, re-comment the line and
+#  re-compile pyvm
+#
+# in this case, the function builtins.func_ticks, returns how many
+# ticks have been spent in a function.
+# The first number is the cumulative number (ticks of self + cumulative
+# ticks of all callees).
+# The second is the number of ticks spent exclusively in this function.
+# "ticks" is at the moment cpu_ticks>>12, and it doesn't mean anything
+# as a value.
+
+# NOTES
+# 	- func_ticks counts the time the function has the main interpreter loop.
+#	  When a function, for example, calls sleep(), it doesn't run the loop.
+#	  In other words this counts the time a function holds the GIL.
+#	- Generators and far generators are not included. Same may happen for
+#	  operator overloading and preemption.
+#	- recursive functions are by definition special. Should the cumulative
+#	  time include the time spent in the child?
+#	  Currently, the cumulative ticks are added only to the root call.
+#	  In any case, starting profiling in the middle of a recursive function
+#	  will give strange results for it.
+#	- for multithreaded apps when the same function is used in different
+#	  threads, the results will be wrong. This has to do with the way we
+#	  handle recursion and will be fixed when needed.
+#	- the numbers are a rough estimation. May be wrong, have a good chance
+#	  of being helpful.
+#
+
+try from builtins import functions, func_ticks, profile_start as start, profile_stop as stop
+except {
+	func_ticks = None
+	start = stop = void
+}
+
+def get_stats ()
+{
+	if (!func_ticks) {
+		print "Vm not compiled with profiler support"
+		return
+	}
+
+	F = []
+	for (f in functions ()) {
+		n = func_ticks (f)
+		if(n[0]) F.append ((n, f))
+	}
+	F.sort ()
+	IGN = {"*ctor*","*import*"}
+	for (n, f in F)
+		try {
+			name = f.__iname__
+			if (name in IGN)
+				continue
+			modu = f.func_globals ["__name__"]
+			if ('*' in name) modu = ""
+			else if (modu == "__main__") modu = ""
+			else name = modu + ":" + name
+			print n, "%s()" %name
+		}
+}
+
+# with (Profile ())
+
+class Profile
+{
+	method __init__ ($doit=True) { }
+	method __context__ ()
+		return self
+	method __enter__ ()
+		if ($doit) {
+			start ()
+		}
+	method __exit__ (*args)
+		if ($doit) {
+			stop ()
+			get_stats ()
+		}
+}

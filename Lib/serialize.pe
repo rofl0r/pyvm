@@ -1,0 +1,291 @@
+##  pyvm object serialization
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# standard serialization format for pyvm: convert an object to a
+# string and a string to an object (something like python's "pickle").
+#
+# Right now only primitive python objects can be serialized.
+#
+#	str, int, float, bool None, tuple, list, dict, set
+#
+# That is pretty good for storing program options and data.
+# strings can be interned for compression (only unique strings
+# are stored).
+#
+# Cyclic recursive object references are not supported.
+
+__autosem__
+
+from cStringIO import StringIO
+
+# convert a double to a string.
+# tries to store 7 digits of accuracy
+# and at the same time make the string as small as possible.
+# uses exponential notation.
+
+def sexp (f)
+{
+	if (neg = f < 0.0)
+		f = -f
+
+	if (!f)
+		return "0."
+
+	n = 0
+	if (f < 1.0)
+		while (f < 1.0) {
+			f *= 10.0
+			n -= 1
+		}
+	else.if if (f >= 10.0)
+		while (f >= 10.0) {
+			f /= 10.0
+			n += 1
+		}
+
+	frac = "%.6f" %f
+	while (frac [-1] == "0")
+		frac = frac [:-1]
+	if (frac [-1] == ".")
+		frac = frac [:-1]
+	if (neg) frac = "-"+frac
+
+	return n ? "%se%i" %(frac, n) : frac
+}
+
+class writer
+{
+	method __init__ (o, $do_intern)
+	{
+		$f = {
+			str:		$write_str,
+			int:		$write_int,
+			float:		$write_float,
+			type(None):	$write_none,
+			bool:		$write_bool,
+			tuple:		$write_tuple,
+			list:		$write_list,
+			set:		$write_set,
+			dict:		$write_dict
+		}
+		$us = {}
+		$c = StringIO ()
+		$w = $c.write
+		$write (o)
+		$v = $c.getvalue ()
+		$c = $w = $us = None
+	}
+
+	method write_str (s)
+	{
+		if ($do_intern and s in $us)
+			return "*%x#" %$us [s]
+		$us [s] = len ($us)
+		return "%i#%s" %(len (s), s)
+	}
+
+	method write_int (i)
+		return "i%x#" %i
+	method write_float (f)
+		return "e%s#" % sexp (f)
+	method write_none (n)
+		return "N"
+	method write_bool (b)
+		return b ? "T" : "F"
+
+	method write_many (t, s)
+	{
+		$w (s)
+		for (x in t) $write (x)
+		return "#"
+	}
+
+	method write_tuple (t)
+		return $write_many (t, "(")
+	method write_list (t)
+		return $write_many (t, "[")
+	method write_set (t)
+		return $write_many (t, "s")
+
+	method write_dict (t)
+	{
+		L = []
+		for (k, v in t.iteritems ()) {
+			L << k
+			L << v
+		}
+		return $write_many (L, "{")
+	}
+
+	method write (o)
+		$w ($f [type (o)](o))
+}
+
+class reader
+{
+	method __init__ ($data, $pos=0)
+	{
+		$us = []
+		read_str = $read_str
+		$r = {
+			'i': $read_int,
+			'e': $read_float,
+			'N': $read_none,
+			'T': $read_true,
+			'F': $read_false,
+			'(': $read_tuple,
+			'[': $read_list,
+			'{': $read_dict,
+			'*': $read_ustr,
+			's': $read_set,
+			'0': read_str, '1': read_str, '2': read_str,
+			'3': read_str, '4': read_str, '5': read_str,
+			'6': read_str, '7': read_str, '8': read_str,
+			'9': read_str,
+		}
+		$o = $read ()
+		$us = {}
+	}
+
+	method gettoh ()
+	{
+		e = $data.find ("#", $pos)
+		m = $data [$pos:e]
+		$pos = e + 1
+		return m
+	}
+
+	method read_int (x)
+		return int ($gettoh (), 16)
+	method read_float (x)
+		return float ($gettoh ())
+	method read_none (x)
+		return None
+	method read_true (x)
+		return True
+	method read_false (x)
+		return False
+
+	method read_str (x)
+	{
+		l = int (x + $gettoh ())
+		m = $data [$pos:$pos + l]
+		$pos += l
+		$us << m
+		return m
+	}
+
+	method read_ustr (x)
+		return $us [int ($gettoh (), 16)]
+
+	method read_many (x)
+	{
+		L = []
+		while ($data [$pos] != "#")
+			L << $read ()
+		$pos += 1
+		return L
+	}
+
+	method read_tuple (x)
+		return tuple ($read_many (x))
+	method read_list (x)
+		return $read_many (x)
+	method read_dict (x)
+		return dict_from_list ($read_many (x))
+	method read_set (x)
+		return set ($read_many (x))
+
+	method read ()
+	{
+		m = $data [$pos]
+		$pos += 1
+		return $r [m](m)
+	}
+}
+
+##
+## Higher level functions, serialize object to/from file
+##
+
+def load (filename, default=None)
+{
+	try data = readfile (filename)
+	except return default
+
+	if (!data.sw ("serial"))
+		raise Error ("Not a pyvm serialization file [%s]" %filename)
+
+	return reader (data, 6).o
+}
+
+def save (filename, data, do_intern=True)
+{
+	w = writer (data, do_intern)
+	f = open (filename, "w")
+	f.write ("serial")
+	f.write (w.v)
+}
+
+##
+## "Application data" utility. Interested apps, subclass this
+## and can use it to store data that can be used the next time.
+## There are two kinds of applications, 1) those where only one
+## instance is running (www, rn) and 2) those where the app can
+## be open many times (pdf viewers, etc) and the app data
+## depends on the current "thing" (pdf document for example).
+##
+
+APPDATADIR = USERHOME + "appdata/"
+
+class appdata
+{
+	method __init__ ($app)
+		$d = load (APPDATADIR + $app) or {}
+
+	method preset (presets)
+		for (p in presets)
+			if (p not in $d)
+				$d [p] = presets [p]
+
+	method __getitem__ (k)
+		return $d.get (k)
+	method __setitem__ (k, v)
+		$d [k] = v
+
+	method save ()
+		save (APPDATADIR + $app, $d)
+}
+
+class appdata2
+{
+	method __init__ ($app, $sub, presets=())
+	{
+		$d = appdata (app)[sub] or {}
+		$d.update2 (presets)
+	}
+
+	method __getitem__ (k)
+		return $d.get (k)
+	method __setitem__ (k, v)
+		$d [k] = v
+	method update (d)
+		$d.update (d)
+
+	method save ()
+	{
+		a = appdata ($app)
+		a [$sub] = $d
+		a.save ()
+	}
+}
+
+USAGE = "usage: serialize <file>
+ dump a serialized file
+"
+if (__name__ == __main__)
+	print load (sys.argp.filename_ex ())

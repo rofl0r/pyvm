@@ -1,0 +1,16 @@
+# Copy this file to "ssh-hosts" and edit.
+#
+# The format of this file is 5 fields separated with whitespace
+#
+# ALIAS		HOSTNAME			USERNAME	PASSWORD	PUBKEY
+
+ceid		diogenis.ceid.upatras.gr	sxanth		passwordz	dirname
+
+# If dirname is not "*" then this must be a sub directory of this directory
+# and it must contain a file ssh.pri which is the private key.
+
+# If both the password and the dirname are `*`, sshell will ask for a password.
+
+# This file is world readable!  We assume that you are working on a
+# single user system / personal workstation and that your computer
+# is not compromised!

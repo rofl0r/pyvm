@@ -1,0 +1,23 @@
+__autosem__
+from checkbox import checkbox;
+
+class radiobox (checkbox)
+{
+	method Init (t, state=False, **kw)
+		checkbox.Init (self, t, state, **kw);
+
+	radiobox_init = Init;
+
+	method DrawCheck ()
+	{
+		cx, cy = $cb_size;
+		$fill_circle (cx, cy, 6, $A.color_black);
+		$fill_circle (cx, cy, 5, $A.color_white);
+		if ($state)
+			$fill_circle (cx, cy, 4, $A.color_dblue);
+	}
+
+	method onClick (x, y)
+		if ($enabled)
+			$Transistor.activate (self);
+}

@@ -1,0 +1,462 @@
+##  TLS client socket
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from datastream import data_parser
+import md5, sha
+from crypto.PRF import PRF, PRFSSL
+from crypto.RC4 import RC4
+from crypto.hmac import HMAC
+from crypto.cryptorand import randstr
+from crypto import AES
+
+# This is a minimal TLS (aka SSL) client implementation.  The goal is to
+# access secure-https sites and services (in these cases we are rather
+# vunerable to man-in-the-middle anyway).
+# The default encryption schema is TLS_RSA_WITH_RC4_128_MD5 (fast).
+# The client is anonymous.
+# The incoming data is not hashed/verified.
+
+# Trevor Perrin's "tlslite" package was an invaluable resource for
+# figuring our TLS.  Some parts of this implementation were done by
+# just following tlslite, without reading all the required RFCs!
+
+DEBUG = 1
+
+class Hasher
+{
+	method __init__ ()
+		$H0, $H1 = md5.new (), sha.new ()
+	method update (x)
+	{
+		$H0.update (x)
+		$H1.update (x)
+	}
+	method digest ()
+		return $H0.digest () + $H1.digest ()
+}
+
+class PacketParser
+{
+	method __init__ (m)	$dp = data_parser (m)
+	method byte ()		return $dp.r8 ()
+	method short ()		return $dp.r16b ()
+	method u24 ()		return $byte () * 65536 + $short ()
+	method string (n)	return $dp.read (n)
+	method lstring ()	return $string ($byte ())
+	method lstring24 ()	return $string ($u24 ())
+	method rest ()		return $dp.rest ()
+}
+
+class TLS
+{
+	CipherSuites = [
+		0x04,		# RSA_RC4_MD5
+		0x2f,		# RSA_AES_SHA
+		0x05,		# RSA_RC4_SHA
+	]
+
+	CompressionMethods = [0]
+
+	method __init__ ($sock)
+	{
+		$version = 3, 1
+		$verstr = chr (3) + chr (1)
+		$clientRandom = randstr (32)
+		$H = Hasher ()
+		$premasterSecret = $verstr + randstr (48)[2:]
+
+		$restbuf = ""
+		$packets = []
+
+		$ClientHello ()
+		$Handshake1 ()
+		$ClientKeyExchange ()
+
+		$masterSecret = $version == (3,0) ?
+			PRFSSL ($premasterSecret, $clientRandom + $serverRandom, 48) :
+			PRF ($premasterSecret, "master secret", $clientRandom + $serverRandom, 48)
+
+		# xxx: Different MAC function for 3.0
+		if (DEBUG) print "SSL: Selected cipher suite %X" %$selectedSuite
+
+		if ($selectedSuite == 4) {
+			keyblock = $version == (3,0) ?
+				PRFSSL ($masterSecret, $serverRandom + $clientRandom, 64) :
+				PRF ($masterSecret, "key expansion", $serverRandom + $clientRandom, 64)
+			cliMAC, serMAC = keyblock [:16], keyblock [16:32]
+			cliKey, serKey = keyblock [32:48], keyblock [48:64]
+			$hashlen = 16
+			$HashOut = PacketHasher ($version, HMAC (cliMAC, md5.digest))
+		} else if ($selectedSuite == 0x5) {
+			keyblock = $version == (3,0) ?
+				PRFSSL ($masterSecret, $serverRandom + $clientRandom, 72) :
+				PRF ($masterSecret, "key expansion", $serverRandom + $clientRandom, 72)
+			cliMAC, serMAC = keyblock [:20], keyblock [20:40]
+			cliKey, serKey = keyblock [40:56], keyblock [56:72]
+			$hashlen = 20
+			$HashOut = PacketHasher ($version, HMAC (cliMAC, sha.digest))
+		} else if ($selectedSuite == 0x2f) {
+			keyblock = $version == (3,0) ?
+				PRFSSL ($masterSecret, $serverRandom + $clientRandom, 104) :
+				PRF ($masterSecret, "key expansion", $serverRandom + $clientRandom, 104)
+			cliMAC, serMAC = keyblock [:20], keyblock [20:40]
+			cliKey, serKey = keyblock [40:56], keyblock [56:72]
+			cliIV,  serIV  = keyblock [72:88], keyblock [88:104]
+			$hashlen = 20
+			$HashOut = PacketHasher ($version, HMAC (cliMAC, sha.digest))
+		} else raise Error ("Unknown selected suite %X" %$selectedSuite)
+
+		if ($selectedSuite == 0x4) {
+			$blockLength = 0
+			$outEncryptor = RC4 (cliKey).encrypt
+			$inDecryptor = RC4 (serKey).decrypt
+		} else if ($selectedSuite == 0x5) {
+			$blockLength = 0
+			$outEncryptor = RC4 (cliKey).encrypt
+			$inDecryptor = RC4 (serKey).decrypt
+		} else if ($selectedSuite == 0x2f) {
+			$blockLength = 16
+			$outEncryptor = AES.encryptor (cliKey, cliIV)
+			$inDecryptor = AES.decryptor (serKey, serIV)
+		} else raise Error ("Unknown selected suite %X" %$selectedSuite)
+		$seqnum = 0
+
+		if (DEBUG)
+			print "SSL: do change cipher spec"
+		$ChangeCipherSpec ()
+		if (DEBUG)
+			print "SSL: wait for finished"
+		$Finished ()
+		$Handshake2 ()
+	}
+
+	method ClientHello ()
+	{
+		# version
+		s = $verstr
+		# +32 byte random
+		s += $clientRandom
+		# + session id (none)
+		s += '\0'
+		# + cipher suites
+		s += '%Mh' %(len ($CipherSuites) * 2)
+		for (i in $CipherSuites)
+			s += '%Mh' %i
+		# + compression methods
+		s += chr (len ($CompressionMethods))
+		for (i in $CompressionMethods)
+			s += '%c'%i
+		# pack into clienthello
+		s = chr (1) + "\0%Mh"%len(s) + s
+		$send (22, s)
+	}
+
+	method send (tp, dat)
+	{
+		$H.update (dat)
+		$sock.send ("%c%s%Mh"%(tp, $verstr, len (dat)) + dat)
+	}
+
+	method getMsg ()
+	{
+		x = $restbuf
+		while (len (x) < 6)
+			if (dat = $sock.recv ())
+				x += dat
+			else raise Error ("no packet")
+		tp = ord (x [0])
+		ver = ord (x [1]), ord (x [3])
+		sz = ord16b (x [3:5])
+		x = x [5:]
+		while (len (x) < sz)
+			if (dat = $sock.recv ())
+				x += dat
+			else raise Error ("no packet2")
+		$restbuf = x [sz:]
+		x = x [:sz]
+		$H.update (x)
+		return tp, ver, x
+	}
+
+	method getHMsg ()
+	{
+		if ($packets)
+			return $packets.pop (0)
+		tp, ver, packet = $getMsg ()
+		if (tp != 22) raise Error ("not a handshake packet")
+		plen = ord16b (packet [2:4])
+		if (plen == len (packet) - 4)
+			return ord (packet [0]), packet [4:]
+		P = []
+		do {
+			plen = ord16b (packet [2:4])
+			P.append ((ord (packet [0]), packet [4:4+plen]))
+			packet = packet [4+plen:]
+		} while (packet)
+		$packets = P
+		return $packets.pop (0)
+	}
+
+	method Handshake1 ()
+	{
+		tp, packet = $getHMsg ()
+		if (tp != 2)
+			raise Error ("Not ServerHello (%i)"%tp)
+		if (DEBUG) print "SSL: GOT SERVER HELLO"
+		$ServerHello (packet)
+		tp, packet = $getHMsg ()
+		if (tp != 11)
+			raise Error ("Not Certificate (%i)"%tp)
+		if (DEBUG) print "SSL: Got certificate"
+		$Certificate (packet)
+		tp, packet = $getHMsg ()
+		if (tp != 14)
+			raise Error ("Not ServerHelloDone (%i)"%tp)
+		if (DEBUG) print "SSL: got hello done"
+	}
+
+	method ServerHello (p)
+	{
+		P = PacketParser (p)
+		$ServerVersion = P.byte (), P.byte ()
+		if ($ServerVersion < $version) {
+			print "Server TLS version < 3.1.  Not implemented"
+			raise Error ("SSL 3.0 Not Supported")
+			$verstr = chr ($ServerVersion [0]), chr ($ServerVersion [1])
+			$version = $ServerVersion
+		}
+		$serverRandom = P.string (32)
+		$sessionID = P.lstring ()
+		# Thesse should be 4 and 0.
+		$selectedSuite = cipherSuite = P.short ()
+		if (DEBUG)
+			print "SSL: SELECTED Suite:", cipherSuite
+		compression = P.byte ()
+	}
+
+	method Certificate (p)
+	{
+		P = PacketParser (p)
+		P.u24 ()
+		# (this should be in crypto.RSA?)
+		x509 = P.lstring24 ()
+		A = ASN1Parser (x509)
+		tbs = A [0]
+		subj = tbs [ord (tbs.value [0]) == 160 ? 6 : 5]
+		if (subj [0].value != "\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01\x05\x00"
+		# tlslite only accepts the OID above.  Savannah.nongnu.org sends the OID
+		# below which works as well. (no idea!)
+		and subj [0].value != "\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01")
+			raise Error ("Wrong OID Algorithm in Certificate")
+		keys = ASN1Parser (subj [1].value [1:])
+		from crypto.RSA import PKCS1
+		$RSA = PKCS1 (modulo=keys [0].value, exponent=keys [1].value)
+	}
+
+	method ClientKeyExchange ()
+	{
+		E = $RSA.encrypt ($premasterSecret)
+		s = "%MH"%len (E) + E
+		s = chr (16) + "\0%Mh"%len (s) + s
+		$send (22, s)
+	}
+
+	method ChangeCipherSpec ()
+	{
+		$sock.send ("%c%s%MH%c" %(20, $verstr, 1, 1))
+	}
+
+	method sendEncrypted (tp, p)
+	{
+		$H.update (p)
+		plaintext = p + $HashOut (tp, p)
+		if ($blockLength) {
+			pl = $blockLength - ((len (plaintext) + 1) % $blockLength)
+			if (pl) plaintext += ("%c"%pl) * (pl+1)
+		}
+		cipher = $outEncryptor (plaintext)
+		$sock.send ("%c%s%Mh"%(tp, $verstr, len (cipher)) + cipher)
+	}
+
+	method Finished ()
+	{
+		# verify-data (xxx: Different for 3.0)
+		s = PRF ($masterSecret, "client finished", $H.digest (), 12)
+		# pack into finished
+		s = chr (20) + "\0%MH" %len (s) + s
+		if (DEBUG) print "SSL: SENDIT"
+		$sendEncrypted (22, s)
+	}
+
+	Alerts = {
+		21: "Decryption Failed"
+	}
+
+	method Handshake2 ()
+	{
+		tp, None, packet = $getMsg ()
+		if (tp == 20)
+			# ChangeCipherSpec from server. Some send it, some don't.
+			tp, None, packet = $getMsg ()
+		if (tp == 0x15)
+			raise Error ("Alert! %i" %tp + $Alerts.get (tp, "NoDescription"))
+		if (tp != 22)
+			raise Error ("was expecting 'Finished'")
+		plaintext = $inDecryptor (packet)
+		$H.update (plaintext)	# unused
+	}
+
+	# after all negotiations ok
+
+	method SecureChannel ()
+		return SecureSocket ($outEncryptor, $HashOut, $inDecryptor, $verstr,
+				     $blockLength, $hashlen)
+}
+
+class ASN1Parser
+{
+	# used to parse an "X509 certificate" which is a blob of data
+	# that contains the rsa keys somewhere in there.
+
+	method __init__ (m)
+	{
+		p = PacketParser (m)
+		p.byte ()
+		$length = $getASN1length (p)
+		$value = p.string ($length)
+	}
+	method getASN1length (p)
+	{
+		f = p.byte ()
+		if (f <= 127) return f
+		if (f == 129) return p.byte ()
+		if (f == 130) return p.short ()
+		raise Error ("Error while parsing X509 ASN1 Certificate")
+	}
+	method __getitem__ (n)
+	{
+		p = PacketParser ($value)
+		while (n) {
+			p.byte ()
+			l = $getASN1length (p)
+			p.string (l)
+			n -= 1
+		}
+		return ASN1Parser (p.rest ())
+	}
+}
+
+def PacketHasher (version, hashfunc)
+{
+	seqnum = xrange (2000000).next
+	verstr = chr (version [0]) + chr (version [1])
+	# Each outgoing packet is hashed with this MAC function.
+	def MAC (tp, msg)
+	{
+		s = "\0\0\0\0%MI%c" %(seqnum (), tp)
+		##if (verstr != "\3\0")
+			s += verstr
+		return hashfunc (s + "%MH" % len (msg) + msg)
+	}
+	return MAC
+}
+
+#
+# This is a method that will be used by the socket object to override
+# its send() and recv() methods.  The socket is passed as argument to
+# these send() and recv() to avoid the circular reference.
+#
+
+class SecureSocket
+{
+	method __init__ ($encryptor, $hasher, $decryptor, verstr, $blockLen, $hashlen)
+	{
+		$hdr = "%c%s" %(23, verstr)
+		$restbuf = ""
+	}
+	method send (sendf, data, *args)
+	{
+		data += $hasher (23, data)
+		if ($blockLen) {
+			pl = $blockLen - ((len (data) + 1) % $blockLen)
+			if (pl) data += ("%c"%pl) * (pl+1)
+		}
+		cipher = $encryptor (data)
+		return sendf ($hdr + "%Mh" %len (cipher) + cipher, *args)
+	}
+	method recv (recvf, *args)
+	{
+		x = $restbuf
+		if (!x) {
+			x = recvf (*args)
+			if (!x) return ""
+		}
+		while (len (x) < 6)
+			if (dat = recvf (*args))
+				x += dat
+			else return ""
+		tp = ord (x [0])
+		sz = ord16b (x [3:5]) + 5
+		while (len (x) < sz)
+			if (dat = recvf (*args))
+				x += dat
+			else return ""
+		$restbuf = x [sz:]
+
+		packet = x [5:sz]
+		plaintext = $decryptor (packet)
+		if ($blockLen) {
+			pl = ord (plaintext [-1])
+			plaintext = plaintext [:-(pl+1)]
+		}
+		# The packet's last `hashlen` bytes are its hash. Throw away.
+		plaintext = plaintext [:-$hashlen]
+
+		if (tp != 23) {
+			if (tp == 21 and plaintext == "\01\00")
+				return ""
+			if (tp == 21 and plaintext == "\x02\x15")
+				raise Error ("Decryption failed.")
+			print "TSL: Control packet!", tp
+			print plaintext.hexlify ()
+			return $recv (recvf, *args)
+		}
+		return plaintext
+	}
+}
+
+## Test that we can connect to www.openssl.org:443 and fetch their page
+## with HTTP (that's https in essence)
+
+if (__name__ == __main__)
+{
+	from socket import socket
+	s = socket ()
+#s.connect (("pop.gmail.com", 995))
+#T = TLS (s).SecureChannel ()
+#print "OKIE"
+#exit ()
+
+if (1) {
+S = "www.openssl.org"
+p = "/"
+} else {
+S = "wiki.torproject.org"
+p = "/wiki/TheOnionRouter/TorifyHOWTO"
+}
+	try host = sys.argv [1]
+	except host = S
+	s.connect ((host, 443))
+	print "Connected."
+	T = TLS (s).SecureChannel ()
+	T.send (s.send, "GET %s HTTP/1.0\n\n"%p)
+	while (1)
+		if (dat = T.recv (s.recv))
+			print "."#dat
+		else break
+}

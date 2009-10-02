@@ -1,0 +1,161 @@
+##  Portable File Encryption with password
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+#
+# This script defines a standard file format for encrypted
+# data. The goal is that one person can create an encrypted
+# file, send it to someone else who knows the password
+# and the other person should be able to decrypt the file.
+# The procedure is easy and encryptors/decryptors can be
+# written in other languages.
+#
+#  An encrypted file has the structure:
+#
+#	[6 bytes]:	e\0n\0c\0
+#	[1 byte]:	Method
+#	[1 byte]:	padding
+#	[n bytes]:	data
+#
+#  The default Method has value 1 and uses the AES128-CBC
+#  cipher.
+#  The "key" is the first 16 bytes of SHA1(MD5(passphrase))
+#  The "IV" is the first 16 bytes of SHA1(MD5(key))
+#
+#  Once the data has been decrypted, it is partitioned as:
+#
+#	[n-4-padding bytes]:	plaintext
+#	[4 bytes]:		MAC - network byte order
+#	[padding bytes]:	discard
+#
+# The adler32(plaintext) should be equal to MAC if decryption
+# is successful.
+
+import sha, md5
+from zlib import adler32
+from cryptorand import randstr
+
+MAGIC = "e\0n\0c\0"
+
+#
+# Encryption methods
+#
+
+def prf (password, length)
+{
+	k = sha.digest (md5.digest (password))
+	while (len (k) < length)
+		k += sha.digest (md5.digest (k))
+	return k [:length]
+}
+
+def M0 (password) return def (data) data
+
+def E1 (password)
+{
+	k = prf (password, 16)
+	iv = prf (k, 16)
+	from crypto.AES import encryptor
+	return encryptor (k, iv)
+}
+
+def D1 (password)
+{
+	k = prf (password, 16)
+	iv = prf (k, 16)
+	from crypto.AES import decryptor
+	return decryptor (k, iv)
+}
+
+import shaenc
+
+def E2 (password)
+	return shaenc.encryptor (password)
+
+def D2 (password)
+	return shaenc.decryptor (password)
+
+METHODS =
+[
+	(1, M0, M0),
+	(16, E1, D1),
+	(20, E2, D2),
+]
+
+#
+#
+
+def encrypt (password, Type, data)
+{
+	print "Encrypting file"
+
+	if (Type < 0 or Type > len (METHODS) - 1)
+		raise Error ("Encrypt: type %i not implemented" %Type)
+
+	block_size = METHODS [Type][0]
+	E = METHODS [Type][1] (password)
+
+	data = data + "%MI" %adler32 (data)
+	padlen = len (data) % block_size
+	if (padlen) {
+		padlen = block_size - padlen
+		data += randstr (padlen)
+	}
+	return MAGIC + chr (Type) + chr (padlen) + E (data)
+}
+
+def decrypt (password, data)
+{
+	print "Decrypting file"
+
+	if (!data.sw (MAGIC))
+		raise Error ("Not a encfile")
+
+	Type, padlen, data = ord (data [6]), ord (data [7]), data [8:]
+	try D = METHODS [Type][2] (password)
+	except raise Error ("Decryption type %i not implemented" %Type)
+
+	data = D (data)
+	if (padlen) data = data [:-padlen]
+	data, mac = data [:-4], data [-4:]
+	if ("%MI" % adler32 (data) != mac) {
+		print "MAC Failure! Invalid password. cannot decrypt"
+		raise Error ("MAC Failure! Wrong password?")
+	}
+	print "OK"
+	return data
+}
+
+USAGE = "Usage: pyvm encfile [-e1|-e2|-d] <infile> <outfile>
+Encrypt/Decrypt files.
+
+ -d	: decrypt file
+ -e1	: use AES to encrypt (default)
+ -e2	: use SHAENC to encrypt
+
+ In both cases a password will be asked.
+"
+
+if (__name__ == __main__)
+{
+	meth1, meth2, dec = sys.argp.check_switches ("-e1", "-e2", "-d")
+	if (meth1 or not meth2)
+		meth = 2
+	else meth = 2
+
+	infile, outfile = sys.argp.filenames ()
+
+	d = open (infile).read (6)
+	if (dec and d != MAGIC) {
+		print "file %s is not encrypted" %infile
+		exit ()
+	}
+	password = raw_input ("Enter password: ")
+	if (dec) open (outfile, "w").write (decrypt (password, readfile (infile)))
+	else open (outfile, "w").write (encrypt (password, meth, readfile (infile)))
+}

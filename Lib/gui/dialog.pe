@@ -1,0 +1,45 @@
+from container import vcontainer, hcontainer;
+from space import space;
+from button import button;
+from label import label;
+
+def Dialogue (wm, message, buttons, font=None)
+{
+	class ModalOk
+		method __init__ ($rez);
+
+	if (font is None)
+		font = wm.dfont;
+	message = message.split ('\n');
+	SIZEX, SIZEY = 240, 70 + len (message) * font.h;
+	ww, wh = wm.basewin.w, wm.basewin.h;
+	W = wm.toplev (ww/2-SIZEX/2, wh/2 - SIZEY, SIZEX, SIZEY);
+	V = vcontainer ();
+		for (m in message)
+			label (m, elastic=1, font=font);
+		space (h=20);
+		H = hcontainer ();
+			BS = [];
+			for (m, r in buttons) {
+				b = button (m);
+				BS.append (b);
+				def b.Action ()
+					raise ModalOk (r);
+				if (len (BS) < len (buttons))
+					space ();
+			}
+		H.pack ();
+		space ();
+	V.pack ();
+
+	W.resize (0, 0);
+	W.resize_w (SIZEX - W.w);
+	W.resize_h (SIZEY - W.h);
+	W.Draw ();
+	wm.flush ();
+	try
+		try while (54) wm.MainLoop ();
+		except (ModalOk, e) return e.rez;
+	finally
+		W.Close ();
+}

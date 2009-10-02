@@ -1,0 +1,339 @@
+##  Freecell solitair game
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from ttycolor import color
+
+## Core game ui-less
+
+# The game state is stored in the "game" namespace. That is the contents
+# of the column stacks, the contents of the "freecells" and what's been
+# collected.
+
+namespace Game
+{ }
+
+class card
+{
+	method __init__ ($num, $suit)
+		$red = suit in 'dh'
+
+	method can_go_after (card)
+		return $num == card.num - 1 and $red != card.red
+
+	method ith ()
+		return $num + 13 * 'cdhs'.find ($suit)
+
+	method __str__ ()
+	{
+		if ($num < 10) s = "%i" %($num + 1)
+		else s = 'JQK' [$num - 10]
+		s += $suit
+		if ($red)
+			s = color (s, 'r')
+		return s
+	}
+}
+
+Cards = [ card (i, s) for (s in 'cdhs') for (i in *13) ]
+
+# Deal a new game. (todo make this compatible with MS Freecell seeds; see xfreecell for info)
+
+def deal ()
+{
+	deck = Cards [:]
+	@random.shuffle (deck)
+	@random.shuffle (deck)
+	cols = []
+	for (i in *8) {
+		cols.append (deck [:6])
+		deck = deck [6:]
+	}
+	for (i in *4)
+		cols [i].append (deck [i])
+
+	Game.columns = cols
+	Game.cells = [None, None, None, None]
+	Game.out = {'c':None, 'd':None, 'h':None, 's':None}
+}
+
+def can_go_up (c)
+{
+	minout = min ([x ? x.num : -1 for (x in Game.out.values ())])
+	return c.num == minout + 1 or (c.num == 1 and Game.out [c.suit])
+}
+
+def auto_out1 ()
+{
+	for (i in *4)
+		if (Game.cells [i]) {
+			c = Game.cells [i]
+			if (can_go_up (c)) {
+				Game.out [c.suit] = c
+				Game.cells [i] = None
+				return True
+			}
+		}
+
+	for (n in *8) {
+		col = Game.columns [n]
+		if (!col) continue
+		c = col [-1]
+		if (can_go_up (c)) {
+			Game.out [c.suit] = col.pop ()
+			return True
+		}
+	}
+}
+
+def auto_out ()
+{
+	moves = []
+	while (m = auto_out1 ())
+		moves << m
+	return moves
+}
+
+def can_go_to_col (card, col)
+{
+	columns = Game.columns [col]
+	return !columns or card.can_go_after (columns [-1])
+}
+
+def can_move_n (n)
+{
+	nf = Game.cells.count (None)
+	nr = [bool (c) for (c in Game.columns)].count (False)
+	nmv = (nf + 1) * (1 << nr)
+	return nmv >= n
+}
+
+# This is the core play function; it is a command to move something
+# from a source position to a destination position.
+#	source		: ['c', <column-number>, <how-many optional>]
+#			: ['f', <freecell-number optional>]
+#	destination	: ['c', <column-number>]
+#			: ['f', <freecell-number optional>]
+#			: ['x', ]			# send to collected
+# returns True is the move is valid.
+# The 'how-many' number tells how many cards to move simultaneously from
+# a column to an empty column.  By default, only one card is moved.
+
+def do_move (src, dst, test_only=False)
+{
+	if (src [0] == 'c' and !Game.columns [src [1]]) {
+		print "Source column empty"
+		return
+	}
+
+	if (src [0] == 'f' and len (src) == 1) {
+		for (n, c in enumerate (Game.cells))
+			if (c) break
+		else.for {
+			print "Ambigious source"
+			return
+		}
+		src = ['f', n]
+	}
+
+	if (src [0] == 'f' and !Game.cells [src [1]]) {
+		print "Source freecell empty"
+		return
+	}
+
+	if (dst [0] == 'f' and len (dst) == 1) {
+		for (n, c in enumerate (Game.cells))
+			if (!c) break
+		else.for {
+			print "No room"
+			return
+		}
+		dst = ['f', n]
+	}
+
+	if (src [0] == 'c' and dst [0] == 'x') {
+		card = Game.columns [src [1]][-1]
+		if (Game.out [card.suit] and Game.out [card.suit].num == card.num - 1) {
+			if (!test_only) {
+				Game.out [card.suit] = card
+				Game.columns [src [1]].pop ()
+			}
+			return True
+		}
+		print "Can't go there"
+		return False
+	}
+
+	if (src [0] == 'c' and dst [0] == 'f') {
+		if (Game.cells [dst [1]]) {
+			print "Cell occupied"
+			return
+		}
+		if (!test_only)
+			Game.cells [dst [1]] = Game.columns [src [1]].pop ()
+		return True
+	}
+
+	if (src [0] == 'f' and dst [0] == 'c') {
+		if (!can_go_to_col (Game.cells [src [1]], dst [1])) {
+			print "Can't go there"
+			return
+		}
+		if (!test_only) {
+			Game.columns [dst [1]].append (Game.cells [src [1]])
+			Game.cells [src [1]] = None
+		}
+		return True
+	}
+
+	if (src [0] == 'f' and dst [0] == 'x') {
+		card = Game.cells [src [1]]
+		if (Game.out [card.suit] and Game.out [card.suit].num == card.num - 1) {
+			if (!test_only) {
+				Game.out [card.suit] = card
+				Game.cells [src [1]] = None
+			}
+			return True
+		}
+		print "Can't go there"
+		return False
+	}
+
+	if (src [0] == 'c' and dst [0] == 'c') {
+		if (can_go_to_col (Game.columns [src [1]][-1], dst [1])) {
+			if (!test_only)
+				Game.columns [dst [1]].append (Game.columns [src [1]].pop ())
+			return True
+		}
+		r = list (reversed (Game.columns [src [1]]))
+		L = [r [0]]
+		for (r in r [1:])
+			if (L [-1].can_go_after (r)) {
+				L.append (r)
+				if (can_go_to_col (r, dst [1])) {
+					if (!can_move_n (len (L))) {
+						print "Can't move that many cards!"
+						return False
+					}
+					if (!test_only)
+						for (r in reversed (L)) {
+							Game.columns [dst [1]].append (r)
+							Game.columns [src [1]].pop ()
+						}
+					return True
+				}
+			} else break
+	}
+
+	print "Failed"
+}
+
+# TODO: auto-detect game-over
+
+class play
+{
+	method __init__ ()
+	{
+		import deck
+		for (c in Cards)
+			c.image = deck.Deck [c.suit][c.num]
+		$CW = Cards [0].image.w
+		$CH = Cards [0].image.h
+		$Y0 = $CH + 20
+		$DCW = 10
+		$source = $source_card = None
+	}
+
+	method main_loop ($game)
+	{
+		$scr = game.screen ()
+		deal ()
+		$draw ()
+		while (1) {
+			auto_out ()
+			$draw ()
+			e = game.event.wait ()
+			if (e [0] not in ("CLICK", "CLICK2"))
+				continue
+			x, y = e [1:]
+			a = $find_area (x, y)
+			if.continue (!a)
+				$source = $source_card = None
+			if.continue (e [0] == "CLICK2") {
+				do_move (a, ['f'])
+				$source = $source_card = None
+			}
+			s1, s2 = a
+			if (!$source) {
+				if (s1 == 'x' or (s1 == 'f' and !Game.cells [s2]) or
+				(s1 == 'c' and !Game.columns [s2]))
+					continue
+				$source = s1, s2
+				$source_card = s1 == 'c' ? Game.columns [s2][-1] : Game.cells [s2]
+			} else {
+				if ((s1, s2) == $source or do_move ($source, (s1, s2)))
+					$source = $source_card = None
+			}
+		}
+	}
+
+	method find_area (x, y)
+	{
+		for (n in *8) {
+			cx = n * ($CW + $DCW)
+			if (cx <= x <= cx + $CW)
+				break
+		} else return
+		if (y >= $Y0)
+			return ["c", n]
+		if (y > $CH)
+			return
+		return n < 4 ? ["x", n] : ["f", n - 4]
+	}
+
+	method put_card (c, x, y)
+	{
+		image = c is $source_card ? c.image.recolored (0xffffff, 0xbbbbbb) : c.image
+		$scr.put_image (image, x, y)
+	}
+
+	method draw ()
+	{
+		$scr.clear (0x3c540c)
+		for (n, c in enumerate (Game.columns)) {
+			x = n * ($CW + $DCW)
+			y = $Y0
+			for (c in c) {
+				$put_card (c, x, y)
+				y += 23
+			}
+		}
+		for (n in *4) {
+			x = n * ($CW + $DCW)
+			$scr.draw_rect (x, 10, $CW, $CH, 0)
+			c = Game.out ['cdhs'[n]]
+			if (c) $scr.put_image (c.image, x, 10)
+		}
+		for (n in *4) {
+			x = (4 + n) * ($CW + $DCW)
+			$scr.fill_rect (x-3, 7, $CW+6, $CH+6, 0x306000)
+			$scr.draw_rect (x, 10, $CW, $CH, 0)
+			if (Game.cells [n])
+				$put_card (Game.cells [n], x, 10)
+		}
+		$game.flip ()
+	}
+}
+
+if (__name__ == __main__)
+{
+	import gui
+	wm = gui.Wm (800, 600)
+	gui.gameui (800, 600, play ().main_loop)
+	wm.Start ()
+}

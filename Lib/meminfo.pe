@@ -1,0 +1,49 @@
+# vm memory usage
+__autosem__
+
+import os
+
+def kB (m)
+{
+	mb = m / 1024
+	kb = m % 1024
+	return "%i.%03i kB"% (mb, kb)
+}
+
+def rss ()
+{
+	try {
+		fd = os.openfd ("/proc/%i/status" % os.getpid (), os.O_RDONLY, 0)
+		status = os.read (fd, 1000)
+		os.close (fd)
+		for (l in status.split ('\n'))
+			if (l.sw ("VmRSS"))
+				return kB (int (l.split ()[1]))
+	}
+	return "*unknown*"
+}
+
+def mstat ()
+{
+	# mallinfo is a builtin
+	m = array ("i", mallinfo ())
+	malloc_info = kB (m [0] / 1024), kB (m [-3] / 1024)
+
+	print "----pyvm MemInfo----"
+	print "Resident Set Size:\t%s" %rss ()
+	print "Mallocd:\t\t%s (in use %s)" %malloc_info
+}
+
+# by importing this once a namespace `meminfo` is added to builtins that can
+# be used by modules other than the one that imported meminfo
+namespace meminfo
+{
+	rss = rss
+	mstat = mstat
+}
+
+__builtins__ ["meminfo"] = meminfo
+
+# running shows the minimum memory used by the vm
+if (__name__ == __main__)
+	mstat ()

@@ -1,0 +1,551 @@
+##  PDF Page code interpreter/output device
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+from base import *
+from loader import Re, get_string
+
+#
+# Graphics output device
+#
+
+def pfl (f)
+{
+	# used for debugging
+	s = "%.02f" %float (f)
+	if (len (s) < 7) s = ' '*(7-len (s)) + s
+	return s
+}
+
+class GfxState
+{
+	method __init__ (width, height, scale, $Fonts)
+	{
+		$saved = None
+
+		$kx = 72.0/72
+		#$kx = 72.0/96
+		$M = scale
+
+		# text params
+		$textMat = [1, 0, 0, 1, 0, 0]
+		$fontID = None
+		$lineX = $lineY = 0
+		$curX = $curY = 0
+		$charSpace = 0
+		$wordSpace = 0
+		$leading = 0
+
+		#$cl=0
+
+		# path params
+		$ctm = [scale, 0, 0, -scale, 0, height]
+		$path = []
+		$curPt = 0, 0
+
+		# fb
+		from graphics.framebuffer import FrameBuffer
+		$fb = FrameBuffer (int (width), int (height), 3)
+		$fb.clear (0xffffff)
+	}
+
+	method concat_ctm (a, b, c, d, e, f)
+	{
+		a1, b1, c1, d1, e1, f1 = $ctm;
+		$ctm = [
+			a * a1 + b * c1,
+			a * b1 + b * d1,
+			c * a1 + d * c1,
+			c * b1 + d * d1,
+			e * a1 + f * c1 + e1,
+			e * b1 + f * d1 + f1,
+		];
+	}
+
+	method saveState ()
+	{
+		$saved = {"saved":$saved, "ctm":$ctm};
+	}
+
+	method restoreState ()
+	{
+		$ctm = $saved ["ctm"];
+		$saved = $saved ["saved"];
+	}
+
+	##
+	## Text Drawing Operations
+	##
+
+	method setFont ($fontID, $fontSize)
+		$font = $Fonts [$fontID].open (fontSize * $M * $textMat [0] * $kx);
+
+	method textTransform (x, y)
+	{
+		t0, t1, t2, t3, t4, t5 = $textMat;
+		return t0*x + t2*y + t4, t1*x + t3*y + t5;
+	}
+
+	method textTransformDelta (x, y)
+	{
+		t0, t1, t2, t3, None, None = $textMat;
+		return t0*x + t2*y, t1*x + t3*y;
+	}
+
+	method textMoveTo ($lineX, $lineY)
+	{
+		$curX, $curY = $textTransform (lineX, lineY);
+	}
+
+	method opTextMoveTo (dx, dy)
+	{
+		$textMoveTo ($lineX + dx, $lineY + dy);
+	}
+
+	method showSpaceText (a)
+	{
+		for (i in a)
+			if (i -> int or i -> float) 
+				$textShift (-i * $fontSize * 0.001, 0);
+			else $doShowText (i);
+	}
+
+	method textShift (dx, dy)
+	{
+		dx, dy = $textTransformDelta (dx, dy);
+		$curX += dx;
+		$curY += dy;
+	}
+
+	method doShowText (t)
+	{
+		# y = pfl ($curY);
+		# if ($cl == $curY)
+		#	y = ' '*len (y);
+		# print "------ %s %s [%s]"% (pfl ($curX), y, t), $charSpace, $wordSpace, $font;
+		# $cl = $curY;
+
+		if ($font) {
+			x, y = $trans (($curX, $curY));
+			$shift ($font.draw (t, $fb, x, y,
+				  $charSpace*$textMat[0]*$M, $wordSpace*$textMat[0]*$M) / $M, 0);
+		} else print "NOFONT [%s]" %t;
+	}
+
+	method shift (dx, dy)
+	{
+		$curX += dx;
+		$curY += dy;
+	}
+
+	method opTextMoveSet (dx, dy)
+	{
+		tx = $lineX + dx;
+		$leading = -dy;
+		ty = $lineY + dy;
+		$textMoveTo (tx, ty);
+	}
+
+	method opTextNextLine ()
+	{
+		$textMoveTo ($lineX, $lineY - $leading);
+	}
+
+	method BeginText ()
+	{
+		$textMat = [1, 0, 0, 1, 0, 0];
+		$textMoveTo (0, 0);
+	}
+
+	method UpdateTextMatrix (tm)
+	{
+		# Normally, a textmatrix is of the form [ A, B, B, A, C, C ]
+		# The Cs adjust the offset switching.
+		# If the Bs are 0 and the As != 1.0 then the As adjust
+		# magnification.  If Bs != 0 we have rotation/skew.
+		#
+		# Generally, what we care about is that PDFs created with Adobe Distiller
+		# usually set a font and then use update-matrix
+		#	/F15 1 Tf
+		#	[ 8.1 0 0 8.1 0 0] Tm
+		# The result of these two commands is rather equivalent to
+		#	/F15 8.1 Tf
+		# until another Tm is executed.
+
+		$textMat = tm;
+		if (tm [0] != 1 or tm [3] != 1) {
+			if (tm [0] == tm [3] and tm [1] == tm [2] == 0 and $fontID) {
+				$setFont ($fontID, $fontSize);
+			} else {
+				# rotation/skewing?
+			}
+		}
+		$textMoveTo (0, 0);
+	}
+
+	method ShowText (t)
+	{
+		$doShowText (t);
+	}
+
+	##
+	## Path Drawing
+	##
+
+	method trans ((x, y))
+	{
+		# translate coordinates by CTM
+		a, b, c, d, e, f = $ctm;
+		return a*x+c*y+e, b*x+d*y+f;
+	}
+
+	method curveTo (x1, y1, x2, y2, x3, y3)
+	{
+	}
+	method lineTo (*xy) 
+	{
+		x0, y0 = $trans ($curPt);
+		x1, y1 = $trans (xy);
+		$path.append (("L", x0, y0, x1, y1));
+		$curPt = xy;
+	}
+	method rectangle (x, y, w, h)
+	{
+		x1,y1=$trans ((x+w,y+h));
+		x0,y0=$trans ((x,y));
+		xu, xd = min (x0, x1), max (x0, x1);
+		yu, yd = min (y0, y1), max (y0, y1);
+		$path.append (("re", xu, yu, xd-xu, yd-yu));
+	}
+	pathStart = None
+	method moveTo (x, y)
+	{
+		$pathStart = $curPt = x, y;
+	}
+	method closePath ()
+	{
+		if ($pathStart)
+			$lineTo (*$pathStart);
+	}
+	method StrokePath ()
+	{
+		$do_stroke ();
+		$path = [];
+	}
+	method do_stroke ()
+	{
+		for (c in $path) {
+			c0 = c [0];
+			if (c0 == "L") {
+				x0, y0, x1, y1 = [int (i) for (i in c [1:])];
+				$fb.draw_line (x0, y0, x1, y1, $fb.col (0));
+			} else if (c0 == "re") {
+				x, y, w, h = [int (i) for (i in c [1:])];
+				$fb.draw_rect (x, y, w, h, $fb.col (0));
+			}
+		}
+	}
+	method EOFill ()
+	{
+		$Fill ();
+	}
+	method Fill ()
+	{
+		$do_stroke ();
+		# we don't fill...
+		$path = [];
+	}
+
+	##
+	## Images
+	##
+
+	method putImage (img)
+	{
+		a, b, c, d, e, f = $ctm;
+		if (b > a) {
+			print "ROTATED IMAGE!";
+			return;
+		}
+		# size and position of image
+		x = c + e;
+		y = d + f;
+		w = a;
+		h = -d + (a*c/w);
+		try $fb.put_image (img.read_image ((int (w), int (h))), int (x), int (y));
+	}
+}
+
+##
+## Interpreter.  From PDF page code to Gfx device
+##
+
+class Interpreter
+{
+	method __init__ (width, height, scale, $stack, $resources, $fonts)
+	{
+		$optab = { "'":$MoveShowText };
+		for (k in $__class__.__dict__)
+			if (k [0] == "C")
+				$optab [k [1:].replace ("_", "*")] = $(k);
+		$GFX = GfxState (width, height, scale, fonts);
+		$pops = $stack.pops;
+		$pop = $stack.pop;
+	}
+
+	###*** State
+	method Ccm () $GFX.concat_ctm (*$pops (6));
+	method Cq () $GFX.saveState ();
+	method CQ () $GFX.restoreState ();
+
+	###*** Text mode
+	method CBT () $GFX.BeginText ();
+	method CTc () $GFX.charSpace = $pop ();
+	method CTL () $GFX.leading = $pop ();
+	method CTm () $GFX.UpdateTextMatrix ($pops (6));
+	method CTf () $GFX.setFont (*$pops (2));
+	method CTd () $GFX.opTextMoveTo (*$pops (2));
+	method CTJ () $GFX.showSpaceText ($pop ());
+	method CTw () $GFX.wordSpace = $pop ();
+	method CTD () $GFX.opTextMoveSet (*$pops (2));
+	method CT_ () $GFX.opTextNextLine ();
+	method CTj () $GFX.ShowText ($pop ());
+	method CTs () { print "USING SETTEXTRIZE:", $pop (); } #setTextRise (todo)
+	method CTz () { print "Setting horiz scaling", $pop (); } #setHorizScaling (todo)
+	method CET (); # EndText()
+
+	###*** Path mode
+	method Cm  () $GFX.moveTo (*$pops (2));
+	method Cre () $GFX.rectangle (*$pops (4));
+	method Cl  () $GFX.lineTo (*$pops (2));
+	method Cc  () $GFX.curveTo (*$pops (6));
+	method Ch  () $GFX.closePath ();
+	method CS  () $GFX.StrokePath ();
+	method Cf_ () $GFX.EOFill ();
+	method CB  () $GFX.Fill ();	# opFillStroke
+	method Cf  () $GFX.Fill;
+
+	###*** XObject images
+	method CDo ()
+	{
+		o = $resources ["XObject"][$pop ()]
+		if (o.d ["Subtype"] == "Image") {
+			img = o.decodeImage ()
+			if (img)
+				$GFX.putImage (img)
+		} else WARNING ("Unknown image type : %s" %o.d ["Subtype"])
+	}
+
+	###*******  UNIMPLEMENTED/OTHER  ********
+	### see xpdf/xpdf/Gfx.cc, near the start.
+
+	method Cg ()
+	{
+		$GFX.fillPattern = None;
+		$pop ();
+	}
+
+	method CG () $pop ();
+	method CJ () $pop ();
+	method Cw () $pop ();	# setLineWidth
+	method Cgs () $pop ();
+	method Ci () $pop ();	# opSetFlat
+	method Cd () $pops (2);
+	method Crg () $pops (3);	# opSetFillRGBColor
+	method CM () $pop ();	# MiterLimit
+	method CRG () $pops (3);
+	method CW_ () ;
+	method Cn () ;
+	method Ctrue () $stack.append (True);
+	method Cj () $pop ();
+	method MoveShowText ()
+	{
+		$CT_ ();
+		$CTj ();
+	}
+	method CB_ ();	# opEOFillStroke
+	method Cb_ ();	# opCloseEOFillStroke
+	method CW ();	# opClip
+	method CTr () $pop ();	# opSetTextRenderer
+
+	# marked content
+	method CBMC () $pop ();
+	method CBDC () $pops (2);
+	method CEMC ();
+	method Cri () $pop ();
+
+	#
+	method Ck () $pops (4);
+	method CK () $pops (4);
+	method Ccs () $pop ();	#opsetfillcolorspace
+	method Cscn ()
+	{
+		# pop all;
+		$pops (len ($stack));
+	}
+	method CSC ()
+	{
+		# pop all 4;
+		$pops (len ($stack));
+	}
+	method Csc ()
+	{
+		# pop all 4;
+		$pops (len ($stack));
+	}
+
+	method Cs (); #opCloseStroke
+	method Cb (); #opCloseFillStroke
+	method CCS () $pop (); #opSetStrokeColorSpace
+
+	method Cy () $pops (4);
+	method Cv () $pops (4);
+	method CBX ();
+	method CEX ();
+	method Csh () $pop ();
+	method CSCN ()
+	{
+		# pop all 4;
+		$pops (len ($stack));
+	}
+
+	#
+	method FinalFB ()
+	{
+		# The instance has circular references ($pops -> self).
+		# It may survive until garbage collection but we want the
+		# framebuffer freed asap!  After this function no further
+		# painting can happen.
+		f = $GFX.fb;
+		del $GFX.fb;
+		del $GFX;
+		del $pop, $pops;
+		return f;
+	}
+}
+
+def eval_code (width, height, scale, page, fonts)
+{
+	# We tokenize the code (the tokenizer could be shared with
+	# the one from "loader", but this has different properties),
+	# collect values to the stack and invoke methods from an
+	# Interpreter.
+
+	code = page.code ()
+	if (!code) return
+	resources = page.Resources
+
+	##print "Page code:", code.replace ("\r", "\n")
+	##print 80*"+"
+
+	skipws   = Cpdf.skip_ws
+	isNumber = Re.isNumber
+	String   = Re.String
+	Command  = Re.Command
+	Comment  = Re.Comment
+
+	code = code.rstrip ()
+	pos = 0
+	CODE = []
+	Idx = []
+	Interp = Interpreter (width, height, scale, CODE, resources, fonts)
+	optab = Interp.optab
+	codelen = len (code)
+
+	while (pos < codelen) {
+		pos = skipws (code, pos, codelen)
+
+		# numbers
+		if.continue (R = isNumber (code, pos)) {
+			n = R [0]
+			pos = R.end ()
+			CODE.append (('.' in n ? float : int) (n))
+		}
+
+		# Commands
+		if (R = Command (code, pos)) {
+			n = R [0]
+			pos = R.end ()
+
+			try f = optab [R [0]]
+			except { }
+			else {
+				##print "PDFcmd:", R [0], CODE 
+				f ()
+				continue
+			}
+
+			# Inline Images, skip to EI
+			if (n == "BI") Idx.append (len (CODE))
+			else if (n == "ID") {
+				pos = code.find ("EI", pos) + 2
+				# --> CDo()
+				del CODE [Idx.pop ():]
+			} else {
+				print "---------------------"
+				print "[[%s]]"%code[pos-10:pos+10]
+				print sys.exc_info ()
+				print "Not Implemented Cmd:", R [0]
+				print CODE
+				exit ()
+			}
+			continue
+		}
+
+		# keys (strings actually)
+		if.continue (code [pos] == '/') {
+			R = String (code, pos + 1)
+			pos = R.end ()
+			CODE.append (R [0])
+		}
+
+		# strings
+		if.continue (code [pos] == '(') {
+			n, pos = get_string (code, pos + 1)
+			CODE.append (n)
+		}
+
+		# array
+		if.continue (code [pos] in "[]") {
+			if (code [pos] == "[")
+				Idx.append (len (CODE))
+			else {
+				x = Idx.pop ()
+				CODE [x:] = [CODE [x:]]
+			}
+			pos += 1
+		}
+
+		# dicts
+		if.continue (code [pos] == "<" and code [pos + 1] == "<") {
+			Idx.append (len (CODE))
+			pos += 2
+		}
+		if.continue (code [pos] == ">" and code [pos + 1] == ">") {
+			x = Idx.pop ()
+			CODE [x:] = [dictFromList (CODE [x:])]
+			pos += 2
+		}
+
+		# hexstring
+		if.continue (code [pos] == "<") {
+			p2 = code.index (">", pos)
+			txt = code [pos+1:p2].replace ("\n", "").replace ("\r", "")
+			CODE.append (unhexlify (txt))
+			pos = p2 + 1
+		}
+
+		# comments
+		if.continue (R = Comment (code, pos))
+			pos = R.end ()
+
+		print "ERROR", code [pos:pos+10]
+		exit ()
+	}
+
+	return Interp.FinalFB ()
+}

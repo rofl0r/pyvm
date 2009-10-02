@@ -1,0 +1,194 @@
+/*
+ *  Dynamic long number object
+ * 
+ *  Copyright (c) 2006 Stelios Xanthakis
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) version 3 of the License.
+ */
+
+/*
+ * This is the LongObj python object.  It points to a `Long`
+ * instance from liblong.
+ *
+ */
+#include "dynlib.h"
+
+/* Long () type constructor */
+__object__ *LongObj.type_call (REFPTR argv[], int argc)
+{
+	if_unlikely (!argc)
+		return new LongObj (0);
+	if (IntObj.isinstance (argv [0].o))
+		return new LongObj (argv [0].as_int->i);
+	if (LongObj.isinstance (argv [0].o)) {
+		Long *L1 = ((LongObj*) argv [0].o)->L;
+		Long *L = new Long (L1);
+		return new LongObj (L);
+	}
+
+	/* from LSF list of strings of hex digits */
+	ListObj *Lst = ListObj.checkedcast (argv [0].o);
+	Long *L = new Long __size (Lst->len);
+	for (int i = 0; i < Lst->len; i++) {
+		StringObj *S = StringObj.fcheckedcast (Lst->__xgetitem__ (i));
+		if (S->len != 8) {
+			delete L;
+			RaiseNotImplemented ("invalid format for Long ('string')");
+		}
+		L->D [i] = strtoul (S->str, 0, 16);
+	}
+	L->size = Lst->len;
+	return new LongObj (L);
+}
+
+LongObj.LongObj (int i)
+{
+	__object__.ctor ();
+	L = new Long (i);
+}
+
+LongObj.LongObj (Long *l)
+{
+	__object__.ctor ();
+	L = l;
+}
+
+LongObj.~LongObj ()
+{
+	delete L;
+}
+
+int LongObj.to_int ()
+{
+	if (L->size == 1 && L->D [0] < 0x7fffffffU)
+		return L->sign > 0 ? L->D [0] : -L->D [0];
+	if (!L->size)
+		return 0;
+	RaiseNotImplemented ("can't cast long to int (too big)");
+}
+
+int LongObj.cmp_GEN (__object__ *o)
+{
+	if (IntObj.isinstance (o))
+		return L->cmp (IntObj.cast (o)->i);
+	return L->cmp (LongObj.checkedcast (o)->L);
+}
+
+bool LongObj.cmp_EQ (__object__ *o)
+{
+	return cmp_GEN (o) == 0;
+}
+
+bool LongObj.Bool ()
+{
+	return !L->iszero ();
+}
+
+__object__ *LongObj.binary_add (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		Long LL (i);
+		return new LongObj (Long.add (L, LL));
+	}
+	return new LongObj (Long.add (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_mul (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		Long LL (i);
+		return new LongObj (Long.mul (L, LL));
+	}
+	return new LongObj (Long.mul (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_modulo (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		if (i > 0 && 1) {
+			extern unsigned int x_rem1 (Long, unsigned int);
+			return newIntObj (x_rem1 (L, i));
+		}
+		Long LL (i);
+		return new LongObj (Long.mod (L, LL));
+	}
+	return new LongObj (Long.mod (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_div (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		Long LL (i);
+		return new LongObj (Long.div (L, LL));
+	}
+	return new LongObj (Long.div (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_sub (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		Long LL (i);
+		return new LongObj (Long.sub (L, LL));
+	}
+	return new LongObj (Long.sub (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_and (__object__ *o)
+{
+	if (IntObj.isinstance (o)) {
+		int i = IntObj.cast (o)->i;
+		Long LL (i);
+		return new LongObj (Long.and (L, LL));
+	}
+	return new LongObj (Long.and (L, LongObj.checkedcast (o)->L));
+}
+
+__object__ *LongObj.binary_rsh (__object__ *o)
+{
+/* refcnt=1 */
+	return new LongObj (Long.rsh (L, IntObj.fcheckedcast (o)->i));
+}
+
+__object__ *LongObj.binary_lsh (__object__ *o)
+{
+	return new LongObj (Long.lsh (L, IntObj.fcheckedcast (o)->i));
+}
+
+__object__ *LongObj.unary_neg ()
+{
+	return new LongObj (Long.neg (L));
+}
+
+/////////////////////////////////
+
+static class long_method_proxy : method_proxy
+{
+	__object__ *sub (__object__ *o1, __object__ *o2)
+	{
+		return LongObj.cast (o1)->binary_sub (o2);
+	}
+	__object__ *div (__object__ *o1, __object__ *o2)
+	{
+		return LongObj.cast (o1)->binary_div (o2);
+	}
+	__object__ *and (__object__ *o1, __object__ *o2)
+	{
+		return LongObj.cast (o1)->binary_and (o2);
+	}
+	__object__ *neg (__object__ *o)
+	{
+		return LongObj.cast (o)->unary_neg ();
+	}
+};
+
+static long_method_proxy long_meths;
+
+TypeObj LongTypeObj ctor (LongObj._v_p_t_r_, &long_meths);

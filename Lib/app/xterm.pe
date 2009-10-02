@@ -1,0 +1,785 @@
+##  Terminal Emulator
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+# A pretty good reference is linux/drivers/vt.c
+
+__autosem__
+from fonts import psf
+from fonts.unicode import ulen, utf82int
+from misc import fprint
+
+__bind__ = ["ulen", "utf82int"]
+
+# currently, this has the form of a complete application, iow, it's
+# not possible to embed a "terminal widget" to other applications.
+
+# By default, the terminal is in UTF-8 mode: if you `cat` a file that's
+# encoded in utf-8, you should see the proper characters (only for 8x16)
+
+class screen
+{
+	method __init__ ($w, $h, $fb, font)
+	{
+		$dx, $dy = font.width, font.height
+		$grend = psf.psf2fb (fb, font, True)
+		$put_char = $put_char
+		$reset ()
+	}
+
+	method reset ()
+	{
+		$x = $y = 0
+		$rvideo = False
+		$reverse = False
+		$intensity = 0
+		$setcol (7, 0)
+		$wrap = False
+		$vtop = 0
+		$vbot = $h
+		$decom = False
+		$decawm = True
+		$cls ()
+	}
+
+	method cls ()
+		$fb.clear ($BG)
+
+	method _clear_line (n)
+{
+print "CLEaRLINE", n
+		$fb.fill_rect (0, n * $dy, $fb.w, $dy, $BG)
+}
+
+	method lf ()
+	{
+		if ($y + 1 == $vbot)
+			$scrup1 ($vtop, $vbot - 1)
+		else if ($y + 1 < $h)
+			$y += 1
+		$wrap = False
+	}
+
+	method ri ()
+	{
+		if ($y <= $vtop)
+			$scrdown1 ($vtop, $vbot - 1)
+		else if ($y > 0)
+			$y -= 1
+		$wrap = False
+	}
+
+	method cr ()
+	{
+		$x = 0
+		$wrap = False
+	}
+
+	method crlf ()
+		$cr (), $lf ()
+
+	method bs ()
+		if ($x) {
+			$x -= 1
+			$wrap = False
+		}
+
+	method tab ()
+	{
+		$wrap = False
+		$x = ($x + 8) & ~7
+		if ($x >= $w)
+			$x = $w - 1
+	}
+
+	method beep ()
+		fprint ("\x07")
+
+	method scrup1 (t, b)
+	{
+		$fb.vmove (t * $dy, (t + 1) * $dy, (b - t) * $dy)
+		$fb.fill_rect (0, b * $dy, $fb.w, $dy, $BG)
+	}
+
+	method scrdown1 (t, b)
+	{
+		$fb.vmove ((t + 1) * $dy, t * $dy, (b - t) * $dy)
+		$fb.fill_rect (0, t * $dy, $fb.w, $dy, $BG)
+	}
+
+	method put_char (c)
+	{
+		if ($wrap) {
+			$wrap = False
+			$lf ()
+			$x = 0
+		}
+
+		$grend (c, $x, $y, $FG, $BG)
+
+		$x += 1
+		if ($x == $w) {
+			if ($decawm) $wrap = True
+			$x -= 1
+		}
+	}
+
+	# 0: from cursor to eol
+	# 1: from bol to cursor
+	# 2: entire line
+	method erase_line (a=0)
+	{
+		if (a == 0) {
+			start = $x
+			end = $w
+		} else if (a == 1) {
+			start = 0
+			end = $x + 1
+		} else {
+			start = 0
+			end = $w
+		}
+		$fb.fill_rect (start * $dx, $y * $dy, (end - start) * $dx, $dy, $BG)
+	}
+
+	# 0: from cursor to eot
+	# 1: from bot to cursor
+	# 2: entire screen 
+	method erase_text (a=0)
+	{
+		if (a == 0) {
+			$erase_line (0)
+			start = $y + 1
+			end = $h
+		} else if (a == 1) {
+			$erase_line (1)
+			start = 0
+			end = $y
+		} else return $cls ()
+
+		$fb.fill_rect (0, start * $dy, $fb.w, (end - start) * $dy, $BG)
+	}
+
+	# delete n chars right of cursor and scroll them
+	method delchars (pn=1)
+	{
+		n = $w - 1 - ($x + pn)
+		if (n > 0) {
+			dx = $dx
+			dy = $dy
+			yy = $y * dy
+			xx = $x * dx
+			$fb.put_image ($fb.sub_image (xx + pn * dx, yy, n * dx, dy), xx, yy)
+			$fb.fill_rect (xx + n * dx, yy, pn * dx, dy, $BG)
+		}
+		$wrap = False
+	}
+
+	method dellines (n=1)
+	{
+		for (i in xrange (minmax (1, n, $vbot - $vtop)))
+			$scrup1 ($y, $vbot - 1)
+		$wrap = False
+	}
+
+	method up (n=1)    $gotoxy ($x, $y - n)
+	method down (n=1)  $gotoxy ($x, $y + n)
+	method right (n=1) $gotoxy ($x + n, $y)
+	method left (n=1)  $gotoxy ($x - n, $y)
+
+	method setcol ($fgc, $bgc)
+	{
+		if ($intensity) fgc += 9
+		$FG = COLORS [fgc]
+		$BG = COLORS [bgc]
+		if ($reverse) 
+			$FG, $BG = $BG, $FG
+	}
+
+	method setfg (fg) $setcol (fg, $bgc)
+	method setbg (bg) $setcol ($fgc, bg)
+	method setreverse ($reverse)   $setcol ($fgc, $bgc)
+	method setintense ($intensity) $setcol ($fgc, $bgc)
+
+	method setrvideo ($rvideo)
+	{
+		# should negate the entire screen color in the widget
+	}
+
+	method gotoxy (x, y)
+	{
+		$x = minmax (0, x, $w - 1)
+		$y = $decom ? minmax ($vtop, y, $vbot - 1) : minmax (0, y, $h - 1)
+		$wrap = False
+	}
+
+	method gotoxay (x, y)
+		$gotoxy (x, $decom ? $vtop + y : y)
+
+	method set_scroll_region (pt=0, pb=0)
+	{
+		pt = pt or 1
+		pb = pb or $h
+		if (pb - pt >= 2) {
+			$vtop = pt - 1
+			$vbot = pb
+			$gotoxay (0, 0)
+		}
+	}
+
+	method insert_lines (n=1)
+	{
+		for (i in xrange (minmax (1, n, $vbot - $vtop)))
+			$scrdown1 ($y, $vbot - 1)
+		$wrap = False
+	}
+}
+
+# vt102 terminal emulator.  It receives data, translates the escape sequences
+# and invokes the proper methods on a screen.  Escape sequences can be sent to
+# an ipc process named "vtlog" for inspection, which can be started with
+#	pyvm ipc dummy vtlog
+
+from builtins import faryield, far_yield_acceptor
+
+class vt100
+{
+	# print received characters to stdout? (devel)
+	DoPrint = 0
+	# Use ipc/vtlog if available?
+	LogEsc = True
+	# report all escapes to vtlog
+	ReportEscapes = 0
+	# just don't view vtlog from xterm...
+	DumpData = 0
+
+	method __init__ ($cols, $rows, $fb, font)
+	{
+		$scr = screen (cols, rows, fb, font)
+		$charsem = thread.sem ()
+		$vtlock = thread.xlock ()
+		$chars = []
+		$curchars = ""
+		$ret = ""
+		$do_refresh = False
+		$cursor_visible = True
+		# escape csi parameters
+		$csi = {
+			"J": ($scr.erase_text, 1),
+			"K": ($scr.erase_line, 1),
+			"A": ($ctrl.A, 1),
+			"B": ($ctrl.B, 1),
+			"C": ($ctrl.C, 1),
+			"D": ($ctrl.D, 1),
+			##"e": ($ctrl.B, 1),
+			"a": ($ctrl.C, 1),
+			"m": ($setvtattr, 1),
+			"r": ($scr.set_scroll_region, 1),
+			"H": ($ctrl.H, 1),
+			"f": ($ctrl.H, 1),
+			"c": ($ctrl.c, 0),
+			"d": ($ctrl.d, 1),
+			"G": ($ctrl.G, 1),
+			"P": ($scr.delchars, 1),
+			"L": ($scr.insert_lines, 1),
+			"M": ($scr.dellines, 1),
+		}
+		$escseq = {
+			"M": $scr.ri,
+			"=": void,
+			">": void,
+			"P": $esc.P,
+			"D": $scr.lf,
+			"E": $scr.crlf,
+			"#": $esc.hash,
+		}
+
+		# a neat trick to process characters without state
+		# variables.  The main loop is actually a generator
+		# of which we call "next" in order to make it process
+		# the next character in the queue.
+		$process_chars = far_yield_acceptor ($main_loop)
+
+		# log channel
+		if ($LogEsc and (x = @ipc.connect ("vtlog"))) $vtlog = x.msg
+		else $vtlog = void
+
+		$underlined = False
+		def $vtlog (x)
+			print x
+	}
+
+	method setvtattr (*p)
+		for (p in p or (0,))
+			if (30 <= p <= 38)
+				$scr.setfg (p - 30)
+			else if (40 <= p <= 47)
+				$scr.setbg (p - 30)
+			else if (p == 0) {
+				$scr.setcol (7, 0)
+				$scr.setintense (False)
+				$scr.setreverse (False)
+			} else if (p in (7, 27))
+				$scr.setreverse (p == 7)
+			else if (p == 39)
+				$scr.setfg (7)
+			else if (p == 49)
+				$scr.setbg (0)
+			else if (p in (1, 2))
+				$scr.setintense (p == 1)
+			else if (p == 4)
+				$underlined = True
+			else if (p == 24)
+				$underlined = False
+			else $vtlog ("Unhandled attribute %i"% p)
+
+	method setmode (on, *p)
+		for (p in p)
+			if (p == "?6") {
+				$scr.decom = on
+				$scr.gotoxay (0, 0)
+			} else if (p == "?7")
+				$scr.decawm = on
+			else if (p == "?25")
+				$cursor_visible = on
+			else if (p == "?5")
+				$scr.setrvideo (on)
+			else if (p == "?3") {
+				# switch 132/80 mode. either way clear screen and goto 0,0
+				$scr.cls ()
+				$scr.gotoxy (0, 0)
+			} else if (p not in ("?1", "?12", "?1049"))
+				$vtlog ("unhandled mode:" + p)
+
+	namespace ctrl
+	{
+		method A (n=0) $scr.up (n or n + 1)
+		method B (n=0) $scr.down (n or n + 1)
+		method C (n=0) $scr.right (n or n + 1)
+		method D (n=0) $scr.left (n or n + 1)
+		method H (y=1, x=1) $scr.gotoxay (x ? x-1 : 0, y ? y-1 : 0)
+		method c (p) ;# $ret += "\033[?1;2c"
+		method d (y=1) $scr.gotoxy ($scr.x, y-1)
+		method G (x=1) $scr.gotoxy (x-1, $scr.y)
+	}
+
+	namespace esc
+	{
+		method P ()
+		{
+			# A sequence: \033P+q...+q...\033\
+			# sent to xterm to query termcap. ignore
+			s = ""
+			while (1) {
+				s += $nextc ()
+				if (s.ew ("\033\\")) break
+			}
+		}
+		method hash ()
+		{
+			# DEC screen alignment test
+			if ($nextc2 () != "8") return
+			$scr.echar = ord ("E") | $scr.col
+			$scr.cls ()
+			$scr.echar = 32 | $scr.col
+		}
+	}
+
+	CTRL = "\0\a\b\t\n\r\016\017\x7f\v\f"
+
+	method do_ctrl (c)
+		if (c == "\r") $scr.cr ()
+		else if (c in "\n\v\f") $scr.lf ()
+		else if (c == "\t") $scr.tab ()
+		else if (c == "\b") $scr.bs ()
+		else if (c == "\a") $scr.beep ()
+		else if (c != "\0")
+			$vtlog ("unknown control char [%i]" %ord (c))
+
+	method main_loop ()
+	{
+		putchar = $scr.put_char
+		try while (1) {
+			c = $nextc ()
+			with ($vtlock) {
+				if (c == "\033") {
+					try $do_esc ()
+					except print "Escape raised", sys.exc_info ()
+				} else if (c in $CTRL)
+					$do_ctrl (c)
+				else {
+					c = ord (c)
+					if (192 <= c < 254) {
+						n = ulen [c - 192]
+						c = chr (c)
+						for (None in *n)
+							c += $nextc ()
+						c = utf82int (c)
+					}
+					if (c < 32)
+						$vtlog ("Control character %i" %c)
+					else putchar (c)
+				}
+				$do_refresh = True
+			}
+		} except print "MainLoop error:", sys.exc_info ()
+	}
+
+	method do_esc ()
+	{
+		c = $nextc2 ()
+		if (c == "[") {
+			s = ""
+			while ((c = $nextc2 ()) in "0123456789;>?") s += c
+			params = s ? s.split (";") : []
+			if ($ReportEscapes)
+				$vtlog ("do escape:" + s + c)
+			if (c in $csi) {
+				f, intp = $csi [c]
+				if (intp) f (*ints (params))
+				else f (params)
+			} else if (c in "lh")
+				$setmode (c == "h", *params)
+			else $vtlog ("csi:" + s + " " + c + "[%s]" %(s+c).hexlify ())
+		} else if (c == "]") {
+			s = ""
+			while ((c = $nextc2 ()) in "0123456789") s += c
+			if (c == ";")
+				while ((c = $nextc2 ("\07")) != "\07") s += c
+			$vtlog ("xtermseq:" + s + c)
+		} else if (c in "()") {
+			$vtlog ("charset")
+		} else {
+			if (c in $escseq)
+				$escseq [c]()
+			else $vtlog ("ESC:"+c)
+		}
+	}
+
+	method nextc2 (ign="")
+		# get next character but process control chars that can be
+		# in the _middle_ of an escape sequence
+		while (1) {
+			r = $nextc ()
+			if (r in $CTRL and r not in ign) {
+				$do_ctrl (r)
+				continue
+			}
+			return r
+		}
+
+	method nextc ()
+	{
+		while (!$chars)
+			faryield (False)
+		r = $chars [0]
+		$chars = $chars [1:]
+		faryield (True)
+		return r
+	}
+
+	# send characters to the vt100
+	method put_chars (c)
+	{
+		if ($DoPrint)
+			fprint (c)
+
+		if ($DumpData)
+			$vtlog ("".join ([ ord (i) <= 32 ? " %s "%i.hexlify () : i for (i in c) ]))
+
+		# process all chars with the invokation of faryielder
+		$chars += c
+		for (c in $process_chars)
+			if (!c) break
+
+		# some escape sequences may force the vt to return strings to the application
+		if ($ret) {
+			r, $ret = $ret, ""
+			return r
+		}
+	}
+
+	method get_cursor ()
+		return $scr.x, $scr.y
+}
+
+# Start a program `progname` with `progargs` on a pseudo-terminal.
+# This class should be overriden to handle input/output; by default
+# it writes to stdout.  Input is external.
+
+import thread, os
+
+class ptyApplication
+{
+	method __init__ (progname, progargs, cols, rows)
+	{
+		$master, slave = os.openpty (cols, rows)
+
+		def appdone ()
+		{
+			os.close ($master)
+			$appDone ()
+		}
+		$pid = os.execpty (slave, appdone, progname, *progargs)
+	}
+
+	method read ()
+		return os.read ($master, 100)
+
+	method write (d)
+		os.write ($master, d)
+
+	# what to do if the app terminates?
+	method appDone () { }
+
+	# we want to kill the app ourselves. should sigkill it?
+	method killApp ()
+		print "Kill it"
+}
+
+# gui widget for terminal application
+
+import gui
+from time import sleep
+
+COLORS = (
+	# first 9 colors
+	0x000000,
+	0xbb0000,
+	0x00bb00,
+	0xf4a460,
+	0x0000bb,
+	0xcc00cc,
+	0x40e0d0,
+	0x999999,
+	0xffffff,
+	# next 9 -- high intensity
+	0x555555,
+	0xff0000,
+	0x00ff00,
+	0xffff00,
+	0x2020ff,
+	0xff20ff,
+	0x50f0e0,
+	0xffffff,
+	0x999999,
+)
+
+class VT100 (gui.widget)
+{
+	method Init ($cols, $rows, font, **kw)
+	{
+		$dx, $dy = font.width, font.height
+		w = kw ['w'] = cols * $dx
+		h = kw ['h'] = rows * $dy
+		$fb = @graphics.framebuffer.FrameBuffer (w, h, $wm.bpp)
+		$fb.clear (0xff1122)
+		$widget_init (**kw)
+		$cx = $cy = 0
+		$VT = vt100 (cols, rows, $fb, font)
+		$App = None
+		$rflock = thread.xlock (False)
+		thread.start_new ($refreshing)
+	}
+
+	method refreshing ()
+		while (1) {
+			$rflock.acquire ()
+			if ($isVisible ()) {
+				sleep (0.005)
+				$wm.async ($Refresh)
+			} else sleep (0.025)
+		}
+
+	method Paste ()
+		if (t = $wm.Paste ())
+			$App.write (t)
+
+	method rMenu ()
+		return [
+			["Paste", 1, $Paste]
+		]
+
+	# start a process on the terminal
+
+	method start_process (progname, args=(), $input_from_tty=True)
+	{
+		if ($App) raise Error ("terminal already active!")
+
+		A = $App = ptyApplication (progname, args, $cols, $rows)
+
+		def A.appDone ()
+		{
+			print "Application terminated"
+			try $t1.interrupt (self)
+			if (input_from_tty)
+				try $t2.interrupt (self)
+			$App = None
+			$wm.exit ()
+		}
+
+		def app_to_vt ()
+			try while ($App) {
+				d = $App.read ()
+				r = $VT.put_chars (d)
+				if (r) $App.write (r)
+				if ($VT.do_refresh)
+					$rflock.release ()
+			}
+
+		def input_to_app ()
+		{
+			sys.pty_stdin (True)
+			try while ($App) {
+				$App.write (sys.pty_getchar ())
+			}
+			sys.pty_stdin (False)
+		}
+
+		$t1 = thread.start_new (app_to_vt)
+		if (input_from_tty)
+			$t2 = thread.start_new (input_to_app)
+	}
+
+	# XXXX: these are some almost-standard hardcoded values for
+	# TERM=linux. The right thing is to read termcap and use
+	# its values to fill the table below.
+	Trans = {
+		"BACKSPACE":	"\x08",
+		"LEFT":		"\033[D",
+		"RIGHT":	"\033[C",
+		"UP":		"\033[A",
+		"DOWN":		"\033[B",
+		"DEL":		"\033[\x33\x7e",
+
+		"HOME":		"\033[1~",
+		#"HOME":	"\033[H",
+		"END":		"\033[4~",
+		#"END":		"\033[F",
+
+		"PAGEUP":	"\033[\x35\x7e",
+		"PAGEDOWN":	"\033[\x36\x7e",
+		"SHIFT":	"",
+		"CTRL":		"",
+		"ALT":		"",
+		"ESC":		"\033",
+		"INSERT":	"\033[\x32\x7e",
+	}
+
+	TransCtrl = {
+		"Q": 0x11, "W": 0x17, "E": 0x05, "R": 0x12, "T": 0x14, "Y": 0x19, "U": 0x15,
+		"I": 0x09, "O": 0x1f, "P": 0x10, "[": 0x1b, "]": 0x1d,
+
+		"A": 0x01, "S": 0x13, "D": 0x04, "F": 0x06, "G": 0x07, "H": 0x08, "J": 0x0a,
+		"K": 0x0b, "L": 0x0c, ":": 0x3b, '"': 0x27,
+
+		'Z': 0x1a, 'X': 0x18, 'C': 0x03, 'V': 0x16, 'B': 0x02, 'N': 0x0e, 'M': 0x0d,
+		',': 0x2c, '.': 0x2e, '/': 0x1f,
+	}
+
+	method onKey (k)
+	{
+		if ($wm.key_ctrl) {
+			try k = chr ($TransCtrl [k.upper ()])
+		} else try k = $Trans [k]
+			except if (len (k) > 1) print "WOOT: [%s]" %k
+
+		if (k and $App) $App.write (k)
+
+		return True
+	}
+
+	method draw_cursor ()
+		if ($VT.cursor_visible) {
+			cx, cy = $VT.get_cursor ()
+			dx, dy = $VT.scr.dx, $VT.scr.dy
+			cx *= dx
+			cy *= dy
+			$show_image ($fb.sub_image (cx, cy, dx, dy).neg (), cx, cy)
+		}
+
+	method Draw ()
+		with ($VT.vtlock) {
+			$show_image ($fb.as_image (), 0, 0)
+			$draw_cursor ()
+		}
+
+	method onRedraw (x, y, w, h)
+		with ($VT.vtlock) {
+			$show_image ($fb.sub_image (x, y, w, h), x, y, 0, 0, w, h)
+			$draw_cursor ()
+		}
+
+	method Refresh ()
+	{
+		# xxx: update only the modified areaz
+		$Draw ()
+		$VT.do_refresh = False
+	}
+}
+
+###################################################################
+
+USAGE = """usage: xterm [-size CxL] [-12x22] [-c command-line] [-rc file]
+
+ -size CxL	: xterm size Columns x Lines, no larger that the available size
+ -12x22		: use the larger 12x22 fonts (no unicode)
+ -c <cmdline>	: start specified program in the shell. for example
+			pyvm xterm -c 'less file.txt'
+		  and close the xterm when the program exits
+ -rc <file>	: start bash normally with the option --rcfile to run the
+		  specified commands in the file before everything
+"""
+
+if (__name__ == __main__)
+{
+	large = sys.argp.check_switch ("-12x22")
+	opts = sys.argp.opts ("size", "c", "rc")
+
+	if ("size" in opts) {
+		try {
+			cols, None, rows = opts ["size"].partition ("x")
+			cols = int (cols)
+			rows = int (rows)
+			if !(10 < cols < 300 and 10 < rows < 200)
+				sys.argp.help ("bad col/row value")
+		} except sys.argp.help ()
+		os.putenv ("COLUMNS", "%i"%cols)
+		os.putenv ("LINES", "%i"%rows)
+	} else cols, rows = sys.tty_size ()
+
+	font = psf.PSF (large ? "12x22" : "8x16")
+
+	wm = gui.Wm (cols*font.width, rows*font.height)
+
+	c, r = wm.width / font.width, wm.height / font.height
+	if (c != cols or r != rows) {
+		cols, rows = c, r
+		os.putenv ("COLUMNS", "%i"%cols)
+		os.putenv ("LINES", "%i"%rows)
+	}
+
+	# (where are the specs on TERM=xterm?)
+	os.putenv ("TERM", "linux")
+
+	vt = VT100 (cols, rows, font)
+
+	def vt.__setup__ ()
+	{
+		if ("rc" in opts)
+			args = ["--rcfile", opts ["rc"], "-i"]
+		else {
+			args = ["--login"]
+			if ("c" in opts)
+				args = ["-c", opts ["c"], "-i"]
+		}
+		vt.start_process ("bash", args, 0)
+		vt.setKeyWidget ()
+	}
+
+	wm.Start ()
+	print "The END."
+}

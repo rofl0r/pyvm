@@ -1,0 +1,232 @@
+__autosem__
+
+# pyvm's web browser does permanent WWW mirroring. All downloaded stuff
+# can be found in HOME/user/wcache/web.  Forever.  By the time users run
+# out of disk space, we'll have implemented a cache cleaner.
+# In the meantime, we can scavange web statistics for our browser...
+
+# The structure:
+#	Downloaded urls are basically saved according to their UID
+#	(MD5 of the url) in two files.
+#		wcache/UID[0]/UID[1:]
+#	and
+#		wcache/UID[0]/UID[1:].hdr
+#	the first file is the content and the second is the HTTP headers
+#	of the reply plus the url, referer, etc.  This is the "file cache".
+#
+#	These files are symlinked from wcache/web -- when possible (there are
+#	certain complications.  A filename may be too long, it may be a
+#	directory in the web, or it may be a redirection)
+#	The "wcache/web" thing is just a convenience structure to explore
+#	the webcache with the standard shell filesystem utilities.
+#	We could explore the wecache with a special utility from UIDs.
+#
+#	Finally, for stuff that is downloaded with the "background
+#	downloader", the directory `wcache/downloads/` contains
+#	symlinks to files in wcache/web or the UID in some rare cases
+#	where the wcache/web file could not be created.
+
+import os, time, thread, serialize, sysconfig, bigset
+
+WCACHE_HOME = sysconfig.GETCONF ("webcache")
+if (WCACHE_HOME [-1] != "/") WCACHE_HOME += "/"
+
+# Make directories for first browser run
+
+def mkdir2 (d)
+{
+	d = WCACHE_HOME + d
+	if (!os.access (d))
+		os.mkdir (d)
+	return d + "/"
+}
+
+for (d in "0123456789abcdef")
+	mkdir2 (d)
+mkdir2 ("web")
+DLDIR = mkdir2 ("downloads")
+
+#
+
+def save (reqh, status, headers, tmp, url)
+{
+	uid = url.uid
+	fnm = WCACHE_HOME + uid [0] + "/" + uid [1:]
+	tmp.save (fnm)
+	t = "Url: " + url.url + "\n"
+	t += "\n".join (["%s: %s" %(k, reqh [k]) for (k in ["Referer"]) if (k in reqh)])
+	t += "\n\nHTTP/1.0 %s\n" %status
+	t += "\n".join (["%s: %s" %(k, v) for (k, v in headers.items ())])
+	open (fnm + ".hdr", "w").write (t)
+	url._filecache = fnm
+
+	if (url.Status == "OK" and url.protocol in ("http", "https", "ftp"))
+		wlink (url, fnm)
+
+	mark_visited (url.vuid)
+
+	return fnm
+}
+
+def remove (uid)
+{
+	fnm = WCACHE_HOME + uid [0] + "/" + uid [1:]
+	try os.remove (fnm)
+	try os.remove (fnm + ".hdr")
+}
+
+# Link from web/ to the file cache.  POST url are not handled correctly
+# in the web/ tree.  The replies to POST requests exist in the file
+# cache nontheless.
+
+def wlink (url, filename)
+{
+	lname = url.canon_url.partition ("://") [2]
+	if ("/" not in lname) lname += "/"
+	lname = lname [lname.sw ("www.") ? 4 : 0] + "/" + lname
+	if (lname [-1] == "/")
+		lname += "__dir__.html"
+
+	# create all the directories up to the resource.
+	# If something that should be a directory is a file, rename it to "__dir__.html"
+
+	dirs = lname.split ("/")
+	root = WCACHE_HOME + "web"
+	for (d in dirs [:-1]) {
+		root += "/" + d
+		if (!os.path.isdir (root))
+			if (os.access (root)) {
+				os.MoveFile (root, root + "tmp")
+				os.mkdir (root)
+				os.MoveFile (root + "tmp", root + "/__dir__.html")
+			} else os.mkdir (root)
+	}
+
+	root += "/" + dirs [-1]
+	try {
+		if (!os.path.isdir (root)) {
+			if (os.access (root))
+				os.remove (root)
+			os.symlink_relative (filename, root)
+		} else {
+			root += "/__dir__.html"
+			if (os.access (root))
+				os.remove (root)
+			os.symlink_relative (filename, root)
+		}
+		url._weblink = root
+	} except {
+		print "SYMLINK FAILED [%s] -> [%s]" %(url, filename)
+	}
+}
+
+# Link an url from the download area to the weblinks or filecache
+def downloaded (url, lname="")
+{
+	url.mark_visited ()
+
+	if (!url._weblink and !url._filecache) {
+		wname = weblink_name (url)
+		if (!os.access (wname))
+			return
+		url._weblink = wname
+	}
+
+	# is save name is not given the default is the basename of the url
+	# and if a directory some extra stuff.
+	lname = lname or url.canon_url.partition ("://") [2].rpartition ("/")[2]
+
+	if (!lname) {
+		lname = url.path == "/" ? url.netloc.partition ("://")[2] : "dir"
+		if (url.content_type ().sw ("text/html")) lname += ".html"
+	}
+
+	lname, None, ext = lname.partition (".")
+	ext = ext ? "." + ext : ""
+	while (1) {
+		name = DLDIR + lname + ext
+		if (!os.access (name))
+			break
+		if (os.path.islink (name)
+		and os.abspath (DLDIR + os.readlink (name)) in (url._weblink, url._filecache))
+			return
+		lname += "~"
+	}
+	
+	if (len (name) > 128)
+		name = name [:128]
+	os.symlink_relative (url._weblink or url._filecache, name)
+}
+
+# is cached?
+def in_cache (uid, header_match=True)
+{
+	fnm = WCACHE_HOME + uid [0] + "/" + uid [1:]
+	try hdr = readfile (fnm + ".hdr")
+	except return
+
+	sh, None, rh = hdr.partition ("\n\n")
+
+	if (rh and rh [0] == "\n") rh = rh [1:]
+	status, None, rest = rh.partition ("\n")
+	status = status.partition (" ")[2]
+	# do not report stored 404s as cached
+	if (status not in ("200", "301", "302", "303"))
+		return
+
+	headers = {}
+	for (hh in rest.split ("\n")) {
+		k, None, v = hh.partition (":")
+		headers [k] = v.strip ()
+	}
+	# touch file
+	return status, headers, fnm
+}
+
+def weblink_name (url)
+{
+	lname = url.canon_url.partition ("://") [2]
+	if ("/" not in lname) lname += "/"
+	lname = lname [lname.sw ("www.") ? 4 : 0] + "/" + lname
+	if (lname [-1] == "/")
+		lname += "__dir__.html"
+	lname = WCACHE_HOME + "web/" + lname
+	if (os.access (lname))
+		return lname
+}
+
+# using the cached element. set _filecache and _weblink
+def use_cached (url)
+{
+	uid = url.uid
+	url._filecache = WCACHE_HOME + uid [0] + "/" + uid [1:]
+	url._weblink = weblink_name (url)
+}
+
+## Visited pages bigset
+## Initially, every downloaded resource was marked visited.
+## however, after 3 months of surfing the visited links db
+## stored something like 500k items!  That's because web
+## pages today have a lot of thingies as small images, css
+## and scripts. Because of that, currently only the primary
+## items are marked visited: what's being displayed in the
+## browser area (main page or image) and things that have
+## been "downloaded" by the background downloader. grep
+## for "mark_visited".
+## Note that the "is_visited" db is used by the css :visited
+## in the cascader so hundreds of lookups into this huge
+## dict are not at all uncommon.
+
+VF = WCACHE_HOME + "VISITED"
+Visited = bigset.hashset ()
+Visited.load (VF)
+Visited.start_autosave (VF, 10)
+
+def mark_visited (uid)
+	Visited.add (uid)
+def save_visited ()
+	Visited.save (VF)
+is_visited = Visited.contains
+
+if (__name__ == __main__)
+	os.system ("ps aux | grep pyvm")

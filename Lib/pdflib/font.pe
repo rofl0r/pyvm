@@ -1,0 +1,239 @@
+##  Handling of PDF font information
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from base import WARNING
+from elements import PDFObj
+from re import re
+import encodings
+
+### Font Aliases to Builtin fonts
+
+FALIAS = re (r"(TimesNewRoman|CourierNew|Arial)(?:PS)?[-,]?(BoldItalic|Bold|Italic|)(?:MT)?$")
+DALIAS = { "Arial":"Helvetica", "CourierNew":"Courier", "TimesNewRoman":"Times" }
+
+def font_alias (f)
+{
+	m = FALIAS (f)
+	if (!m) return None
+	s = DALIAS [m [1]]
+	if (m [2]) s += "-" + m [2]
+	return s
+}
+
+### Font extactor
+
+FID = 0
+FEXTRACT = "zFON%i"
+FEXTRACT = ""
+
+# Types of fonts-
+#
+# Type1:
+#	The most common type of fonts in PDF. Three builtins available by implementation.
+# CFF:
+#	Compact font format. This is the same as Type1 but more compact.
+# TrueType/OpenType:
+#	The known ttf type.  Usually produced by newer PDF producers.
+#
+# Type0:
+#	This is not a real font but a container of CIDFonts.
+# CIDFonts:
+#	This is a bit like Type1 (I think).  Unlike the other fonts
+#	that use the "Encoding", CID uses wide-char characters
+#	and each 16bit value indexes a glyph.
+#
+# Type3:
+#	Not a real font.  Supposed to be a sequence of drawing commands
+#	that create new glyphs.  Not Implemented.
+#
+# Goal is to study all the above info and pass the needed parameters to
+# the freetype library.
+#
+
+class FontDescriptor (*PDFObj)
+{
+	OPTIONAL = "FontFile","FontFile2","FontFile3","FontName","Flags"
+
+	method init ()
+		$FontFile = $FontFile or $FontFile2 or $FontFile3
+}
+
+BLTINDIR = "$urw/"
+
+class Font (*PDFObj)
+{
+	REQUIRED = "Subtype",;
+	OPTIONAL = "BaseFont","Widths","FontDescriptor","FirstChar",
+		   "LastChar","FontName","Encoding","Name","Flags",
+		   "DescendantFonts"
+
+	BUILTIN = {
+		"Courier", "Courier-Bold", "Courier-BoldOblique", "Courier-Oblique",
+		"Helvetica", "Helvetica-Bold", "Helvetica-BoldOblique", "Helvetica-Oblique",
+		"Times-Bold", "Times-BoldItalic", "Times-Italic", "Times-Roman",
+		"Symbol", "ZapfDingbats"
+	}
+	namespace FLAGS {
+		FixedWidth = 1
+		Serif      = 2
+		Symbolic   = 4
+		Italic     = 1<<6
+		Bold       = 1<<18
+	}
+
+	method init ()
+	{
+		$faces = {}
+		$fds = $FontDescriptor ? FontDescriptor ($FontDescriptor) : None
+		$CID = False
+		# prepare the function/kwargs that must be used to create
+		# a renderer for this font.
+		$prep ()
+	}
+
+	UseBuiltinRasterizer = False
+
+	method fparams (fnm="", fontstream=None)
+	{
+		from fonts import Renderer
+
+		$FKW = { "encoding" : $get_encoding (fontstream), "cid":$CID }
+		if (fnm) $FKW ["filename"] = fnm
+		else $FKW ["mem"] = fontstream.decode ()
+
+		$FKW ["builtin"] = $UseBuiltinRasterizer
+
+		# Extract fonts for testing
+		if (FEXTRACT and fontstream) {
+			global FID
+			open (FEXTRACT%FID, "w").write (fontstream.decode ())
+			FID += 1
+		}
+
+		# only freetype Renderer for now
+		$F = Renderer
+	}
+
+	method get_encoding (fontstream)
+	{
+		from fonts import GetEncoding, standardEncoding
+
+		if ($CID) 
+			return None
+
+		enc = None
+		if ($Encoding -> str)
+			try enc = encodings.($Encoding)
+		else try enc = encodings.($Encoding ["BaseEncoding"])
+
+		if (!enc and fontstream) {
+			try enc = GetEncoding (fontstream.decode ())
+			if (enc == "StandardEncoding") enc = standardEncoding
+			else if (enc)
+				# xpdf sais that this may be needed for some Type1C fonts
+				for (n, (c1, c2) in enumerate (zip (enc, standardEncoding)))
+					if (!c1) enc [n] = c2
+		}
+
+		# chose depending on font type
+		if (!enc)
+			enc = standardEncoding
+
+		# apply differences
+		if ($Encoding -> dict) {
+			std = list (enc)
+			for (i in $Encoding ["Differences"]) {
+				if (i -> int)
+					n = i
+				else {
+					std [n] = i
+					n += 1
+				}
+			}
+			enc = std
+		}
+
+		return tuple (enc)
+	}
+
+	method prep ()
+	{
+		$F = None
+
+		if ($Subtype in ("Type1", "TrueType")) {
+			if ($fds) {
+				# use font file
+				if ($fds.FontFile)
+					return $fparams (fontstream=$fds.FontFile)
+				# builtin font?
+				if ($fds.FontName in $BUILTIN)
+					return $fparams (BLTINDIR + $fds.FontName)
+				# known aliases to builtins?
+				if (fb = font_alias ($fds.FontName))
+					return $fparams (BLTINDIR + fb)
+
+				# A font we don't have. What xpdf does is use one of the
+				# builtin fonts but also use the "Widths" field to override
+				# the default widths (called substitution in xpdf).
+				# With the current code, the text will look wrong.
+				flags = $fds.Flags
+				if (flags & $FLAGS.FixedWidth) b = "Courier"
+				else if (flags & $FLAGS.Serif) b = "Times"
+				else b = "Helvetica"
+				if (flags & $FLAGS.Italic)
+					if (flags & $FLAGS.Bold) b += "-BoldOblique"
+					else b += "-Oblique"
+				else if (flags & $FLAGS.Bold) b += "-Bold"
+				WARNING (("Unknown font '%s'. Using builtin font"+
+					" '%s' without width adjustment."+
+					" Character spacing WRONG!") %($fds.FontName, b))
+				return $fparams (BLTINDIR + b)
+			}
+			f = $BaseFont
+			if (fb = font_alias (f)) f = fb
+			WARNING ("No Font Descriptor %s" %f)
+			return $fparams (BLTINDIR + f)
+		} else if ($Subtype == "CIDFontType2") {
+			$CID = True
+			return $fparams (fontstream=$fds.FontFile)
+		} else if ($Subtype == "CIDFontType0") {
+			$CID = True
+			return $fparams (fontstream=$fds.FontFile)
+		} else if ($Subtype == "Type0") {
+			f = Font ($DescendantFonts [0])
+			$F = f.F
+			$FKW = f.FKW
+			if ($Encoding != "Identity-H")
+				WARNING ("CID Font with unknown encoding '%s'" %$Encoding)
+		} else WARNING ("Unknown type of font '%s'" %$Subtype)
+	}
+
+	# we use this to open a specific size for the font
+
+	method open (size)
+	{
+		try return $faces [size]
+		if (!$F) return None
+		try return $faces [size] = $F (ptsize=size, **$FKW)
+		except {
+			#print sys.exc_info ()
+			print "Failed To Load Font:", $BaseFont
+			raise
+		}
+	}
+
+	# force re-open with alternative rasterizer
+
+	method switch_rasterizer ()
+	{
+		$UseBuiltinRasterizer = not $UseBuiltinRasterizer
+		$faces = {}
+		$prep ()
+	}
+}

@@ -1,0 +1,169 @@
+##  SSH Constants / Format
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from datastream import data_parser
+
+class Byte method __init__ ($val);
+class Raw method __init__ ($val);
+
+namespace MSG
+{
+	DISCONNECT                = 1
+	SERVICE_REQUEST           = 5
+	SERVICE_ACCEPT            = 6
+	KEXINIT                   = 20
+	KEXDH_INIT                = 30
+	KEX_REPLY                 = 31
+	USERAUTH_REQUEST          = 50
+	USERAUTH_FAILURE          = 51
+	USERAUTH_SUCCESS          = 52
+	USERAUTH_INFO_REQUEST     = 60
+	USERAUTH_INFO_RESPONSE    = 61
+	CHANNEL_OPEN              = 90
+	CHANNEL_OPEN_CONFIRMATION = 91
+ 	CHANNEL_OPEN_FAILURE      = 92
+	CHANNEL_WINDOW_ADJUST     = 93
+	CHANNEL_DATA              = 94
+	CHANNEL_EOF               = 96
+	CHANNEL_CLOSE             = 97
+	CHANNEL_REQUEST           = 98
+	CHANNEL_SUCCESS           = 99
+	CHANNEL_FAILURE           = 100
+}
+
+Desc = {v: k for (k, v in MSG.__dict__.items ())}
+
+def Descr (m)
+	try return Desc [m]
+	except return "No description (%i)" %m
+
+def isCHANNEL (x)
+	return MSG.CHANNEL_OPEN < x <= MSG.CHANNEL_SUCCESS
+
+# Packetizers
+
+def UnpackPacket (fmt, p)
+{
+	# parse packet by format.
+	p = data_parser (p)
+	P = []
+	for (i in fmt.split ("-"))
+		if (i == "i")
+			P<< p.r32b ()
+		else if (i == "b")
+			P<< p.r8 ()
+		else if (i == "s")
+			P<< p.read (p.r32b ())
+		else if (i == "L")
+			P<< p.read (p.r32b ()).split (",")
+		else if (i [0] == "r")
+			P<< p.read (int (i [1:]))
+		else raise Error ()
+	return P
+}
+
+def BuildPacket (*args)
+{
+	# build packet by argument type.
+	# "byte" and "raw string" are passed as "integer" and "string"
+	# enclosed in a tuple.
+	p = ""
+	for (i in args)
+		if (i -> int) {
+			p += "%MI" %i
+		} else if (i -> bool) {
+			p += i ? "\1" : "\0"
+		} else if (i -> str) {
+			p += "%MI" %len (i) + i
+		} else if (i -> list) {
+			i = ",".join (i)
+			p += "%MI" %len (i) + i
+		} else if (i -> tuple) {
+			i, = i
+			if (i -> int) p += "%c" %i
+			else p += i
+		} else if (i => Byte) {
+			p += chr (i.val)
+		} else if (i => Raw) {
+			p += i.val
+		} else raise "plonk!"
+	return p
+}
+
+# read private key
+
+def read_priv_key (txt)
+{
+	import base64
+
+	txt = txt.replace ("\r\n", "\n")
+
+	ts = "-----BEGIN RSA PRIVATE KEY-----\n"
+	te = "\n-----END RSA PRIVATE KEY-----"
+	tsi = txt.index (ts) + len (ts)
+	tei = txt.index (te, tsi)
+	txt = iter (txt [tsi:tei].split ("\n"))
+	hd = {}
+	for (t in txt)
+		if (":" in t) {
+			k, v = h.split (":")
+			hd [k.strip ().lower ()] = v.strip ()
+		} else if.break (t) {
+			c = [t]
+			for (t in txt)
+				c<< t
+			context = base64.dec ("".join (c))
+		}
+
+	if ("proc-type" in hd) {
+		if (hd ["proc-type"] != "4,ENCRYPTED")
+			raise Error ()
+		raise Error ()
+	}
+	from crypto.ber import parse_BER
+
+	namespace rsa {
+		None, N, E, D, P, Q, DMP, DMQ, U = parse_BER (context)
+	}
+	return rsa
+}
+
+# RSA key gen from E, D, N, ...
+
+def gen_pri_key (E, D, N, Q, P, U)
+{
+	if (Q > P)
+		Q, P = P, Q
+
+	from crypto.ber import writed
+	from crypto.longs import LongToPKC as LP
+	import base64
+
+	DMP = D % (P - 1)
+	DMQ = D % (Q - 1)
+	fields = "".join ([writed (2, LP (n)) for (n in [Long (0), N, E, D, P, Q, DMP, DMQ, U])])
+	data = writed (48, fields)
+	return "-----BEGIN RSA PRIVATE KEY-----\n" + base64.b2a (data) +
+	      "\n-----END RSA PRIVATE KEY-----\n"
+}
+
+def gen_pub_key (E, N)
+{
+	from crypto.longs import LongToPKC as LP
+	import base64
+
+	E = LP (E)
+	N = LP (N)
+	s = "\0\0\0\x07ssh-rsa%Mi%s%Mi%s" %(len (E), E, len (N), N)
+
+	return "ssh-rsa %s rsa-key\n" % base64.enc (s)
+}
+
+def gen_ssh_keys (E, D, N, Q, P, U)
+	return gen_pub_key (E, N), gen_pri_key (E, D, N, Q, P, U)

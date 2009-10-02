@@ -1,0 +1,55 @@
+There are different points of view regarding what open source is
+about, and depending on the POV of one, they can encourage or troll
+other views (although these views are not mutually exclusive).
+
+A few major ones include:
+
+1) open source is about great software that would otherwise be very
+   expensive.  Users are encouraged to do the right thing and donate
+   money or contribute bugfixes and close issues in the bugtracker.
+   In the process, they may add a few lines to their CV and even
+   have fun; it's a win-win situation.
+
+2) open source should provide a decent alternative to the users and
+   slowly drive closed source solutions out of business so that in
+   the end all the software will be open source and we will have
+   complete control of our data formats, protocols and hardware.
+   oss should be familiar and easy to use even by the dumbest user
+   of computers in order to gain the financial momentum required
+   to advertise properly, while offering an equal or better set of
+   features and stability.
+
+3) open source is about fun. programming is a fun hobby and people
+   would do it anyway. through open source this hobby becomes a
+   collaborative hobby and this increases then fun. also, people
+   have the ability to modify (hack) the system and implement
+   desired features immediately, instead of waiting $x years for
+   the next version. this is a fun system that's evolving according
+   to the priorities of the hackers.
+
+pyvm as a hobby project is leaning more towards POV (3).
+For that two basic priorities are:
+
+1) the code is easy to hack. the interested hacker should be able to
+   understand how things work, and modify the program within a couple
+   of hours, and then go back to doing whatever they were doing,
+   without having to invest several man-weeks before they can do so.
+   In order to do that, the code and the APIs are constantly refactored
+   to achieve "the right thing", which is incidentally also the simplest
+   thing and the easiest to understand.  The project aims to simplify
+   things and not complicate them, so as to strengthen its value as
+   "something very hard to understand and re-implement".
+
+2) the project is easy to fork. Although, legally, every oss project can
+   be forked, in practice for some huge projects this is not practical
+   unless the fork is started because of a major disagreement between
+   core developers (like the XFree86/X.org and gcc/egcs forks). It would
+   not make sense, for example, for a little programmer to fork gcc or X11
+   because maintaining a codebase of millions of lines for which 98% of
+   he doesn't understand anything, is useless.  pyvm makes it possible
+   to fork in the case a user does not share the same goals as the
+   upstream maintainance.
+   Also, because the vm is not supposed to be used with source code
+   outside its tree, forking is the only way to use pyvm for more
+   specialized tasks that do not belong in the general pop system
+   (under GPL).

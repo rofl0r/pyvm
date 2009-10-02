@@ -1,0 +1,521 @@
+__autosem__
+import os
+
+# simple configuration file reader
+
+gen read_config (f)
+{
+	fl = open (f)
+
+	for (l in fl) {
+		l = l [:-1]
+		if (l.lstrip () and l.lstrip ()[0] != '#')
+			yield l
+	}
+}
+
+def parse_config (f)
+{
+	CFGVAR = @re.compilef (r'(.*?)\s*=\s*(.*)')
+	D = {}
+
+	for (l in read_config (f)) {
+		if !(m = CFGVAR (l)) {
+			print "Syntax Error in configuration file [%s]" %f
+			raise "Bad cfg"
+		}
+		D [m [1]] = m [2].rstrip ()
+	}
+
+	return D
+}
+
+def write_config (f, D)
+{
+	f = open (f, "w")
+	for (k, v in D.iteritems ())
+		f.write ("%s = %s\n" %(k, v))
+}
+
+# simple reader for files from etc/ that have fixed number of
+# fields, comment lines that begin with '#' and empty lines
+
+def etc_read (name, nfields=0)
+{
+	L = []
+	name = USERHOME + "etc/" + name
+	try o = open (name)
+	except {
+		print "configuration file %s does not exist" %name
+		raise
+	}
+
+	for (l in open (name)) {
+		l = l.strip ()
+		if (!l or l [0] == "#")
+			continue
+		l = l.split ()
+		if (nfields and len (l) != nfields) {
+			print "Bad line in configuration file %s" %name
+			print "Wanted %i fields, got : %s" %(nfields, " ".join (l))
+			raise Error
+		}
+		L.append (l)
+	}
+	return L
+}
+
+#
+# tmpfile
+#
+# The file is removed when the tmpfile instance is released!
+# We must take care to reference the instance for as long as
+# we need it. Alternatively we can use with() but there are
+# cases when we want to keep a tmpfile for longer throughout
+# the program.
+#
+# In other words, never take `fnm` out of the tmpfile.
+# Always use `fnm` through the instance. Confusing but practical.
+#
+
+# (load on demand)
+from random import random_int32
+from os import access as FileExists, remove as RemoveFile, mkfifo, MoveFile, CopyFile
+import os
+
+class tmpfile
+{
+	method __init__ (ext='tmp', dir=HOME+'user/tmp/', fnm=None, $cleanup=True)
+	{
+		if (fnm) {
+			$fnm = fnm
+			return
+		}
+		$fnm = None
+		while (FileExists (dir + (f = 'tmp%x.%s' %(random_int32 (), ext))));
+		open (dir + f, 'w')
+		$fnm = dir + f
+		# __del__ methods may not be called when the vm exits (a TODO
+		# but not high priority). In order to ensure the file gets really
+		# deleted, use the special list sys.to_delete which is cleaned
+		# by the BIOS
+		sys.to_delete<< $fnm
+	}
+
+	method open (*a)
+		return open ($fnm, *a)
+
+	method read ()
+		return readfile ($fnm)
+
+	method write (x)
+		return $open ('w').write (x)
+
+	method save (dest)
+		if ($cleanup)
+			MoveFile ($fnm, dest)
+		else CopyFile ($fnm, dest)
+
+	method getsize ()
+		return os.access ($fnm) ? os.path.getsize ($fnm) : 0
+
+	method __del__ ()
+		if ($cleanup)
+			try RemoveFile ($fnm)
+}
+
+class tmpfifo
+{
+	method __init__ (dir=HOME + 'user/tmp/', $fnm=None)
+	{
+		if ($fnm is None) {
+			while (FileExists (dir + (f = 'tmp%x.fifo' %random_int32 ())));
+			mkfifo (dir + f)
+			$fnm = dir + f
+		}
+		sys.to_delete<< $fnm
+		$state = None
+		$fd = -1
+	}
+
+	method __del__ ()
+	{
+		if ($state) os.close ($fd)
+		try RemoveFile ($fnm)
+	}
+
+	method close ()
+	{
+		os.close ($fd)
+		$state = None
+	}
+
+	method openr ()
+	{
+		$fd = os.openfd ($fnm, os.O_RDONLY, 0)
+		if ($fd == -1) raise Error ("-1")
+		$state = "r"
+	}
+
+	# This will block until a reader is on
+	method openw ()
+	{
+		$fd = os.openfd ($fnm, os.O_WRONLY, 0)
+		if ($fd == -1) raise Error ("-1")
+		$state = "w"
+	}
+
+	method read (n)
+	{
+		if ($state != "r") raise Error ("not for reading")
+		return os.read ($fd, n)
+	}
+
+	method write (d)
+	{
+		if ($state != "w") raise Error ("not for writing")
+		return os.write ($fd, d)
+	}
+}
+
+#
+# interner
+#
+
+def interner (L=None, D=None)
+{
+	if (D is None)
+		D = {}
+	if (L is not None)
+		for (i in L)
+			D [i] = i
+	return D.setdefault
+}
+
+#
+# caching generator
+#
+
+gen cache_generator (G, n)
+{
+	L = []
+	__prealloc__ (L, n)
+	try
+		for (i in G) {
+			L.append (i)
+			if (len (L) == n) {
+				for (i in L)
+					yield i
+				L = []
+				__prealloc__ (L, n)
+			}
+		}
+	finally
+		for (i in L)
+			yield i
+}
+
+# memoizing function: for the same arguments, the same result
+# is cached.
+
+def memoizing (func)
+{
+	cache = {}
+	def f (*args)
+		try return cache [args]
+		except return cache [args] = func (*args)
+	return f
+}
+
+#
+# execfile
+#
+
+def execfile (f, D=None)
+{
+	if (D is None) D = {}
+	try cod = compile (None, f, 'exec')
+	except return False
+	eval (cod, D)
+	return True
+}
+
+#
+# Evaluate a string which is a function definition (pe-whitespaceless)
+#
+
+def evalfunc (fdef, function, ns=None, pseudo_filename="file:evalfunc.pe")
+{
+	from pyc import compile
+	cod = compile (fdef, pseudo_filename, "exec")
+	D = ns or {}
+	eval (cod, D)
+	try return D [function]
+	raise Error ("No function \"%s\" in the code!" %function)
+}
+
+#
+# Watchdog, kill main thread after...
+#
+
+def watchdog (x)
+{
+	import thread
+	def f ()
+	{
+		sleep (x)
+		print "WATCHDOG ACTIVATED"
+		try thread.interrupt (0, SystemExit, 2)
+	}
+	thread.start_new (f)
+}
+
+#
+# strpart - could be a builtin
+#
+
+gen strpart (s, x)
+	for (i in *(len (s) / x))
+		yield s [i*x:(i+1)*x]
+
+#
+# key sort until we make it a builtin
+#
+
+def key_sort (L, kf)
+	return [i [1] for (i in [(kf (i), i) for (i in L)].sort ())]
+
+#
+def caseless_sort (L)
+{
+	def f (x)
+		return x.lower ()
+	return key_sort (L, f)
+}
+
+#
+
+def strchop (s, n)
+{
+	s = s.replace ("\t", " ")
+	if (len (s) < n)
+		return s + (n - len (s)) * " "
+	return s [:n]
+}
+
+#
+def fdiv (x, y)
+	return x/y + (x%y ? 1 : 0)
+
+#
+gen progress ()
+	while (1) {
+		yield "|"
+		yield "/"
+		yield "-"
+		yield "\\"
+	}
+
+gen printprogress (g)
+{
+	for (i, p in izip (g, progress ())) {
+		fprint ("\r"+p)
+		yield i
+	}
+}
+
+#
+izip = @itertools.izip
+
+# Save stdout
+
+class SAVE_STDOUT
+{
+	method __context__ ()
+		return self
+	method __enter__ ()
+	{
+		$oldstdout = sys.stdout
+		$newstdout = sys.stdout = @cStringIO.StringIO ()
+		$init ()
+	}
+	method __exit__ (*args)
+	{
+		$finish ()
+		sys.stdout = $oldstdout
+		v = $newstdout.getvalue ()
+		if (v) {
+			print "Meanwhile, these messages were printed to stdout:"
+			print v
+		}
+		$oldstdout = $newstdout = None
+	}
+	method init ();
+	method finish ();
+}
+
+#
+gen readlines (filename)
+	for (i in open (filename))
+		yield i [:-1]
+
+#
+def bytes (b)
+	return b < 1024 ? "%ib"%b : b < (1024*1024) ? "%.1fK" %(b / 1024.0) : "%.2fM" %(b / (1024*1024.0))
+
+#
+def safe_writefile (filename, data)
+{
+	f = filename + "tmp"
+	open (f, "w").write (data)
+	os.rename (f, filename)
+}
+
+#
+def dictfilt (d, f, exclude=True)
+{
+	D = {}
+	if (exclude) {
+		for (k, v in d.items ())
+			if (k not in f)
+				D [k] = v
+	} else {
+		for (k, v in d.items ())
+			if (k in f)
+				D [k] = v
+	}
+	return D
+}
+
+#
+def getitems (d, *i)
+	for (i in i)
+		yield d [i]
+
+#
+def fprint (x)
+{
+	sys.stdout.write (x)
+	sys.stdout.flush ()
+}
+
+#
+# The right way to enable/disable gc
+#	with (misc.NoGC)
+#
+
+sys.gc.N = 0
+
+class NoGC
+{
+	method __context__ ()
+		return self
+
+	method __enter__ ()
+	{
+		if (!sys.gc.N)
+			sys.gc.disable ()
+		sys.gc.N += 1
+	}
+
+	method __exit__ (*args)
+	{
+		sys.gc.N -= 1
+		if (!sys.gc.N)
+			sys.gc.enable ()
+	}
+}
+
+NoGC = NoGC ()
+
+# load average. only works on linux
+
+def loadavg ()
+{
+	from os import openfd, read, close, O_RDONLY
+	try {
+		f = openfd ("/proc/loadavg", O_RDONLY, 0)
+		l = int (100 * float (read (f, 100).split ()[1]))
+		close (f)
+		return l
+	}
+}
+
+# format a number to thousands/hundreads/etc
+
+def GMKnum (n)
+{
+	if (!n) return "0"
+	d = []
+	while (n) {
+		d.append ("%03i" % int (n%1000))
+		n = n / 1000
+	}
+	s = ".".join (d.reverse ())
+	while (len (s) > 2 and s [0] == "0")
+		s = s [1:]
+	return s
+}
+
+# format seconds in hh:mm:ss
+
+def HMS (s)
+{
+	if (s < 0)
+		return "--:--:--"
+	m = s / 60
+	s = s % 60
+	h = m / 60
+	m = m % 60
+	if (h) return "%i:%02i:%02i" %(h, m, s)
+	return "%i:%02i" %(m, s)
+}
+
+# debug utfs
+
+def utprint (s)
+{
+	from _unicode import utf8_iter
+	from ttycolor import color
+	S = []
+	for (c in utf8_iter (s))
+		if (c < 160)
+			S.append (chr (c))
+		else S.append (color ("%x"%c, "b"))
+	print "".join (S)
+}
+
+# print a table (list of lists with same number of string items)
+# nicely formatted.
+#	`w`	: available width
+#	`hints`	: a list with as many strings as the columns, 'l' ,'r', 'c' for alignment
+#	`dcol`	: the column which will be truncated if a line is too long
+#	`tab`	: the table
+
+def tabprint (w, hints, dcol, tab)
+{
+	l = len (hints)
+	if (dcol < 0)
+		dcol = l + dcol
+	ws = [0] * l
+	for (t in tab)
+		for (i in *l)
+			ws [i] = max (ws [i], len (t [i]))
+	if (sum (ws) > w)
+		ws [dcol] -= sum (ws) - w
+	hints = zip (hints, ws)
+	L = []
+	for (t in tab) {
+		s = ""
+		for ((h, w), t in zip (hints, t)) {
+			if (w >= len (t)) {
+				ds = " " * (w - len (t))
+				if (h == "l") t = ds + t
+				else t = t + ds
+			} else t = t [:w]
+			s += t + " "
+		}
+		L<< s
+	}
+	return "\n".join (L)
+}
