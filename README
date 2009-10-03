@@ -8,7 +8,7 @@ What is pyvm
  not have backwards compatibility.  The various implemented userspace
  programs are the only testcase that drives the evolution of the vm.
  Similarily, various libraries do not have fixed public APIs and so
- it's easier to make termorary implementations that can be used in
+ it's easier to make temporary implementations that can be used in
  order to bootstrap something else, and be refactored later.
 
  The core vm is a cousing of python and can even run small python
@@ -92,4 +92,4 @@ Please see Doc/CREDITS.txt
 
 Home page: http://students.ceid.upatras.gr/~sxanth/pyvm-2.0/
 Git repo:  http://students.ceid.upatras.gr/~sxanth/pyvm.git
-e-mail:    sxanth@ath.forthnet.gr
+e-mail:    sxanth@ath.forthnet.gr (must contain the word "pyvm")

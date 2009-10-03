@@ -15,3 +15,21 @@ and run the script
 
 	mkimage.sh
 
+"Bootstrap broken":
+ Suppose the file "posix.pyc" is deleted. In order to re-create
+ it we'll need to run the pyc compiler; However, the pyc compiler
+ tries to import this file and since it does not exist, it cannot
+ run. This is a simple case of broken bootstrap.
+ The command "make rebuild" creates a tarball of all the required
+ "pycs" in bootstrap.bin so that we can be sure that they will
+ not be accidentially deleted. However, suppose that we have modified
+ the *API* of the posix.py module; in this case what we have in
+ bootstrap.bin is not usable because it contains the old API.
+ This is the "seriously" broken bootstrap and we will definitelly
+ need Python 2.4 to generate posix.pyc which can be imported by
+ the pyc compiler.
+ At the moment, the mkimage.sh script runs the default "python"
+ installation and if that isn't 2.4 you may not be able to
+ recover from this situation and make the toolchain unusable
+ until you've installed python 2.4. The other solution is to
+ not modify the API of any *py files.

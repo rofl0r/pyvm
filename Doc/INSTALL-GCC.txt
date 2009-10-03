@@ -48,8 +48,8 @@ and from the toplevel of pyvm `make`
 #	4.0.2		783				#
 #	4.1.1		800				#
 #	3.4.4		832				#
-#	4.3.1		950				#
 #	4.4.0		924				#
+#	4.3.1		950				#
 #							#
 #	unfortunatelly, although gcc-4.3 has some	#
 #	nice features like cold function attributes,	#
