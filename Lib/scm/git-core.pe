@@ -252,14 +252,19 @@ class http_repository (repository)
 		port = p ["port"] or 80
 		$C = http.Connection (host, port)
 		$BP = ewslash (p ["path"])
+		$cache = {}
 	}
 
 	method readfile (f)
 	{
+		try return $cache [f]
 		status, headers, file = $C.get ($BP + f, {})
 		if (status != "200")
 			raise Error ("Can't fetch object via HTTP!")
-		return file.read ()
+		data = file.read ()
+		if (len (data) < 1024)
+			$cache [f] = data
+		return data
 	}
 	method NA (*args) raise Error ("Not available in HTTP repo")
 	access = listdir = mkdir = writefile = NA
