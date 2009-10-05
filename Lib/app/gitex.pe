@@ -16,24 +16,46 @@
 __autosem__
 
 from time     import monday, rfc1123 as strtime, MMYY
-from scm.git  import repository
+from scm.git  import repository, RemoteRepo
 from scm.diff import pydiff as diff
 from misc     import memoizing
 from utfutil  import utf8_len as ulen, utf8_slice
 from mailnews.mime import NameFromAddr
 
+USAGE = "gitex [<repository>]"
+
 quiet = sys.argp.check_switch ("-q")
+is_remote = False
+if (sys.argp.have_args ())
+{
+	arg = sys.argp.one ()
+	try repo = RemoteRepo (arg)
+	except {
+		print "can't open repository"
+		exit ()
+	}
+	is_remote = arg.sw ("http://")
+} else 
+	try repo = repository ()
+	except {
+		print "Not inside a repository, or can't open repository"
+		exit ()
+	}
 
-try repo = repository ()
-except {
-	print "Not inside a repository, or can't open repository"
-	exit ()
-}
+if (is_remote) {
+	# may not be able to get a list of refs/heads/ so use only master for now
+	HEAD = repo.branch ("master")
+	current = HEAD.sig
+	branches = [("master", current)]
+} else {
+	try HEAD = repo.open_commit ()
+	except {
+		print "Can't open HEAD commit. Repository probably packed?"
+		exit ()
+	}
 
-try HEAD = repo.open_commit ()
-except {
-	print "Can't open HEAD commit. Repository probably packed?"
-	exit ()
+	branches = repo.branches ()
+	current = HEAD.sig
 }
 
 def sc (t, l)
@@ -44,8 +66,6 @@ def sc (t, l)
 	return utf8_slice (t, 0, l)
 }
 
-branches = repo.branches ()
-current = HEAD.sig
 print "reading history... (this may take some time for cold cache)"
 history = list (repo.MainHistory (HEAD, !quiet))
 
@@ -153,25 +173,27 @@ def cl (l)
 
 gen gen_commit (c, par=0, fb1b2=None)
 {
-	o = repo.openobj (c)
-	tree = repo.openobj (o.tree)
-	adls ([tbh ("author    "), tblh (o.authorName ())],
-	      [tbh ("committer "), tblh (o.committerName ())],
-	      [tbh ("          "), tblh (strtime (o.date ()))],
-	      [tbh ("commit    "), tblh (o.sig)])
+	with (PB) {
+		o = repo.openobj (c)
+		tree = repo.openobj (o.tree)
+		adls ([tbh ("author    "), tblh (o.authorName ())],
+		      [tbh ("committer "), tblh (o.committerName ())],
+		      [tbh ("          "), tblh (strtime (o.date ()))],
+		      [tbh ("commit    "), tblh (o.sig)])
 
-	if (o.parents)
-		for (n, p in enumerate (list (o.Parents ())))
-			if (n == par) adl (tbh ("parent    "), psig (p))
-			else adl (tbh ("parent    "), psig (p), "   [", tocd (c, n), "]")
-	adls ([tbh ("tree      "), vtr (tree.sig)], [])
-	for (l in o.message.split ("\n"))
-		adl (cl (l))
+		if (o.parents)
+			for (n, p in enumerate (list (o.Parents ())))
+				if (n == par) adl (tbh ("parent    "), psig (p))
+				else adl (tbh ("parent    "), psig (p), "   [", tocd (c, n), "]")
+		adls ([tbh ("tree      "), vtr (tree.sig)], [])
+		for (l in o.message.split ("\n"))
+			adl (cl (l))
 
-	if (!o.parents)
-		return
+		if (!o.parents)
+			return
 
-	added, removed, renamed, diffed = diff_trees (repo.openobj (o.parents [par]).tree, o.tree)
+		added, removed, renamed, diffed = diff_trees (repo.openobj (o.parents [par]).tree, o.tree)
+	}
 
 	if (diffed)
 		adls ([("VIEW DIFF", BR, "bu", ("cd", c, o.parents [par]))], [])
@@ -223,9 +245,11 @@ gen gen_commit (c, par=0, fb1b2=None)
 
 def gen_commitdiff (c1, c2)
 {
-	o = repo.openobj (c1)
-	o2 = repo.openobj (c2)
-	added, removed, renamed, diffed = diff_trees (o2.tree, o.tree)
+	with (PB) {
+		o = repo.openobj (c1)
+		o2 = repo.openobj (c2)
+		added, removed, renamed, diffed = diff_trees (o2.tree, o.tree)
+	}
 
 	setbg (0xeeeeee)
 	for (f, b1, b2 in diffed)  {
@@ -303,11 +327,52 @@ genpage ()
 
 import gui
 
+class progress (gui.widget)
+{
+	method Init (**kw)
+	{
+		kw ["h"] = 2
+		$elasticH = False
+		$elasticW = True
+		$widget_init (**kw)
+		$l = @thread.xlock (False)
+		@thread.start_new ($run)
+	}
+
+	method run ()
+	{
+		x = 0
+		while (1) {
+			if ($l.locked ()) x = 0
+			$l.ack ()
+			if ((x += 5) > $w) x = 0
+			$fill_rect (0, 0, x, $h, 0x0000ff)
+			$fill_rect (x, 0, $w-x, $h, 0xffffff)
+			$wm.flush ()
+			sleep (0.2)
+		}
+	}
+
+	method Draw ()
+		$draw_blank (0xffffff)
+
+	method __enter__ ()
+		$l.release ()
+	method __exit__ (*args)
+	{
+		$l.acquire ()
+		$Draw ()
+	}
+	method __context__ ()
+		return self
+}
+
 wm = gui.Wm ()
 with (gui.vcontainer ()) {
 	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0)
 	rt.setKeyWidget ()
 	rt.doclick = go
+	PB = progress ()
 }
 def rt.onkey (k)
 	if (k == "BACKSPACE") {
