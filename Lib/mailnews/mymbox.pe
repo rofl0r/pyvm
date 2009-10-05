@@ -718,6 +718,15 @@ def swFlatAuthB ()
 	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (x.authwatched ())]))
 def swOPs ()
 	M.loadlist (OPItems ([i for (i in current.G.AllOP ()) if (i.nreplies ())]))
+def swSearchA (t)
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (t in x.author ().lower ())]))
+def swSearchT (t)
+	M.loadlist (FlatItems ([x for (x in current.G.All ()) if (t in x.subject ().lower ())]))
+def swSearchM (t)
+{
+	L = [x for (x in current.G.All ()) if (x.data_ready () and t in x.data ().lower ())]
+	M.loadlist (FlatItems (L))
+}
 
 def HotKeys (k)
 {
@@ -931,12 +940,23 @@ with (U = gui.union ()) {
 				]]])
 			NT = gui.status ("-")
 		}
-#		with (gui.hcontainer ()) {
-#			gui.textin ()
-#			gui.button ("Search Author")
-#			gui.button ("Search Title")
-#			gui.button ("Search Messages")
-#		}
+		with (gui.hcontainer ()) {
+			gui.label ("search:")
+			SEARCH = gui.textin ()
+			def SearchA ()
+				if (t = SEARCH.getText ())
+					swSearchA (t)
+			gui.button ("Author", Action=SearchA)
+			def SearchT ()
+				if (t = SEARCH.getText ())
+					swSearchT (t)
+			gui.button ("Title", Action=SearchT)
+			# in case of newsgroup, search only seen (downloaded) messages
+			def SearchM ()
+				if (t = SEARCH.getText ())
+					swSearchM (t)
+			gui.button ("Messages", Action=SearchM)
+		}
 		with (gui.hcontainer ()) {
 			M = MList ()
 			M.ybar = gui.hscrollbar (M)

@@ -13,7 +13,7 @@ ReadFile = @scm."git-core".ReadFile
 MakeTagobj = @scm."git-core".make_tag
 
 import os, re, time
-from misc import fprint
+from misc import fprint, tmpfile
 
 USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|tag|pull]
 
@@ -597,6 +597,17 @@ def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=
 
 def read_message ()
 {
+	if (ED = @sysconfig.GETCONF ("editor")) {
+		tmp = tmpfile ()
+		tmp.write ("# Enter commit message below\n")
+		@os.system ("%s %s" %(ED, tmp.fnm))
+		msg = tmp.read ().partition ("\n")[2].strip ()
+		if (!msg) {
+			print "Cancelled."
+			exit ()
+		}
+		return msg + "\n"
+	}
 	print "Enter log message (end with CTRL-D):"
 	msg = sys.stdin.read ()
 	if (!msg) {
