@@ -129,7 +129,7 @@ def need_checkin (repo)
 		return [f for (f, sig in repo.IDX.lsfiles ())]
 	}
 	files_to_diff = set (repo.diff_files ())
-	treefiles = repo.openobj (cur.tree).lsfiles_r (repo)
+	treefiles = repo.openobj (cur.tree).lsfiles_r ()
 	for (f, sig in treefiles)
 		if (f not in repo.IDX.D or repo.IDX.D [f][-1] != sig)
 			files_to_diff.add (f)
@@ -197,7 +197,7 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 		# add files that differ between the cache/wd
 		files_to_diff = set (repo.diff_files ())
 		# add files that differ between tree/cache
-		treefiles = repo.openobj (told.tree).lsfiles_r (repo)
+		treefiles = repo.openobj (told.tree).lsfiles_r ()
 		for (f, sig in treefiles)
 			if (f not in repo.IDX.D or repo.IDX.D [f][-1] != sig)
 				files_to_diff.add (f)
@@ -423,7 +423,7 @@ def cmd_tar (repo, *options)
 
 	C = @tar.Create (tarfile)
 	mt = now ()
-	for (f, sig, mode in repo.open (repo.open_commit (repo.HEAD ()).tree).lsr (repo)) {
+	for (f, sig, mode in repo.open (repo.open_commit (repo.HEAD ()).tree).lsr ()) {
 
 		perm = mode & 07777
 		linkname = data = ""

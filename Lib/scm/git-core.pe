@@ -205,18 +205,48 @@ class repository
 		return F
 	}
 
-	method diff_trees (t1, t2)
+	method diff_trees0 (t1, t2)
 	{
-		oldfiles = $openobj (t1).lsfiles_r (self)
-		newfiles = dict ($openobj (t2).lsfiles_r (self))
-		for (f, sig in oldfiles)
+		oldfiles = $openobj (t1).rfiles ()
+		newfiles = $openobj (t2).rfiles ()
+		for (f, (mode, sig) in oldfiles.items ()) {
+			isdir = int (mode, 8) & 040000
+			p2 = f + "/"
 			if (f not in newfiles)
-				yield f, $openobj (sig), None
-			else if (newfiles [f] != sig)
-				yield f, $openobj (sig), $openobj (newfiles [f])
-		for (f in set (newfiles.keys ()) - set (dict (oldfiles).keys ()))
-			yield f, None, $openobj (newfiles [f])
+				if (isdir) {
+					for (f, sig in $openobj (sig).lsfiles_r ())
+						yield p2 + f, $openobj (sig), None
+				} else yield f, $openobj (sig), None
+			else if (newfiles [f][1] != sig) {
+				isdir2 = int (newfiles [f][0], 8) & 040000
+				sig2 = newfiles [f][1]
+				if (isdir) {
+					if (isdir2) {
+						for (f, o1, o2 in $diff_trees0 (sig, sig2))
+							yield p2 + f, o1, o2
+					} else {
+						for (f, sig in $openobj (sig).lsfiles_r ())
+							yield p2 + f, $openobj (sig), None
+						yield f, None, $openobj (sig2)
+					}
+				} else if (isdir2) {
+					yield f, $openobj (sig), None
+					for (f, sig in $openobj (sig2).lsfiles_r ())
+						yield p2 + f, $openobj (sig), None
+				} else yield f, $openobj (sig), $openobj (sig2)
+			}
+		}
+		for (f in set (newfiles.keys ()) - set (dict (oldfiles).keys ())) {
+			sig = newfiles [f][1]
+			if (int (newfiles [f][0], 8) & 040000) {
+				for (f2, sig in $openobj (sig).lsfiles_r ())
+					yield f + "/" + f2, None, $openobj (sig)
+			} else yield f, None, $openobj (sig)
+		}
 	}
+
+	method diff_trees (t1, t2)
+		return [x for (x in $diff_trees0 (t1, t2))].sort ()
 
 	# diff trees but detect renames
 	method diff_trees2 (t1, t2)
@@ -298,7 +328,7 @@ def RemoteRepo (r)
 #	print o.kind;
 #
 
-GETDATE = @re.re (r"author.*?\ncommitter.*?>\s*(\d+)");
+GETDATE = @re.re (r"author.*?\ncommitter.*?>\s*(\d+)")
 
 class commit
 {
@@ -413,47 +443,37 @@ class tree
 	method __str__ ()
 		return "tree: %s" %$sig;
 
-	method lsfiles_r (repo, path="")
+	method lsfiles_r (path="")
 	{
-		F = [];
+		F = []
 		for (k, (mod, sig) in $rfiles ().items ().sort ())
 			if (int (mod, 8) & 040000)
-				F.extend (repo.open (sig).lsfiles_r (repo, path + k + "/"));
-			else F.append ((path + k, sig));
-		return F;
+				F.extend ($repo.open (sig).lsfiles_r (path + k + "/"))
+			else F.append ((path + k, sig))
+		return F
 	}
 
-	method lsmodes_r (repo, path="")
+	method lsmodes_r (path="")
 	{
-		F = [];
+		F = []
 		for (k, (mod, sig) in $rfiles ().items ().sort ())
 			if (int (mod, 8) & 040000)
-				F.extend (repo.open (sig).lsmodes_r (repo, path + k + "/"));
-			else F.append (mod);
-		return F;
+				F.extend ($repo.open (sig).lsmodes_r (path + k + "/"))
+			else F.append (mod)
+		return F
 	}
 
-	method lsr (repo, path="")
+	method lsr (path="")
 	{
-		F = [];
+		F = []
 		for (k, (mod, sig) in $rfiles ().items ().sort ())
 			if (int (mod, 8) & 0170000 == 040000) {
 				# git doesn't track directories. here we emit a fake directory
 				# with no hash and rwxr-xr-x permissions.
-				F.append ((path + k + "/", None, 493));
-				F.extend (repo.open (sig).lsr (repo, path + k + "/"));
-			} else F.append ((path + k, sig, int (mod, 8)));
-		return F;
-	}
-
-	method ls_r (repo)
-	{
-		F = [];
-		for (k, (mod, sig) in $rfiles ().items ().sort ())
-			if (int (mod, 8) & 040000)
-				F.append ((k, (repo.open (sig).ls_r (repo), mod)));
-			else F.append ((k, (sig, mod)));
-		return F;
+				F.append ((path + k + "/", None, 493))
+				F.extend ($repo.open (sig).lsr (path + k + "/"))
+			} else F.append ((path + k, sig, int (mod, 8)))
+		return F
 	}
 
 	# locate the blob of a file.
@@ -687,10 +707,10 @@ class INDEX
 	#
 	method read_tree (t)
 	{
-		D = {};
-		for ((path, sig), mode in zip (t.lsfiles_r ($repo), t.lsmodes_r ($repo)))
-			D [path] = 0, 0, 0, 0, 0, 0, int (mode, 8), 0, 0, 0, sig;
-		$D = D;
+		D = {}
+		for ((path, sig), mode in zip (t.lsfiles_r (), t.lsmodes_r ()))
+			D [path] = 0, 0, 0, 0, 0, 0, int (mode, 8), 0, 0, 0, sig
+		$D = D
 	}
 
 	method check_out ()
