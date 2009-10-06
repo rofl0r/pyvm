@@ -168,8 +168,8 @@ gen pluses_n_minuses (np, nm)
 	if (nm % 10) yield "-" * (nm%10)
 }
 
-def cl (l)
-	return l, 0xcccccc, "b", None
+def cl (l)  return l, 0xcccccc, "b", None
+def clt (l) return l, 0xffffff, "b", None
 
 gen gen_commit (c, par=0, fb1b2=None)
 {
@@ -186,7 +186,9 @@ gen gen_commit (c, par=0, fb1b2=None)
 				if (n == par) adl (tbh ("parent    "), psig (p))
 				else adl (tbh ("parent    "), psig (p), "   [", tocd (c, n), "]")
 		adls ([tbh ("tree      "), vtr (tree.sig)], [])
-		for (l in o.message.split ("\n"))
+		m = o.message.split ("\n")
+		adl (clt (m [0]))
+		for (l in m [1:])
 			adl (cl (l))
 
 		if (!o.parents)
