@@ -945,16 +945,16 @@ with (U = gui.union ()) {
 			SEARCH = gui.textin ()
 			def SearchA ()
 				if (t = SEARCH.getText ())
-					swSearchA (t)
+					swSearchA (t.lower ())
 			gui.button ("Author", Action=SearchA)
 			def SearchT ()
 				if (t = SEARCH.getText ())
-					swSearchT (t)
+					swSearchT (t.lower ())
 			gui.button ("Title", Action=SearchT)
 			# in case of newsgroup, search only seen (downloaded) messages
 			def SearchM ()
 				if (t = SEARCH.getText ())
-					swSearchM (t)
+					swSearchM (t.lower ())
 			gui.button ("Messages", Action=SearchM)
 		}
 		with (gui.hcontainer ()) {

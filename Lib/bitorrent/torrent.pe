@@ -541,11 +541,13 @@ def bitfield2set (bits)
 
 class BTError (Exception) { }
 
-# pipeline ahead
-WINDOW = 4
+# No pipeline hosts
+NoPipeline = set ()
 
 class peerbot
 {
+	# pipeline ahead
+	WINDOW = 4
 	Encrypted = False
 	wid = None
 	parts = ()
@@ -556,6 +558,8 @@ class peerbot
 		$peerid = $cid
 		$__class__.cid += 1
 		$ip, $port = addr
+		if ($ip in NoPipeline)
+			$WINDOW = 1
 		$hostname = $ip
 		$mention = []	# what to announce that we have
 		$wid = None	# requesting in progress
@@ -737,7 +741,15 @@ class peerbot
 					# receive and process some of them...
 					# many of these are a sign that the host does too many
 					# chocke/unchockes. but this client can be improved too...
+					# Also, in the case we send many pipelined requests,
+					# some clients give us pieces in random order. That's
+					# not good so the connection is closed and the IP
+					# marked as not capable of pipelining
 					$debug ("unexpected part of piece!")
+					if.break (w4 and offs in [x [1] for (x in w4)]) {
+						$debug ("out of order chunks. Closing for now")
+						NoPipeline.add ($ip)
+					}
 					if.break ((bad += 0.1) > 5)
 						$debug ("too many unexpected parts. missynching")
 				}
@@ -767,7 +779,7 @@ class peerbot
 						intr = False
 					}
 				}
-				while (w4p and len (w4r) < WINDOW and w4p and !PAUSED) {
+				while (w4p and len (w4r) < $WINDOW and w4p and !PAUSED) {
 #					$debug ("REQUEST PIECE %i (%i)" % (w4p[0][0],
 #							 len (parts) + len (w4r)))
 					$send ("interested")
