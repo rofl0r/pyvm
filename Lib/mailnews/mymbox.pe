@@ -903,7 +903,10 @@ with (U = gui.union ()) {
 	with (gui.vcontainer ()) {
 		with (gui.hcontainer ()) {
 			def Back ()
+			{
+				current.G.save_tags ()
 				U.Switch (0)
+			}
 			def havebooks ()
 				return current.B ? 1 : -1
 			def havewatch ()

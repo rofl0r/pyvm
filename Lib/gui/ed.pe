@@ -97,7 +97,8 @@ class ed
 	method v2l (x, y)
 	{
 		t, o, n = $Text [y];
-		return n, o + x - t [:x].count (NULL);
+		t2 = utf8_slice (t, 0, x)
+		return n, o + x - t2.count (NULL);
 	}
 
 	method l2v (l, o)
@@ -184,7 +185,7 @@ class ed
 			if ($cy) {
 				$cy -= 1;
 				t = $Text [$cy][0];
-				$cx = len (t) - 1;
+				$cx = $len (t) - 1;
 			} else return;
 		else $cx -= 1;
 
@@ -193,7 +194,7 @@ class ed
 			else {
 				$cy -= 1;
 				t = $Text [$cy][0];
-				$cx = len (t) - 1;
+				$cx = $len (t) - 1;
 			}
 		}
 
@@ -240,7 +241,7 @@ class ed
 	}
 	method key_END ()
 	{
-		$lo = len ($Line [$ln]);
+		$lo = $len ($Line [$ln]);
 		$udl ();
 	}
 
@@ -278,7 +279,7 @@ class ed
 	method delete1 ()
 	{
 		l = $Line [$ln];
-		if ($lo == len (l)) {
+		if ($lo == $len (l)) {
 			if ($ln + 1 == len ($Line))
 				return;
 			s, e = $par2text ($ln + 1);

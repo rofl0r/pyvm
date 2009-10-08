@@ -1,0 +1,99 @@
+# Temporary SMTP implementation. has been used to send messages
+# To be improved in the next commits
+__autosem__
+
+from net import dns
+
+################ HMAC password authentication (CRAM-MD5 method) ################
+#### NOT VERIFIED!
+
+import binascii, base64
+from md5 import digest
+
+def strxor (s, v)
+	return ''.join ([chr (ord (x) ^ v) for (x in s)])
+
+def hmac (key, msg)
+{
+	key = key + chr (0) * (64 - len (key))
+	return digest (strxor (key, 0x5C) + digest (strxor (key, 0x36) + msg))
+}
+
+def encode_hmac (chall, user, pass)
+	return base64.enc (user + " " +
+		 binascii.hexlify (hmac (pass, base64.dec (chall))))
+
+################################################################################
+
+class smtp		# SMTP connection
+{
+	method __init__ (host, user=None, pass=None, port=25)
+	{
+		from socket import socket
+		$s = s = socket ()
+		s.connect ((host, port))
+		hostname = dns.revlookup (s.getsockname () [0])
+		$greeting = s.recv ()
+		print $greeting
+
+		# try HELO if failuer
+		$cmd ('EHLO %s' %hostname)
+		try while (37) $greeting += s.recv (timeout=1)
+
+		if (user and pass) {
+
+			# AUTH CRAM-MD5 fails on my test server
+			# However the strings seem to be correct, as
+			# verified by python's smtplib and cmd5.
+			# So I suppose that my test server is broken.
+
+			r = $cmd ('AUTH CRAM-MD5')
+			r = $cmd (encode_hmac ($rmsg, user, pass))
+			if (r == 235)
+				print "CRAM-MD5 works!!! Please report this to the pyvm list"
+			else r = $cmd ('AUTH PLAIN ' + 
+				base64.enc ('%s\0%s\0%s' %(user, user, pass)))
+			if (r != 235)
+				raise Error ("Authentication Failed")
+		}
+	}
+
+	method cmd (s)
+	{
+print 'sending [%s]' %s
+		$s.send (s + '\r\n')
+		r = $s.recv ().split ('\r\n') [:-1]
+print 'received [%s]' %r
+		if (len (r) == 1) {
+			r = r [0]
+			$rmsg = r [4:]
+			return int (r [:3])
+		}
+		$rmsg = [x [4:] for (x in r)]
+		return int (r [0][:3])
+	}
+
+	# `txt` is an iterator which yields the
+	# message's lines without their trailing newline
+	method sendmail (From, Rcpts, txt)
+	{
+		r = $cmd ('MAIL FROM:%s' %From)
+		for (i in Rcpts)
+			r = $cmd ('RCPT TO:%s' %i)
+		$cmd ('DATA')
+		W = $s.makefile ("w")
+		for (l in txt) {
+			if (l and l[0] == '.')
+				l = '.' + l
+			W.write (l + '\r\n')
+		}
+		W.write ('.\r\n')
+		W.flush ()
+		W.close ()
+		r = $s.recv ()
+print "Final reply:", r
+		return r.sw ('250')
+	}
+}
+
+# sendmail ("<user@isp.com>", ["<mom@otherisp.com>", "<friend@univ.edu>"], readfile ("mail.txt").split ("\n"))

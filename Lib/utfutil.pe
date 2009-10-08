@@ -107,5 +107,5 @@ def strdiff_utf (o, n)
 		if (ol [j] != nl [j])
 			break
 	if (i) i -= 1
-	return i, utf8_slice (n, i, j+2-i)
+	return i, utf8_slice (n, i, j+3-i)
 }

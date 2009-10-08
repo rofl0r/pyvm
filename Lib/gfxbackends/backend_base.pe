@@ -83,7 +83,7 @@ class Window
 			dfonti  = var_font ("-i", pt)
 			dfontbi = var_font ("-bi", pt)
 			buttonfont = dfont
-			tfont = Open (FF + "mono", pt, ffixed=PX)
+			tfont = Open (FF + "mono", pt, ffixed=PX).as_utf8 ()
 			bfont = Open (FF + "mono-b", pt, ffixed=PX)
 
 			HaveInternational = HaveUTF

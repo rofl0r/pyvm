@@ -47,13 +47,13 @@ class editor (twidget)
 	}
 
 	method get_text ()
-		return $E.getText ();
+		return $E.getText ()
 
 	method put_char (s, x, y, tp=0)
 	{
-		fg, bg = $fg, $bg;
-		if (tp) bg, fg = fg, bg;
-		$draw_text (s, x, y, fg, bg);
+		fg, bg = $fg, $bg
+		if (tp) bg, fg = fg, bg
+		$draw_text (s, x, y, fg, bg)
 	}
 
 	method put_line (s, y, hl=0, x=0)

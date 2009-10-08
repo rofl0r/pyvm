@@ -1,0 +1,29 @@
+# Crap editor.
+# Basically, i use vim. This was needed in order to type greek text
+# that was sent in a mail because I haven't configured vim to work
+# properly with utf8+greeks here.
+
+__autosem__
+
+USAGE = "edit <file>
+
+text editor.
+"
+filename = sys.argp.one ()
+
+def Save ()
+	open (filename, "w").write (ED.get_text ())
+
+inittext = ""
+try inittext = readfile (filename)
+
+import gui
+
+wm = gui.Wm (International=1, CaptureStdout=1)
+with (gui.vcontainer ()) {
+	gui.button ("Save", Action=Save)
+	ED = gui.editor ()
+}
+ED.LoadText (inittext)
+
+wm.Start ()
