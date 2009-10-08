@@ -218,6 +218,7 @@ for (i in os.listdir_fullpath (MailDir))
 		except continue
 		ACCOUNTS.append (i.rpartition ("/")[2])
 	}
+ACCOUNTS.sort ()
 
 USAGE = "mail -fetch <account>"
 

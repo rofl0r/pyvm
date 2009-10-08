@@ -954,6 +954,7 @@ USAGE = "Usage:
  torrent [-i][-s][-l][-g][-L logfile] <file.torrent>
  torrent -x <file.torrent> <destination-dir>
  torrent -xp <pattern> <file.torrent> <destination-dir>
+ torrent -scandir ['i'|'c']
 
 	<file.torrent> can be a torrent file or a <hash.directory> which
 	is created by this program to store the pieces.
@@ -966,15 +967,45 @@ USAGE = "Usage:
 	-nr	: don't do reverse ip-to-hostname lookups
 	-L file	: save messages to logfile
 
-	-x	: extract files
-	-xp	: extract only files that contain the string <pattern>
+	-x	 : extract files
+	-xp	 : extract only files that contain the string <pattern>
+
+	-scandir : scan all subdirectories of the current directory looking
+		  for torrent dirs and report the title/hash/status of them.
+		  The argument 'i' or 'c' will list only the incomplete or
+		  complete torrents.
 "
 
 if (__name__ == __main__)
 {
 	logfile = sys.argp.check_vswitch ("-L")
-	BEEP, info, seed, listfiles, x, xp, graph, norev =
-		sys.argp.check_switches ("-b", "-i", "-s", "-l", "-x", "-xp", "-g", "-nr")
+	BEEP, info, seed, listfiles, x, xp, graph, norev, scandir =
+	sys.argp.check_switches ("-b", "-i", "-s", "-l", "-x", "-xp", "-g", "-nr", "-scandir")
+
+	if (scandir) {
+		a = sys.argp.one ("ic")
+		from ttycolor import color
+		for (f in os.listdir ("."))
+			if (os.path.isdir (f) and havefile (f + "/metainfo")) {
+				f += "/"
+				t = Torrent (None, f, info_only=True)
+				if (!t.want) {
+					s = color ("COMPLETE", "b")
+					if ("c" not in a) continue
+				} else {
+					s = color ("INCOMPLETE", "r") +
+					 " %i/%i" %(len (t.have), len(t.have)+len(t.want))
+					if ("i" not in a) continue
+				}
+				print f, s
+				print " ", t.info ["name"]
+				print " ", t.info_hash.hexlify ()
+				if (havefile (f + "MOUNTNAME"))
+					print " mount as:", readfile (f + "MOUNTNAME").strip ()
+			}
+		exit ()
+	}
+
 	if (norev)
 		REVLOOKUP = False
 

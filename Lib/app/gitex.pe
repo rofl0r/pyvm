@@ -22,13 +22,15 @@ from misc     import memoizing
 from utfutil  import utf8_len as ulen, utf8_slice
 from mailnews.mime import NameFromAddr
 
-USAGE = "gitex [<repository>]"
+USAGE = "gitex [<repository>|'upstream']"
 
 quiet = sys.argp.check_switch ("-q")
 is_remote = False
 if (sys.argp.have_args ())
 {
 	arg = sys.argp.one ()
+	if (arg == "upstream")
+		arg = "http://students.ceid.upatras.gr/~sxanth/pyvm.git"
 	try repo = RemoteRepo (arg)
 	except {
 		print "can't open repository"

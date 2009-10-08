@@ -452,7 +452,7 @@ for (i in os.listdir_fullpath (UDIR))
 		except continue
 		GROUPS.append (i.rpartition ("/")[2])
 	}
-
+GROUPS.sort ()
 
 ### Tyler Turden
 USAGE = """Newsgroup manager.  Usage:
