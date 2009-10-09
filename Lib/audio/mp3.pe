@@ -210,16 +210,33 @@ def fmttime (td)
 }
 
 USAGE = """usage: mp3 [-r][-l][-m] <mp3-file> ....
+ mp3 -dec <mp3-file> <output-file>
 
 Play the specified mp3s.  `-r` for shuffle.  `-l` loop.  `-m` for mono.
 Use `UP/DOWN` to change the volume, `space` to pause, `><` to jump to the next
 previous track. `q` to quit.
+
+The '-dec' option decodes the mp3 to a raw s16 file.
 
 TODO: playlists
 """
 
 if (__name__ == __main__)
 {
+	from misc import fprint
+	if (sys.argp.check_switch ("-dec")) {
+		f1, f2 = sys.argp.nargs (2)
+		A = AudioFile (f1)
+		out = open (f2, "w")
+		while (data = A.get_frame ()) {
+			out.write (data)
+			fprint (".")
+		}
+		print
+		out.close ()
+		exit ()
+	}
+
 	loop, randomize, mono = sys.argp.check_switches ("-l", "-r", "-m")
 	if (@sysconfig.GETCONF ("nostereo"))
 		mono = True
@@ -237,7 +254,6 @@ if (__name__ == __main__)
 	dev = @audio.dev.AudioDev ()
 
 	# text mode player
-	from misc import fprint
 	from ttycolor import color, coltext
 	from readline import readline
 

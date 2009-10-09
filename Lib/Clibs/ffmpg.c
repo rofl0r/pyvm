@@ -50,6 +50,7 @@ typedef struct
 	unsigned char *rawdata;
 
 	int wantaudio;
+	int moreau;
 } VideoStream;
 
 const int sizeof_av = sizeof (VideoStream);
@@ -67,6 +68,7 @@ int open_av (VideoStream *v, char *filename)
 	v->aCodecCtx = 0;
 	v->vFrame = 0;
 	v->sws = 0;
+	v->moreau = 0;
 
 	if ((err = av_open_input_file (&v->fmtCtx, filename, 0, 0, 0)))
 		return 1;
@@ -228,6 +230,9 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 	int dsize, done;
 	int rval;
 
+	if (v->moreau)
+		goto more_audio;
+
 	while (1) {
 		while (v->bytesleft > 0) {
 			dsize = avcodec_decode_video (v->vCodecCtx, v->vFrame,
@@ -260,13 +265,20 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 			if (v->pkt.stream_index == v->ivideo)
 				break;
 			if (v->pkt.stream_index == v->iaudio && v->wantaudio) {
+			more_audio:;
 				int bs = AVCODEC_MAX_AUDIO_FRAME_SIZE;
+				int ma = v->moreau;
 //fprintf (stderr, "audio-dts=%f\n", v->pkt.pts * v->audio_time_base);
 				pts [0] = v->pkt.pts * v->audio_time_base;
 				if (audio_dest)
 					rval = avcodec_decode_audio2 (v->aCodecCtx, audio_dest, &bs,
-								v->pkt.data, v->pkt.size);
-				av_free_packet (&v->pkt);
+								v->pkt.data + ma, v->pkt.size - ma);
+				if (rval >= 0 && rval < v->pkt.size - ma)
+					v->moreau += rval;
+				else {
+					v->moreau = 0;
+					av_free_packet (&v->pkt);
+				}
 				if (bs)
 					return bs;
 			}
@@ -282,12 +294,15 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 
 int ffseek (VideoStream *v, double frac)
 {
+	if (v->moreau)
+		av_free_packet (&v->pkt);
 	long long pos = v->fmtCtx->start_time + frac * v->fmtCtx->duration;
 	int ret = av_seek_frame (v->fmtCtx, -1, pos, 0);
 	if (ret >= 0) {
 		if (v->vCodecCtx) avcodec_flush_buffers (v->vCodecCtx);
 		if (v->aCodecCtx) avcodec_flush_buffers (v->aCodecCtx);
 	}
+	v->moreau = 0;
 	return ret;
 	//return av_seek_frame (v->fmtCtx, -1, pos, AVSEEK_FLAG_BACKWARD);
 }
