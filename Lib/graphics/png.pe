@@ -104,7 +104,8 @@ class png
 					tRNS += "\xff" * (ncolors - len (tRNS))
 			}
 		} else if (tRNS)
-			print "png: tRNS transparency ignored", $filename
+			if (colortype != 0)
+				print "png: tRNS transparency ignored", $filename
 
 		# compressed idat
 		data = "".join ([ pngdat [st:en] for (ct, st, en in ch) if (ct == "IDAT") ])
@@ -233,7 +234,7 @@ def decode_image (data, width, height, colortype, depth, PLTE, tRNS)
 
 	colorkey = None
 	if ((colortype, depth) in ((6, 8), (6, 16), (4, 8))
-	or (colortype == 3 and tRNS))
+	or (colortype in (0, 3) and tRNS))
 		alpha = _buffer (width * height)
 	else alpha = None
 
@@ -246,9 +247,10 @@ def decode_image (data, width, height, colortype, depth, PLTE, tRNS)
 		C.rgba2rgb (data, len (data), rgb, alpha)
 	else if (colortype == 6 and depth == 16)
 		C.rrggbbaa2rgb (data, len (data), rgb, alpha)
-	else if (colortype == 0)
+	else if (colortype == 0) {
 		C.gray2rgb (data, len (data), rgb, depth)
-	else if (colortype == 4)
+		if(tRNS) C.grayRNS (rgb, tRNS, len (rgb)/3, alpha)
+	} else if (colortype == 4)
 		C.graya2rgb (data, len (data), rgb, alpha)
 
 	if (alpha) {

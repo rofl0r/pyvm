@@ -270,6 +270,15 @@ void gray2rgb (const unsigned char in[], unsigned int inlen, rgb *out, int depth
 	}
 }
 
+void grayRNS (const rgb img[], const unsigned char trns[], unsigned int rgblen, unsigned char alpha[])
+{
+	// atm, trns is two bytes but our image is 1 byte per pixel. so compare the low
+	// bits against the gray
+	unsigned int i;
+	for (i = 0; i < rgblen; i++)
+		alpha [i] = img [i].b == trns [1] ? 255 : 0;
+}
+
 void graya2rgb (const unsigned char in[], unsigned int inlen, rgb *out, unsigned char alpha[])
 {
 	unsigned int i, j;
@@ -353,6 +362,7 @@ const char ABI [] =
 "- rrggbbaa2rgb	siss		\n"
 "- rgba2rgb	siss		\n"
 "- gray2rgb	sisi		\n"
+"- grayRNS	ssis		\n"
 "- graya2rgb	siss		\n"
 "- enfilter	siis		\n"
 "- deinterlace	p32p32psiis	\n"
