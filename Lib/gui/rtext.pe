@@ -20,7 +20,7 @@ __autosem__
 from fb import fbview
 from scrollbarz import hscrollbar
 from container import hcontainer
-from utfutil import utf8_len as ulen, utf8_slice
+from utfutil import utf8_len as ulen, utf8_slice as uslice, utf8_slice_e as uslicee
 
 class _rtext (fbview)
 {
@@ -213,7 +213,7 @@ class _rtext (fbview)
 				ul = ulen (text)
 				st = c < xs ? xs - c : 0
 				en = c > xe ? 0 : c + ul > xe ? xe - c : ul
-				text = utf8_slice (text, st, max (0, en-st))
+				text = uslice (text, st, max (0, en-st))
 				c += ul
 				t += text
 			}
@@ -264,6 +264,62 @@ class _rtext (fbview)
 			} else ul = False
 			yield text, color is None ? $FG : color, $fonts [font], ul, click
 		}
+
+	# text wrapping & http clicking utility
+	method lwrap (COL, L1, wpad="")
+	{
+		w = $nx
+		L = []
+		for (i in L1)
+			if !(i -> str) L << i
+			else for (i in httsplit (i)) L<< i
+		L1 = L
+		L2 = []
+		L = []
+		used = 0
+		for (i in L1) {
+			s = i -> str ? i : i [0]
+			while (used + ulen (s) > w) {
+				ss = uslice (s, 0, w-used)
+				s = uslicee (s, w-used)
+				if !(i -> str)
+					ss = [ss] + list (i [1:])
+				L<< ss
+				L2<< (COL, L)
+				L = [wpad]
+				used = len (wpad)
+			}
+			ss = s
+			if !(i -> str)
+				ss = [ss] + list (i [1:])
+			L<< ss
+			used += ulen (s)
+		}
+		L2<< (COL, L)
+		return L2
+	}
+}
+
+HTTPr = @re.compile ("(?:https?|ftp)://.*?(?:$|\s)")
+from wwwlib import openurl
+
+def httsplit (l)
+{
+	n, m = HTTPr.splitsep (l)
+	m<< ""
+	p = ""
+	L = []
+	for (n, m in zip (n, m)) {
+		n = p + n
+		if (n) L<< n
+		p = ""
+		if (m) {
+			if (m [-1] in ">.)] ")
+				m, p = m [:-1], m [-1]
+			L<< (m, 0x0000ff, None, (openurl.Open, m))
+		}
+	}
+	return L
 }
 
 def rtext (*args, **kwargs)

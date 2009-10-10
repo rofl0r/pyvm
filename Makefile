@@ -25,7 +25,7 @@ clean:
 	@cd Lib && make clean
 	@cd pyvm && make distclean
 
-# These require working pyvm
+# These require working pyvm and git-aware tree
 
 tarball:
 	pyvm git head > commit
@@ -41,3 +41,7 @@ g:
 
 wd:
 	pyvm gitwc wd
+
+alltime:
+	# diff cwd vs first commit ever
+	pyvm git diff ce92aa4a98 | pyvm diffstat --color

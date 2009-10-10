@@ -322,6 +322,12 @@ class app
 					$Vol = gui.status (w="100", fg=brown)
 					$Vdown = gui.button ("-", Action=$VolumeDown)
 				}
+				def onWheel (x)
+				{
+					(x == "up" ? $VolumeUp : $VolumeDown)()
+					return True
+				}
+				$Vol.onWheel = onWheel
 				with ($G2 = gui.hcontainer (lmargin="X"))
 					$MarkerButton = gui.button ("    \\set marker    ",
 									 Action=$SetMarker)

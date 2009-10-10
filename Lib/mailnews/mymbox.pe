@@ -14,8 +14,7 @@ __autosem__
 
 import thread, re, serialize
 from mailnews.mime import Mime, rfc2047, rfc822
-from utfutil       import utf8_len as ulen, utf8_slice as uslice, utf8_slice_e as uslicee
-from wwwlib        import openurl
+from utfutil       import utf8_len as ulen
 from time          import monthof
 from pgp.gpg       import do_verify_mime as verify_pgp
 from mailnews      import usenet, mail, index
@@ -55,27 +54,6 @@ method MSG.authwatched ()
 h2t = rfc2047.decode
 
 ######################### Message window #######################
-HTTPr = re.compile ("(?:https?|ftp)://.*?(?:$|\s)")
-
-def httsplit (l)
-{
-	n, m = HTTPr.splitsep (l)
-	m<< ""
-	p = ""
-	L = []
-	for (n, m in zip (n, m)) {
-		n = p + n
-		if (n) L<< n
-		p = ""
-		if (m) {
-			if (m [-1] in ">.)] ")
-				m, p = m [:-1], m [-1]
-			L<< (m, 0x0000ff, None, (openurl.Open, m))
-		}
-	}
-	return L
-}
-
 FETCHING = False
 
 def fetch (m, r)
@@ -101,39 +79,6 @@ def load (m, replies, raw=False, offset=0, att=False)
 	ED.load (lst, offset)
 	ED.setKeyWidget ()
 	U.Switch (2)
-}
-
-def lwrap (COL, L1, wpad="")
-{
-	w = ED.nx
-	L = []
-	for (i in L1)
-		if !(i -> str) L << i
-		else for (i in httsplit (i)) L<< i
-	L1 = L
-	L2 = []
-	L = []
-	used = 0
-	for (i in L1) {
-		s = i -> str ? i : i [0]
-		while (used + ulen (s) > w) {
-			ss = uslice (s, 0, w-used)
-			s = uslicee (s, w-used)
-			if !(i -> str)
-				ss = [ss] + list (i [1:])
-			L<< ss
-			L2<< (COL, L)
-			L = [wpad]
-			used = len (wpad)
-		}
-		ss = s
-		if !(i -> str)
-			ss = [ss] + list (i [1:])
-		L<< ss
-		used += ulen (s)
-	}
-	L2<< (COL, L)
-	return L2
 }
 
 namespace Mode
@@ -222,13 +167,13 @@ def make_text (m, replies, raw, att)
 			}
 		lst<< (HC, ["file: %06x.off" %m.n ()])
 	} else for (k, v in msg.H)
-		lst.extend (lwrap (HC, [(cap0 (k), None, "b", None), ": " + v], ""))
+		lst.extend (ED.lwrap (HC, [(cap0 (k), None, "b", None), ": " + v], ""))
 
 	# body
 	skipped = []
 	if (!msg.multipart) {
 		for (l in msg.decode2utf ().strip ().split ("\n"))
-			lst.extend (lwrap (None, [l.expandtabs ()]))
+			lst.extend (ED.lwrap (None, [l.expandtabs ()]))
 	} else {
 		first = True
 		for (n, p in enumerate (msg.flatten ())) {
@@ -238,7 +183,7 @@ def make_text (m, replies, raw, att)
 			if (att and !first)
 				lst << (None, [("**", None, "b", None)])
 			for (l in p.decode2utf ().strip ().split ("\n"))
-				lst.extend (lwrap (None, [l.expandtabs ()]))
+				lst.extend (ED.lwrap (None, [l.expandtabs ()]))
 			first = False
 		}
 	}

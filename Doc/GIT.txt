@@ -66,6 +66,11 @@ Go to pyvm/ and type:
 Go to Lib/ and type:
 	make rebuild
 
+(note: the "git switch upstream" command will print which files are exported.
+ if only *.pe files under Lib/ and *.c files under Lib/Clibs are exported
+ the above commands are not required. Stuff will be automatically recompiled
+ at import time)
+
 You can fetch more updates (if there are any) with:
 	pyvm git pull http://students.ceid.upatras.gr/~sxanth/pyvm.git master upstream
 

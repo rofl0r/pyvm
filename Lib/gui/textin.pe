@@ -347,12 +347,12 @@ class textin (widget)
 			if ($cursor < $len ($s))
 				$s = $delchars ($s, $cursor, 1)
 		} else if (k in ('LEFT', 'RIGHT', 'END', 'HOME')) {
-			$cursorKey (k);
+			$cursorKey (k)
 		} else if (k == '\n') {
-			return $onEnter ();
+			return $onEnter ()
 		} else if (k == "\t" and $Tnext) {
-			$Tnext.setKeyWidget ();
-			return 1;
+			$Tnext.setKeyWidget ()
+			return 1
 		} else if (k in ('UP', 'DOWN')) {
 			$cursor_updown (k == "UP")
 		} else if (k != 'DRAW')
