@@ -125,7 +125,6 @@ with (C = gui.vcontainer (onKey=onSpace)) {
 		STT.setmsg (sys.argp.argv [0])
 	IW.load (I [0].fnm, fit=fit or Fit, expand=Fit)
 }
-C.setKeyWidget ()
 
-wm.Start ()
+wm.Start (keywidget=C)
 print

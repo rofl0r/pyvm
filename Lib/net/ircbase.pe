@@ -52,7 +52,7 @@ class irc
 
 		#$cmd ('PASS needed?');
 		$cmd ("NICK %s" %nick)
-		$cmd ("USER a b c d")
+		$cmd ("USER mika_hackinen xxxx xxxx The Doctor")
 	}
 
 	method cmd (c)
@@ -79,7 +79,7 @@ class irc
 				$do_msg (by, cmd, params, trail)
 			else if (cmd in ("JOIN", "QUIT", "PART"))
 				$do_action (by, cmd, params, trail)
-			else if (cmd != '372')
+			else #if (cmd != '372')
 				$do_generic (by, cmd, params, trail)
 		}
 	}

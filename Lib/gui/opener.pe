@@ -279,8 +279,7 @@ def Open (t)
 		}
 		o = Opener (R)
 	}
-	o.setKeyWidget ()
-	wm.Start ()
+	wm.Start (keywidget=o)
 	if (!GotIt) return
 	r = os.abspath (GotIt)
 	R.opened (r)

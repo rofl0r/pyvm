@@ -28,7 +28,7 @@ class _rtext (fbview)
 	FG = 0
 	ybar = None
 
-	method Init (dowheel=False, $lst0=[], fontsize=0, **kw)
+	method Init (dowheel=False, $lst0=[], fontsize=0, $bolds=False, **kw)
 	{
 		$fbview_init (**kw)
 		$setfont (fontsize)
@@ -60,7 +60,7 @@ class _rtext (fbview)
 		$fnti  = $wm.OpenFixedFont ("mono-i",  sz).as_utf8 ()
 		$fntbi = $wm.OpenFixedFont ("mono-bi", sz).as_utf8 ()
 		$fonts = {
-			None:$fnt,
+			None:($bolds ? $fntb : $fnt),
 			"":$fnt,
 			"b":$fntb,
 			"i":$fnti,
@@ -94,6 +94,22 @@ class _rtext (fbview)
 		$ll = len ($list)
 		if ($offset == -1)
 			$offset = max ($ll - $ny, 0)
+		$draw ()
+		if ($ybar)
+			$ybar.modTVO ()
+	}
+
+	method append (l, offset=None)
+	{
+		# special value for offset "?": if at the bottom follow otherwise stay
+		if (offset == "?")
+			offset = max ($ll - $ny, 0) == $offset ? -1 : None
+
+		$list.extend (l)
+		$ll = len ($list)
+		if (offset is not None)
+			if (offset == -1)
+				$offset = max ($ll - $ny, 0)
 		$draw ()
 		if ($ybar)
 			$ybar.modTVO ()
@@ -250,13 +266,13 @@ class _rtext (fbview)
 
 	# overridable
 	method doclick (c)
-		c ()
+		c [0] (*c [1:])
 	method onkey (k)
 		return False
 	method prep (l)
 		for (i in l) {
 			if.continue (i -> str)
-				yield i, $FG, $fnt, False, None
+				yield i, $FG, $fonts [None], False, None
 			text, color, font, click = i
 			if (font and "u" in font) {
 				ul = True
@@ -266,13 +282,18 @@ class _rtext (fbview)
 		}
 
 	# text wrapping & http clicking utility
-	method lwrap (COL, L1, wpad="")
+	method lwrap (COL, L1, wpad="", hlcol=0x0000ff)
 	{
 		w = $nx
 		L = []
 		for (i in L1)
-			if !(i -> str) L << i
-			else for (i in httsplit (i)) L<< i
+			if !(i -> str) {
+				t, col, style, link = i
+				if (link)
+					L << i
+				else for (i in httsplit (t, col, style, link, hlcol=hlcol))
+					L<< i
+			} else for (i in httsplit (i, hlcol=hlcol)) L<< i
 		L1 = L
 		L2 = []
 		L = []
@@ -303,7 +324,7 @@ class _rtext (fbview)
 HTTPr = @re.compile ("(?:https?|ftp)://.*?(?:$|\s)")
 from wwwlib import openurl
 
-def httsplit (l)
+def httsplit (l, col=None, style=None, link=None, hlcol=None)
 {
 	n, m = HTTPr.splitsep (l)
 	m<< ""
@@ -311,12 +332,12 @@ def httsplit (l)
 	L = []
 	for (n, m in zip (n, m)) {
 		n = p + n
-		if (n) L<< n
+		if (n) L<< (n, col, style, link)
 		p = ""
 		if (m) {
 			if (m [-1] in ">.)] ")
 				m, p = m [:-1], m [-1]
-			L<< (m, 0x0000ff, None, (openurl.Open, m))
+			L<< (m, hlcol, None, (openurl.Open, m))
 		}
 	}
 	return L

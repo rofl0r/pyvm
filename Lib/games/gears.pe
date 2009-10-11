@@ -163,5 +163,4 @@ def F.onClick (x, y)
 	if (L.locked ()) L.release ()
 	else L.acquire ()
 
-F.setKeyWidget ()
-wm.Start ()
+wm.Start (keywidget=F)

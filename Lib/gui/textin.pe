@@ -356,16 +356,15 @@ class textin (widget)
 		} else if (k in ('UP', 'DOWN')) {
 			$cursor_updown (k == "UP")
 		} else if (k != 'DRAW')
-			return 0;
+			return 0
 
+		$adjOffset ()
 
-		$adjOffset ();
+		text = $tlist ()
+		text [$cursor - $offset] += 'x'
 
-		text = $tlist ();
-		text [$cursor - $offset] += 'x';
-
-		$DrawText (text);
-		return 1;
+		$DrawText (text)
+		return 1
 	}
 
 	method cursor_updown (up)

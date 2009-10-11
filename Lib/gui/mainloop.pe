@@ -950,10 +950,12 @@ method Wm.ResetInput ()
 			else if (e [1] == "ALT") $key_alt = False
 		}
 
-method Wm.Start (setup=void, onIdle=None)
+method Wm.Start (setup=void, onIdle=None, keywidget=None)
 	try {
 		$Done ()
 		setup ()
+		if (keywidget)
+			keywidget.setKeyWidget ()
 		try
 			with ($LOCKED)
 				$MainLoop (onIdle=onIdle)

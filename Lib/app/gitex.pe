@@ -374,7 +374,6 @@ class progress (gui.widget)
 wm = gui.Wm ()
 with (gui.vcontainer ()) {
 	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0)
-	rt.setKeyWidget ()
 	rt.doclick = go
 	PB = progress ()
 }
@@ -392,4 +391,5 @@ def rt.onRightClick (x, y)
 rt.BG = BGT
 rt.FG = 0xf2f2f0
 
-wm.Start ()
+wm.Start (keywidget=rt)
+print

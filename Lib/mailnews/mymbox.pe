@@ -943,7 +943,6 @@ def ED.onkey (k)
 	return True
 }
 
-M.setKeyWidget ()
 try {
 	try wm.Start ()
 	except {

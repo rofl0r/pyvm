@@ -185,8 +185,7 @@ def BMINUS.Action ()
 
 GoTo (config.CurrentPage, 0)
 MAIN.yoff = config.YOFF
-MAIN.setKeyWidget ()
-try wm.Start ()
+try wm.Start (keywidget=MAIN)
 finally {
 	# Save Preferences
 	prefs.update ({
