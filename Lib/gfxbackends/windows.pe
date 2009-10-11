@@ -274,6 +274,7 @@ class Go (**basewin)
 	{
 		$apps = [
 			["webbrowser",	"pyvm www"],
+			["IRC chat",	"pyvm irc"],
 			["video",	"pyvm avplay -open"],
 			["pdf viewer",	"pyvm pdf -open"],
 			["mahjongg",	"pyvm mahjongg"],

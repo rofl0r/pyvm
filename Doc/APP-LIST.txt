@@ -96,8 +96,8 @@ pyvm radio <MMS-URL>
 pyvm keygen
 	generate RSA keys suitable for PGP and SSH
 
-pyvm irc <server> <nickname>
-	very simple text mode irc client
+pyvm irc 
+	IRC client
 
 pyvm git-checkout
 pyvm svn-checkout

@@ -1,0 +1,283 @@
+##  IRC client
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+import thread, gui
+
+A = @serialize.appdata ("xirc")
+A.preset ({"connects":{}})
+
+class circ (@net.ircbase.irc)
+{
+	method do_noprefix (msg)
+		Channel.addmsg ("*********** [%s] **********" %msg)
+
+	method do_generic (by, cmd, params, trail)
+		if (cmd == "372") {
+			Channel.addmsg (trail)
+		} else if (cmd == "332") {
+			Channel.addmsg (trail, 332)
+		} else if (cmd == "353") {
+			chan = params [-1]
+			if (chan in Channels)
+				Channels [chan].add_names (trail.split ())
+		} else if (cmd == "366") {
+			chan = params [-1]
+			if (chan in Channels)
+				Channels [chan].end_names ()
+		} else Channel.addmsg ("SOMETHING ELSE: %s %s %s %s" 
+			% (by, cmd, ' '.join (params), trail))
+
+	method do_msg (by, cmd, params, trail)
+	{
+		try C = Channels [params [0]]
+		except C = Channels ['#default']
+		C.addmsg (trail, by.partition ('!')[0])
+	}
+
+	method do_action (by, cmd, params, trail)
+		;#$printw ("%s has left (%s)" % (by.partition ('!')[0], trail));
+}
+
+def B (s, col=None, cl=None)
+	return s, col, "b", cl
+
+class channel
+{
+	method __init__ ($name)
+	{
+		$msgs = []
+		$names = []
+		$newmsgs = 0
+		$drawn = False
+	}
+
+	method add_names (n)
+		$names.extend (n)
+
+	method end_names ()
+		$addmsg (" ".join ($names), 353)
+
+	method addmsg (m, user=None)
+	{
+		$msgs.append ((m, user))
+
+		if (Channel is not self) {
+			nms = m.sw (G.nick) ? 2 : 1
+			if (nms > $newmsgs) {
+				$newmsgs = nms
+				wm.async (TABS.Draw)
+			}
+		} else {
+			if (!$drawn) {
+				$redraw ()
+				$drawn = True
+			} else $new_line (m, user)
+		}
+	}
+
+	method render_line (i, user)
+	{
+		l = []
+		if (user == 353) {
+			l.extend (["Users [", (i, 0xaaaaff, "b", None), "] "])
+		} else if (user == 332) {
+			l<< B (i, 0xffdddd)
+		} else if (user) {
+			col = user == G.nick ? 0xaaffaa : 0xaaaaff
+			l.extend (["[", B (user, col), "] "])
+			l<< B (i, i.sw (G.nick) ? 0xffffff : 0xcccccf)
+		} else l<< B (i, 0xaaafaa)
+		return RT.lwrap (0, l, hlcol=0x8888ee)
+	}
+
+	method new_line (i, user)
+		wm.async (RT.append, $render_line (i, user), "?")
+
+	method redraw ()
+	{
+		L = []
+		for ((i, user) in $msgs)
+			L.extend ($render_line (i, user))
+		wm.async (RT.load, L, -1)
+	}
+
+	method say (m)
+	{
+		if ($name != '#default')
+			G.IRC.msg ($name, m)
+		$addmsg (m, G.nick)
+	}
+}
+
+DChannel = Channel = channel ('#default')
+Channels = { '#default' : Channel }
+
+# Welcome screen in rtext list format
+Welcome = [(0, x) for (x in 
+	"Welcome!
+type: /connect <server> <nickname> [<password>]
+".split ("\n")
+)]
+def Connect (k, v)
+{
+	G.IRC = circ (k [0], k [1])
+	G.nick = k [1]
+	thread.start_new (G.IRC.run)
+	if (v) G.IRC.msg ("nickserv", "identify " + v)
+}
+if (A ["connects"])
+	Welcome<< [0, ["Known connects"]]
+for (k, v in A ["connects"].items ())
+	Welcome<< [0, ["  ", B ("connect", 0x9999ff, (Connect, k, v)),
+			 ": " + k [0] + " " + k [1] + " " + v]]
+Welcome.extend ([(0, [x]) for (x in 
+	"
+Commands:
+ /join <channel>
+ /msg <user> ...
+
+TAB circulates the channels.
+"
+.split ("\n")
+)])
+
+##### main #####
+namespace G
+{
+	IRC = None
+}
+
+from graphics.framebuffer import FrameBuffer
+class tabz (gui.widget)
+{
+	method Init (**kw)
+	{
+		$elasticW = True
+		$fo = $wm.OpenFont ("sans", -4).as_utf8 ()
+		$WX = $fo.isizeof ("X") + 2
+		kw ["h"] = $fo.maxh + 2
+		$widget_init (**kw)
+		$areaz = []
+	}
+
+	method Draw ()
+	{
+		W = 150
+		x = 1
+		$draw_blank (0xa4a4c4)
+		$areaz = []
+		for (t, cc in Channels.items ()) {
+			this = t is Channel.name
+			f = FrameBuffer (W - 2, $h - (this ? 1 : 2), 3)
+			f.clear (this ? 0xffffff : 0xd0d0e0)
+			if (cc.newmsgs)
+				f.fill_rect (f.w - 10, 1, 8, f.h - 4,
+					     cc.newmsgs == 1 ? 0xff5555 : 0x9999ff)
+			$fo.render_to (f, 1, 0, t, 0)
+			$show_image (f.as_image (), x, 1)
+			if (not this)
+				$areaz<< (x, x+W, t, cc)
+			x += W
+		}
+	}
+
+	method onClick (x, y)
+	{
+		for (sx, ex, t, cc in $areaz)
+			if.break (sx < x < ex)
+				if (cc is not Channel)
+					$switch_to (cc)
+		return True
+	}
+
+	method switch_to (cc)
+	{
+		global Channel
+		Channel.newmsgs = 0
+		cc.newmsgs = 0
+		Channel = cc
+		cc.redraw ()
+		$Draw ()
+	}
+
+	method circulate ()
+	{
+		c = Channels.items ()
+		c.append (c [0])
+		c = iter (c)
+		for (t, cc in c)
+			if (cc is Channel)
+				$switch_to (c.next ()[1])
+		return True
+	}
+}
+
+wm = gui.Wm (0, 0, "irc", CaptureStdout=True)
+
+with (gui.vcontainer ()) {
+	TABS = tabz ()
+	RT = gui.rtext (dowheel=True, fontsize=2, lst0=Welcome, bolds=True)
+	PROMPT = gui.textin ()
+}
+
+def PROMPT.onEnter ()
+{
+	global Channel
+
+	t = PROMPT.getText ().strip ()
+	PROMPT.clear ()
+	if (!t) return
+
+	if (!G.IRC) {
+		if (!t.sw ("/connect") or len ((snp = t.split ()[1:])) not in (2, 3))
+			Channel.addmsg ("Use /connect server nickname [password]")
+		Channel.addmsg ("Connecting...")
+		G.IRC = circ (snp [0], snp [1])
+		G.nick = snp [1]
+		thread.start_new (G.IRC.run)
+		if (len (snp) == 3) {
+			sleep (0.4)
+			G.IRC.msg ("nickserv", "identify " + snp [2])
+		}
+		A ["connects"][(snp [0], snp [1])] = snp [2] or ""
+		A.save ()
+		return
+	}
+
+	if (t [0] != "/")
+		Channel.say (t)
+	else if (t.sw ("/join ")) {
+		t = t [6:].strip ()
+		if (t not in Channels) {
+			G.IRC.join (t)
+			Channel = Channels [t] = channel (t)
+		} else {
+			Channel = Channels [t]
+		}
+		TABS.Draw ()
+	} else if (t.sw ("/msg ")) {
+		to, None, msg = t [5:].partition (' ')
+		if (msg) G.IRC.msg (to, msg)
+	}
+}
+
+def PROMPT.preOnKey (k)
+	if (k in ("PAGEUP", "PAGEDOWN"))
+		return RT.onKey (k)
+	else if (k == "\t")
+		return TABS.circulate ()
+
+RT.BG = 0
+RT.FG = 0xcccccf
+
+wm.Start (keywidget=PROMPT)
+
+# TODO:
+# easy way to prepend nicks in the reply
+# DCC, privchat
