@@ -21,6 +21,8 @@ from mailnews      import usenet, mail, index
 
 @lockfile.exclusive ("newsgroups", "newsread")
 
+sys.gc.disable ()
+
 DOPGP = @sysconfig.GETCONF ("DoPGPMime")
 
 newsgroup = usenet.newsgroup
@@ -829,6 +831,7 @@ def RefreshBG ()
 	if (ntot) L<< "%i new msgs" %ntot
 	MSTATUS.async_msg ("OK." + " and ".join (L))
 	REFRESHING = False
+	sys.gc.collect ()
 	wm.async (G.Draw)
 }
 def Refresh ()
@@ -851,6 +854,7 @@ with (U = gui.union ()) {
 			{
 				current.G.save_tags ()
 				U.Switch (0)
+				sys.gc.collect ()
 			}
 			def havebooks ()
 				return current.B ? 1 : -1
