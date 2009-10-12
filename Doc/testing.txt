@@ -1,0 +1,37 @@
+Micro-testing
+
+ Only a complete novice thinks that because he wrote some
+ code this code works. More experienced programmers
+ tend to think that code is broken until proved correct
+ throught testing, and this applies even when adding just
+ one more line.
+
+ This is made easy in dynamic languages because there is
+ no need for the depcheck-compile-install cycle. Because pyvm's
+ source tree *is* its installation tree and because python
+ permits printing every type, does not crash and reports
+ all exceptions, it is suggested to modify code in minimal
+ steps where every small modification is immediately tested
+ for *all* the possible code paths.
+
+ After every code path has been tested, the testcases can
+ be discarded and the new code "commited" through proper
+ indentation.
+
+ Then, after the change has been tested some more in the
+ expected scenarios, the change is commited with the scm.
+
+Macro-testing
+
+ One case of macro testing is the three stage bootstrap of the
+ compiler where the compiler compiles itself three times recursively
+ and compares the two final binaries. This is a very strong test
+ that's as valuable as an infinite collection of unit tests.
+
+ Similarily, going through this bootstrap and then starting
+ up the web browser is a very strong test for the core vm.
+
+ Since we do not add unused APIs to libraries and try to use
+ all the existing code as much as possible and whenever
+ recursively, there is not much need for maintaining a huge
+ collection of unit tests.

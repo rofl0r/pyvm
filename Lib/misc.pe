@@ -519,3 +519,18 @@ def tabprint (w, hints, dcol, tab)
 	}
 	return "\n".join (L)
 }
+
+# yes/no prompt
+def yn (msg, default=None)
+{
+	s = default == "y" ? "[Y/n]" : default == "n" ? "[y/N]" : "[y/n]"
+	s = " " + s + "? "
+	while (1) {
+		yn = raw_input (msg + s).lower ().strip ()
+		if (!yn)
+			if (default) yn = default
+			else continue
+		if (yn in "yn")
+			return yn == "y"
+	}
+}

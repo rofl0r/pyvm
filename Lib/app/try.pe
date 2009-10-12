@@ -11,7 +11,7 @@
 __autosem__
 
 import os
-from misc import execfile
+from misc import execfile, yn
 
 EDITOR = @sysconfig.GETCONF ("editor")
 if (!EDITOR) {
@@ -31,8 +31,8 @@ else {
 while (1) {
 	os.system ("%s %s" %(EDITOR, f))
 	os.system ('pyvm %s' %f)
-	x = raw_input ("MORE (nN):?")[0]
-	if (x in 'nN') break
+	if (!yn ("More", "y"))
+		break
 }
 
 print "Saved to :", f

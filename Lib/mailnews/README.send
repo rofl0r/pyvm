@@ -1,20 +1,20 @@
-Sending mail and news is not yet implemented.
-I have managed to send by manually constructing a MIME
-message and using the SMTP and NNTP protocols.
-However, a proper mail/news sender will have to:
+You need to construct manually a well formed MIME mail message.
+Then run
+	pyvm smtp -sendmail <file>
+
+The file should
 
 - Fill in Date: and Message-ID:
 - Encode the message properly (base64 or quoted printable)
   (NOTE: most SMTP servers are supposed to support 8bit
    MIME since 1995! so passing UTF-8 text should be perfectly
    possible without any extra encoding)
+  'Content-transfer-encoding: 8bit' works.
+
+To Do:
+
 - Attach files
 - PGP sign messages
 - Set X-No-Archive
-- strip out Bcc:
-- determine where to send depending on To: Cc: Bcc: and Newsgroups:
-- implement outgoing mail gateways or direct recipient SMTP connections.
 - add signatures
 - spell checking
-
-To be committed.

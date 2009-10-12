@@ -1,5 +1,10 @@
-# Temporary SMTP implementation. has been used to send messages
-# To be improved in the next commits
+##  SMTP Client
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
 __autosem__
 
 from net import dns
@@ -78,8 +83,11 @@ print 'received [%s]' %r
 	method sendmail (From, Rcpts, txt)
 	{
 		r = $cmd ('MAIL FROM:%s' %From)
+		if (r != 250)
+			return False
 		for (i in Rcpts)
-			r = $cmd ('RCPT TO:%s' %i)
+			if ($cmd ('RCPT TO:%s' %i) != 250)
+				return False
 		$cmd ('DATA')
 		W = $s.makefile ("w")
 		for (l in txt) {
@@ -94,6 +102,100 @@ print 'received [%s]' %r
 print "Final reply:", r
 		return r.sw ('250')
 	}
+
+	method quit ()
+		$cmd ("QUIT")
 }
 
-# sendmail ("<user@isp.com>", ["<mom@otherisp.com>", "<friend@univ.edu>"], readfile ("mail.txt").split ("\n"))
+def error (x)
+{
+	print x
+	return False
+}
+
+def SendMail (text)
+{
+	from misc import yn
+	from mailnews import mime
+
+	if (!havefile (HOME + "user/mail/SMTP"))
+		return error ("no %s/user/mail/SMTP file listing outgoing SMTP servers found"%HOME)
+	servers = {}
+	for (f in open (HOME + "user/mail/SMTP")) {
+		f = f.strip ()
+		if (!f or f.sw ("#"))
+			continue
+		try addr, serv = f.split ()
+		except return error ("Bad line in SMTP [%s]"%f)
+		servers [addr] = serv
+	}
+
+	M = mime.Mime (text)
+	if (M.H [0][0] != "from")
+		return error ("First line isn't 'From:'")
+	if ("message-id" not in M.HD)
+		return error ("No 'Message-ID:' header")
+	if ("date" not in M.HD)
+		return error ("No 'Date:' header")
+	for (hdr in ("content-type", "content-transfer-encoding", "subject"))
+		if (hdr not in M.HD)
+			if (!yn ("No [%s] header. Continue"%hdr))
+				return False
+
+	From = M.H [0][1]
+	def getaddr (x)
+		return "<" + mime.AddrFromAddr (x) + ">"
+	myaddr = getaddr (From)
+
+	if (myaddr not in servers)
+		return error ("No outgoing SMTP server for address [%s]. Direct SMTP not implemented"%myaddr)
+	try To = M.HD ["to"]
+	except return error ("No 'To:' header")
+	try Cc = M.HD ["cc"]
+	except Cc = ""
+
+	recipients = [getaddr (x) for (x in (mime.rfc822.split (To, ",") +
+					     mime.rfc822.split (Cc, ","))) if (x)]
+	if (!recipients)
+		return error ("No recipients!")
+	print "The recipients are:", recipients
+	print "Outgoing server", servers [myaddr]
+
+	if (!yn ("Send the mail"))
+		return 0
+
+	print "Connecting..."
+	S = smtp (servers [myaddr])
+	print "Sending."
+	if (!S.sendmail (myaddr, recipients, text.split ("\n"))) {
+		S.quit ()
+		return error ("SMTP protocol failed")
+	}
+
+	S.quit ()
+	print "mail sent!"
+	return True
+}
+
+USAGE = "smtp -sendmail <file>
+
+<file> is a properly formatted MIME message.
+
+Missing features:
+- Bcc header not supported (will not be removed)
+- No direct-recipient SMTP connection. Needs an outgoing SMTP server.
+  The outgoing servers must be placed in a file
+	pyvm/user/mail/SMTP
+  with entries
+    <user@address> mailserver.hostname
+- No support for SMTP over SSL. Use only with ISP when connected with ISP
+- No SMTP authentication
+"
+
+if (__name__ == __main__)
+{
+	a, b = sys.argp.nargs (2)
+	if (a != "-sendmail")
+		sys.argp.help ()
+	SendMail (readfile (b))
+}
