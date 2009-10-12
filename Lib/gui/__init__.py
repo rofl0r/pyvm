@@ -13,7 +13,7 @@ from transistor import transistor, radioboxes
 from radiobox   import radiobox
 from checkbox   import checkbox, togglebutton
 from space      import space, hspace, wspace, fspace
-from progress   import progress
+from progress   import progress, work_in_progress
 from list       import List
 from editor     import editor
 from dialog     import Dialogue

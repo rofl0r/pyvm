@@ -331,51 +331,11 @@ genpage ()
 
 import gui
 
-class progress (gui.widget)
-{
-	method Init (**kw)
-	{
-		kw ["h"] = 2
-		$elasticH = False
-		$elasticW = True
-		$widget_init (**kw)
-		$l = @thread.xlock (False)
-		@thread.start_new ($run)
-	}
-
-	method run ()
-	{
-		x = 0
-		while (1) {
-			if ($l.locked ()) x = 0
-			$l.ack ()
-			if ((x += 5) > $w) x = 0
-			$fill_rect (0, 0, x, $h, 0x0000ff)
-			$fill_rect (x, 0, $w-x, $h, 0xffffff)
-			$wm.flush ()
-			sleep (0.2)
-		}
-	}
-
-	method Draw ()
-		$draw_blank (0xffffff)
-
-	method __enter__ ()
-		$l.release ()
-	method __exit__ (*args)
-	{
-		$l.acquire ()
-		$Draw ()
-	}
-	method __context__ ()
-		return self
-}
-
 wm = gui.Wm ()
 with (gui.vcontainer ()) {
 	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0)
 	rt.doclick = go
-	PB = progress ()
+	PB = gui.work_in_progress ()
 }
 def rt.onkey (k)
 	if (k == "BACKSPACE") {

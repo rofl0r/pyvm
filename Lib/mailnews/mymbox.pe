@@ -64,7 +64,9 @@ def fetch (m, r)
 	FETCHING = True
 	try {
 		print "FETCHING..."
-		if (m.data ())
+		with (WIP)
+			data = m.data ()
+		if (data)
 			wm.async (load, m, r)
 	} finally FETCHING = False
 }
@@ -790,7 +792,7 @@ wm = gui.Wm (0, 0)
 
 REFRESHING = False
 def RefreshBG ()
-{
+with (WIP) {
 	global REFRESHING
 	REFRESHING = True
 	msg = MSTATUS.async_msg
@@ -838,97 +840,100 @@ def Refresh ()
 	if (!REFRESHING)
 		thread.start_new (RefreshBG)
 
-with (U = gui.union ()) {
-	with (gui.vcontainer ()) {
-		with (gui.hcontainer ()) {
-			gui.button ("Refresh", Action=Refresh)
-			MSTATUS = gui.status ()
+with (gui.vcontainer ()) {
+	with (U = gui.union ()) {
+		with (gui.vcontainer ()) {
+			with (gui.hcontainer ()) {
+				gui.button ("Refresh", Action=Refresh)
+				MSTATUS = gui.status ()
+			}
+			PROGRESS = gui.progress ()
+			G = MList (GL ())
 		}
-		PROGRESS = gui.progress ()
-		G = MList (GL ())
-	}
 
-	with (gui.vcontainer ()) {
-		with (gui.hcontainer ()) {
+		with (gui.vcontainer ()) {
+			with (gui.hcontainer ()) {
+				def Back ()
+				{
+					current.G.save_tags ()
+					U.Switch (0)
+					sys.gc.collect ()
+				}
+				def havebooks ()
+					return current.B ? 1 : -1
+				def havewatch ()
+					return current.W ? 1 : -1
+				def haveauth ()
+					return current.A ? 2 : -2
+				def goauth (a)
+					return def () swFlatAuth (a)
+				def Auths ()
+					return [(x, 1, goauth (x)) for (x in current.A)]
+				gui.button ("back", Action=Back)
+				gui.menubar ([
+						["Menu", [
+						["OPs", 1, swOPs],
+						["\\Threaded All", 1, swThreaded],
+						None,
+						["Threaded \\Hot", 1, swThreadedHot],
+						["Threaded Hot \\LRD", 1, swThreadedHLRD],
+						["Threaded \\Cold", 1, swThreadedCold],
+						["\\Unanswered", 1, swThreadedUnans],
+						None,
+						["F\\resh Threaded Hot LRD", 1, swThreadedFHLRD],
+						["Fresh Cold LRD", 1, swThreadedFColdLRD],
+						None,
+						["\\Flat", 1, swFlat],
+						["Flat \\Seen", 1, swFlatSeen],
+						["Flat watched author", 1, swFlatAuthB],
+						None,
+						["\\Bookmarked messages", havebooks, swFlatBook],
+						["Active \\Watched threads", havewatch, swThreadedW],
+						["Authors", haveauth, Auths],
+						None,
+						["Quit", 1, void],
+					]]])
+				NT = gui.status ("-")
+			}
+			with (gui.hcontainer ()) {
+				gui.label ("search:")
+				SEARCH = gui.textin ()
+				def SearchA ()
+					if (t = SEARCH.getText ())
+						swSearchA (t.lower ())
+				gui.button ("Author", Action=SearchA)
+				def SearchT ()
+					if (t = SEARCH.getText ())
+						swSearchT (t.lower ())
+				gui.button ("Title", Action=SearchT)
+				# in case of newsgroup, search only seen (downloaded) messages
+				def SearchM ()
+					if (t = SEARCH.getText ())
+						swSearchM (t.lower ())
+				gui.button ("Messages", Action=SearchM)
+			}
+			with (gui.hcontainer ()) {
+				M = MList ()
+				M.ybar = gui.hscrollbar (M)
+			}
+		}
+		with (gui.vcontainer ()) {
 			def Back ()
 			{
-				current.G.save_tags ()
-				U.Switch (0)
-				sys.gc.collect ()
+				U.Switch (1)
+				M.Draw ()
 			}
-			def havebooks ()
-				return current.B ? 1 : -1
-			def havewatch ()
-				return current.W ? 1 : -1
-			def haveauth ()
-				return current.A ? 2 : -2
-			def goauth (a)
-				return def () swFlatAuth (a)
-			def Auths ()
-				return [(x, 1, goauth (x)) for (x in current.A)]
-			gui.button ("back", Action=Back)
-			gui.menubar ([
-				["Menu", [
-					["OPs", 1, swOPs],
-					["\\Threaded All", 1, swThreaded],
-					None,
-					["Threaded \\Hot", 1, swThreadedHot],
-					["Threaded Hot \\LRD", 1, swThreadedHLRD],
-					["Threaded \\Cold", 1, swThreadedCold],
-					["\\Unanswered", 1, swThreadedUnans],
-					None,
-					["F\\resh Threaded Hot LRD", 1, swThreadedFHLRD],
-					["Fresh Cold LRD", 1, swThreadedFColdLRD],
-					None,
-					["\\Flat", 1, swFlat],
-					["Flat \\Seen", 1, swFlatSeen],
-					["Flat watched author", 1, swFlatAuthB],
-					None,
-					["\\Bookmarked messages", havebooks, swFlatBook],
-					["Active \\Watched threads", havewatch, swThreadedW],
-					["Authors", haveauth, Auths],
-					None,
-					["Quit", 1, void],
-				]]])
-			NT = gui.status ("-")
-		}
-		with (gui.hcontainer ()) {
-			gui.label ("search:")
-			SEARCH = gui.textin ()
-			def SearchA ()
-				if (t = SEARCH.getText ())
-					swSearchA (t.lower ())
-			gui.button ("Author", Action=SearchA)
-			def SearchT ()
-				if (t = SEARCH.getText ())
-					swSearchT (t.lower ())
-			gui.button ("Title", Action=SearchT)
-			# in case of newsgroup, search only seen (downloaded) messages
-			def SearchM ()
-				if (t = SEARCH.getText ())
-					swSearchM (t.lower ())
-			gui.button ("Messages", Action=SearchM)
-		}
-		with (gui.hcontainer ()) {
-			M = MList ()
-			M.ybar = gui.hscrollbar (M)
-		}
-	}
-	with (gui.vcontainer ()) {
-		def Back ()
-		{
-			U.Switch (1)
-			M.Draw ()
-		}
 
-		with (gui.hcontainer ()) {
-			gui.button ("back", Action=Back)
-			gui.menubar ([
-				["Menu", messagemenu]
-			])
+			with (gui.hcontainer ()) {
+				gui.button ("back", Action=Back)
+				gui.menubar ([
+					["Menu", messagemenu]
+				])
+			}
+			ED = gui.rtext (dowheel=True)
 		}
-		ED = gui.rtext (dowheel=True)
 	}
+	WIP = gui.work_in_progress (0x6699ff)
 }
 
 def ED.doclick (c)

@@ -64,3 +64,46 @@ class progress (widget)
 		$wm.async ($redraw)
 	}
 }
+
+# mini progress bar that can be used with
+#	with (PB)
+# and moves the line during the executed code.
+class work_in_progress (widget)
+{
+	method Init ($color=0x0000ff, **kw)
+	{
+		kw ["h"] = 2
+		$elasticH = False
+		$elasticW = True
+		$widget_init (**kw)
+		$l = @thread.xlock (False)
+		@thread.start_new ($run)
+	}
+
+	method run ()
+	{
+		x = 0
+		while (1) {
+			if ($l.locked ()) x = 0
+			$l.ack ()
+			if ((x += 5) > $w) x = 0
+			$fill_rect (0, 0, x, $h, $color)
+			$fill_rect (x, 0, $w-x, $h, 0xffffff)
+			$wm.flush ()
+			sleep (0.2)
+		}
+	}
+
+	method Draw ()
+		$draw_blank (0xffffff)
+
+	method __enter__ ()
+		$l.release ()
+	method __exit__ (*args)
+	{
+		$l.acquire ()
+		$Draw ()
+	}
+	method __context__ ()
+		return self
+}
