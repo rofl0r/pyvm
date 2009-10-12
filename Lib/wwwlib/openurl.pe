@@ -14,7 +14,7 @@ def Open (url)
 		return
 	} except print sys.exc_info ()
 	print "RUNNING BROWSER..."
-	@os.system ("pyvm www %s" %url)
+	@os.system ("pyvm www %s &" %url)
 }
 
 if (__name__ == __main__) {
