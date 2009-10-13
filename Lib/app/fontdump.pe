@@ -6,9 +6,10 @@ from fonts.render import Open
 from fonts.unicode import int2utf8 as i2u
 from graphics.framebuffer import FrameBuffer
 
-USAGE = "fontdump <font-file>
+USAGE = "fontdump [-ft] <font-file>
 
 Generate an image FONTDUMP.ppm which has all the glyphs of the font
+-ft	: use the freetype engine
 "
 
 W, H = 1500, 900
@@ -16,7 +17,7 @@ W, H = 1500, 900
 FB = FrameBuffer (W, H, 3)
 FB.clear (0xccddee)
 
-BLTIN=True
+BLTIN=!sys.argp.check_switch ("-ft")
 r = Open (sys.argp.filename_ex (), 15, builtin_raster=BLTIN).as_utf8 ()
 
 print r

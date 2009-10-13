@@ -105,7 +105,7 @@ int open_av (VideoStream *v, char *filename)
 				return 3;
 			v->iaudio = i;
 			v->audio_time_base = av_q2d (v->fmtCtx->streams [i]->time_base);
-		}
+		} //else fprintf (stderr, "OTHER stream\n");
 
 	vFrame = avcodec_alloc_frame ();
 
@@ -273,6 +273,7 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 				if (audio_dest)
 					rval = avcodec_decode_audio2 (v->aCodecCtx, audio_dest, &bs,
 								v->pkt.data + ma, v->pkt.size - ma);
+				else rval = v->pkt.size - ma;
 				if (rval >= 0 && rval < v->pkt.size - ma)
 					v->moreau += rval;
 				else {

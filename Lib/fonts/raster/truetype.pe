@@ -186,15 +186,22 @@ class TTF (@fonts.raster.rasterizer.BaseRasterizer)
 		t = $read_table ("cmap")
 		t.r16b ()
 		ntbl = t.r16b ()
+		otherfmt = False
 		for (None in *ntbl) {
 			platform, platform2, offset = t.rvlist (2, 2, 4)
-			if.break (platform == 3) {
+			if (platform == 3) {
 				s = t.subtable (offset)
-				if (s.r16b () != 4)
-					raise Error ("Only format type 4 supported in cmap!")
+				if (s.r16b () != 4) {
+					print "Only format type 4 supported in cmap!"
+					otherfmt = True
+				}
 				$ucs = $cmap = $cmap_format4 (s)
+				return
 			}
-		} else raise Error ("Cannot parse cmap")
+		}
+		if (otherfmt)
+			raise Error ("Cannot parse cmap")
+		$ucs = $cmap = {}
 	}
 
 	method cmap_format4 (s)
