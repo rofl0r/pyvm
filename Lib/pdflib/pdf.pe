@@ -130,6 +130,7 @@ def MAIN.onKey (k)
 	} else if (k in ("UP", "wheelup")) {
 		if (MAIN.yoff > 0) {
 			MAIN.yoff -= k == "UP" ? 10 : 40
+			MAIN.yoff = max (MAIN.yoff, 0)
 			MAIN.Draw ()
 		} else if (k == "wheelup")
 			if (config.CurrentPage > 0) {

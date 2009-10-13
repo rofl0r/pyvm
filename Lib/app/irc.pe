@@ -9,8 +9,10 @@ __autosem__
 
 import thread, gui
 
+BeepMsg = @audio.beep.IRCBeep ()
+
 A = @serialize.appdata ("xirc")
-A.preset ({"connects":{}})
+A.preset ({"connects":{}, "joins":{}})
 
 class circ (@net.ircbase.irc)
 {
@@ -36,7 +38,12 @@ class circ (@net.ircbase.irc)
 	method do_msg (by, cmd, params, trail)
 	{
 		try C = Channels [params [0]]
-		except C = Channels ['#default']
+		except {
+			C = Channels ['#default']
+			# privmsg for us
+			try if (params [0] == G.nick)
+				BeepMsg ()
+		}
 		C.addmsg (trail, by.partition ('!')[0])
 	}
 
@@ -65,6 +72,10 @@ class channel
 
 	method addmsg (m, user=None)
 	{
+		# publicmsg starting with our nick
+		if (m.sw (G.nick))
+			BeepMsg ()
+
 		$msgs.append ((m, user))
 
 		if (Channel is not self) {
@@ -118,6 +129,12 @@ class channel
 DChannel = Channel = channel ('#default')
 Channels = { '#default' : Channel }
 
+namespace G
+{
+	IRC = None
+	CHANNELS = []
+}
+
 # Welcome screen in rtext list format
 Welcome = [(0, x) for (x in 
 	"Welcome!
@@ -127,9 +144,12 @@ type: /connect <server> <nickname> [<password>]
 def Connect (k, v)
 {
 	G.IRC = circ (k [0], k [1])
+	G.server = k [0]
 	G.nick = k [1]
 	thread.start_new (G.IRC.run)
 	if (v) G.IRC.msg ("nickserv", "identify " + v)
+	if (k in A ["joins"])
+		G.CHANNELS = A ["joins"][k]
 }
 if (A ["connects"])
 	Welcome<< [0, ["Known connects"]]
@@ -148,11 +168,6 @@ TAB circulates the channels.
 )])
 
 ##### main #####
-namespace G
-{
-	IRC = None
-}
-
 from graphics.framebuffer import FrameBuffer
 class tabz (gui.widget)
 {
@@ -174,8 +189,7 @@ class tabz (gui.widget)
 		$areaz = []
 		for (t, cc in Channels.items ()) {
 			this = t is Channel.name
-			f = FrameBuffer (W - 2, $h - (this ? 1 : 2), 3)
-			f.clear (this ? 0xffffff : 0xd0d0e0)
+			f = FrameBuffer (W - 2, $h - (this ? 1 : 2), 3, clear=this?0xffffff:0xd0d0e0)
 			if (cc.newmsgs)
 				f.fill_rect (f.w - 10, 1, 8, f.h - 4,
 					     cc.newmsgs == 1 ? 0xff5555 : 0x9999ff)
@@ -221,10 +235,28 @@ class tabz (gui.widget)
 wm = gui.Wm (0, 0, "irc", CaptureStdout=True)
 
 with (gui.vcontainer ()) {
-	TABS = tabz ()
-	RT = gui.rtext (dowheel=True, fontsize=2, lst0=Welcome, bolds=True)
+	with (gui.hcontainer ()) {
+		CHANS = gui.button ("#")
+		TABS  = tabz ()
+	}
+	RT     = gui.rtext (dowheel=True, fontsize=2, lst0=Welcome, bolds=True)
 	PROMPT = gui.textin ()
 }
+
+def JOIN (t)
+{
+	global Channel
+	if (t not in Channels) {
+		G.IRC.join (t)
+		Channel = Channels [t] = channel (t)
+		TABS.Draw ()
+	}
+}
+
+def CHANS.rMenu ()
+	return [(x, 1, def () JOIN (x)) for (x in G.CHANNELS) if (x not in Channels)]
+
+CHANS.onClick = CHANS.onRightClick
 
 def PROMPT.onEnter ()
 {
@@ -238,14 +270,10 @@ def PROMPT.onEnter ()
 		if (!t.sw ("/connect") or len ((snp = t.split ()[1:])) not in (2, 3))
 			Channel.addmsg ("Use /connect server nickname [password]")
 		Channel.addmsg ("Connecting...")
-		G.IRC = circ (snp [0], snp [1])
-		G.nick = snp [1]
-		thread.start_new (G.IRC.run)
-		if (len (snp) == 3) {
-			sleep (0.4)
-			G.IRC.msg ("nickserv", "identify " + snp [2])
-		}
-		A ["connects"][(snp [0], snp [1])] = snp [2] or ""
+		server, nick = snp [0], snp [1]
+		pass = len (snp) == 3 ? snp [2] : None
+		Connect ((server, nick), pass)
+		A ["connects"][(server, nick)] = pass or ""
 		A.save ()
 		return
 	}
@@ -256,6 +284,8 @@ def PROMPT.onEnter ()
 		t = t [6:].strip ()
 		if (t not in Channels) {
 			G.IRC.join (t)
+			A ["joins"].setdefault ((G.server, G.nick), set ()).add (t)
+			A.save ()
 			Channel = Channels [t] = channel (t)
 		} else {
 			Channel = Channels [t]

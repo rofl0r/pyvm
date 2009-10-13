@@ -291,7 +291,6 @@ class Go (**basewin)
 		$W = max ([F.isizeof (x[0]) for (x in $apps)]) + 25
 		$H = len ($apps) * F.maxh + 1
 		$y = $dpy.H - $H - BH - 1
-		$dy = F.maxh
 
 		$fb = FrameBuffer ($W-2, $H-2, $dpy.BPP)
 		$fbs = []

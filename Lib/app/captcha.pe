@@ -29,8 +29,7 @@ wf = [t.do_raster (t.char2id (g), axis=coin(), grid=coin(), px=11+4*rand(), MPP=
 WW = int (sum ([i.cols * i.MPP for (i in wf)]))
 HH = int (max ([i.rows * i.MPP for (i in wf)]))
 HH = int (1.4 * HH)
-F = @graphics.framebuffer.FrameBuffer (WW, HH, 1)
-F.clear (0xffffff)
+F = @graphics.framebuffer.FrameBuffer (WW, HH, 1, clear=0xffffff)
 x = 0
 for (i in wf) {
 	y = int (HH - i.rows * i.MPP * (1 + rand () / 4.0))

@@ -8,7 +8,7 @@
 
 __autosem__
 from tokenize2 import gentokens
-from epl import RESERVED
+from pe import RESERVED
 
 FFILE = []
 LL = ""
@@ -73,8 +73,7 @@ print ML
 
 FrameBuffer = importFB ()
 
-FB = FrameBuffer (2*ML, 2*len (FFILE), 3)
-FB.clear (0)
+FB = FrameBuffer (2*ML, 2*len (FFILE), 3, clear=0)
 COLS = {
 	" ":0,
 	"X":0x808080,

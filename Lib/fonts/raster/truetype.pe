@@ -194,6 +194,7 @@ class TTF (@fonts.raster.rasterizer.BaseRasterizer)
 				if (s.r16b () != 4) {
 					print "Only format type 4 supported in cmap!"
 					otherfmt = True
+					continue
 				}
 				$ucs = $cmap = $cmap_format4 (s)
 				return

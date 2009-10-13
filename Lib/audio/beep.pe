@@ -1,0 +1,43 @@
+# Beep using the soundcard
+__autosem__
+
+from audio.dev import AudioDev
+import thread
+
+class beep
+{
+	method __init__ (hz, dur, vol, $beep_console=0)
+	{
+		from math import sin, pi
+		pi2 = 2*pi
+		n = int (dur * 22050)
+		$a = a = array ("h", n)
+		V = 32000 * minmax (0, vol, 100) / 100.0
+		for (i in *n)
+			a [i] = int (V * sin ((pi2 * hz * i) / 22050))
+	}
+
+	method __call__ (*a)
+	{
+		d = AudioDev ()
+
+		if (!d.grab (22050, 1))
+			return
+		d.play ($a.tostring ())
+		return True
+	}
+
+	method dobeep ()
+		thread.start_new (self)
+}
+
+def IRCBeep ()
+	return beep (900, 0.09, 50).dobeep
+
+if (__name__ == __main__)
+{
+	B = beep (600, 0.14, 100)
+	B = beep (800, 0.05, 60)
+	B.dobeep ()
+	sleep (1.2)
+}

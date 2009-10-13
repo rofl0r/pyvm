@@ -14,8 +14,7 @@ Generate an image FONTDUMP.ppm which has all the glyphs of the font
 
 W, H = 1500, 900
 
-FB = FrameBuffer (W, H, 3)
-FB.clear (0xccddee)
+FB = FrameBuffer (W, H, 3, clear=0xccddee)
 
 BLTIN=!sys.argp.check_switch ("-ft")
 r = Open (sys.argp.filename_ex (), 15, builtin_raster=BLTIN).as_utf8 ()
