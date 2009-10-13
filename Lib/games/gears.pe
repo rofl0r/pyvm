@@ -24,10 +24,8 @@ def MAKE (tw, phase, tt)
 	R2 = R * R
 	MR = int (2 * R + 100)
 	M2 = MR / 2
-	f = FB (MR, MR, 2)
-	fa = FB (MR, MR, 1)
-	fa.clear (0)
-	f.clear (0x111111)
+	f = FB (MR, MR, 2, clear=0x111111)
+	fa = FB (MR, MR, 1, clear=0)
 	phase *= pi2
 
 	for (py in *MR) {

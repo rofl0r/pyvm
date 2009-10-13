@@ -274,11 +274,11 @@ class Go (**basewin)
 	{
 		$apps = [
 			["webbrowser",	"pyvm www"],
+			["e-mail/news",	"pyvm mymbox"],
 			["IRC chat",	"pyvm irc"],
 			["video",	"pyvm avplay -open"],
 			["pdf viewer",	"pyvm pdf -open"],
 			["mahjongg",	"pyvm mahjongg"],
-			["*My* Mbox",	"pyvm mymbox"],
 			["xterm",	"pyvm xterm"],
 			["xterm small",	"pyvm xterm -size 80x25 -12x22"],
 			["Exit",	 $Exit]
@@ -291,20 +291,33 @@ class Go (**basewin)
 		$W = max ([F.isizeof (x[0]) for (x in $apps)]) + 25
 		$H = len ($apps) * F.maxh + 1
 		$y = $dpy.H - $H - BH - 1
+		$dy = F.maxh
 
 		$fb = FrameBuffer ($W-2, $H-2, $dpy.BPP)
-		f2 = FrameBuffer ($W - 4, $dy, $dpy.BPP)
-		$fb.clear (0x777777)
-		y = 0
+		$fbs = []
 		for (a in $apps) {
-			f2.clear (0x333355)
+			f2 = FrameBuffer ($W - 4, $dy, $dpy.BPP, clear=0x333355)
+			f3 = FrameBuffer ($W - 4, $dy, $dpy.BPP, clear=0x6666aa)
 			f2.draw_rect (0, 0, f2.w - 1, f2.h - 1, 0)
+			f3.draw_rect (0, 0, f2.w - 1, f2.h - 1, 0)
 			F.render_to (f2, 1, 0, a[0], 0xd0d0d0)
-			$fb.put_image (f2.as_image (), 1, y)
-			y += F.maxh
+			F.render_to (f3, 1, 0, a[0], 0x0d0d0d)
+			$fbs<< (f2, f3)
 		}
+		$over = None
+		$mkfb ()
 		$__class__.Open = self
 		$dpy.add_new_window (self)
+	}
+
+	method mkfb ()
+	{
+		$fb.clear (0x777777)
+		y = 0
+		for (n, (f2, f3) in enumerate ($fbs)) {
+			$fb.put_image (($over == n ? f3 : f2).as_image (), 1, y)
+			y += f2.h
+		}
 	}
 
 	method Draw ()
@@ -319,6 +332,18 @@ class Go (**basewin)
 	method send_event (e)
 		if (e and e [0] == "PRESS" and e [1] == "ESC")
 			$close ()
+		else if (e [0] == "XY") {
+			x, y = e [1]
+			x -= $x
+			y -= $y
+			if (y < 0 or y > $H or x < 0 or x > $W) o = None
+			else o = y / $dy
+			if (o != $over) {
+				$over = o
+				$mkfb ()
+				$Draw ()
+			}
+		}
 
 	method do_click (b, x, y)
 		if (y > 0) try {
@@ -401,8 +426,7 @@ namespace littleclock
 		while (1) {
 			hour = time.localtime ()[3] % 12
 			rad = math.pi * 2 * hour / 12
-			cf = FrameBuffer (BH, BH, 3)
-			cf.clear (0x909090)
+			cf = FrameBuffer (BH, BH, 3, clear=0x909090)
 			cf.fill_circle (BH / 2, BH / 2, BH / 2 - 1, 0)
 			r = BH / 2 - 2
 			cf.fill_circle (BH / 2, BH / 2, r, 0xa0a0a0)
@@ -425,8 +449,7 @@ class Bar
 		thread.start_new (littleclock.make_clock)
 		sleep (0.1)
 
-		go = FrameBuffer (30, $dpy.BH - 2, $dpy.BPP)
-		go.clear (0x333377)
+		go = FrameBuffer (30, $dpy.BH - 2, $dpy.BPP, clear=0x333377)
 		go.draw_rect (0, 0, go.w - 1, go.h - 1, 0)
 		GFonts2.render_to (go, 1, 0, "Go", 0xffffff)
 		$go = go.as_image ()

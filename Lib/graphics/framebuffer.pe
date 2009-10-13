@@ -38,7 +38,7 @@ class FrameBuffer
 {
 	colorkey = None
 
-	method __init__ ($w, $h, $bpp, $buffer=0)
+	method __init__ ($w, $h, $bpp, $buffer=0, clear=None)
 	{
 		if (bpp not in (1, 2, 3, 4)) raise "Error bpp must be 1,2,3,4"
 		if (!buffer) $buffer = _buffer (w * h * bpp)
@@ -46,6 +46,8 @@ class FrameBuffer
 		$stdclip = array ("i", [0, 0, $w, $h])
 		$fb = _buffer (C.sizeof_fb)
 		C.fb_init ($fb, w, h, bpp, $buffer)
+		if (clear is not None)
+			$clear (clear)
 	}
 
 	method reinit ($w, $h, $bpp, $buffer)
