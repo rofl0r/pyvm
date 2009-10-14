@@ -232,7 +232,7 @@ class tabz (gui.widget)
 	}
 }
 
-wm = gui.Wm (0, 0, "irc", CaptureStdout=True)
+wm = gui.Wm (0, 0, "irc", CaptureStdout=True, International=True)
 
 with (gui.vcontainer ()) {
 	with (gui.hcontainer ()) {
@@ -240,7 +240,7 @@ with (gui.vcontainer ()) {
 		TABS  = tabz ()
 	}
 	RT     = gui.rtext (dowheel=True, fontsize=2, lst0=Welcome, bolds=True)
-	PROMPT = gui.textin ()
+	PROMPT = gui.textin (do_history=True)
 }
 
 def JOIN (t)
@@ -295,6 +295,8 @@ def PROMPT.onEnter ()
 		to, None, msg = t [5:].partition (' ')
 		if (msg) G.IRC.msg (to, msg)
 	}
+
+	return t
 }
 
 def PROMPT.preOnKey (k)

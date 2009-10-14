@@ -16,8 +16,13 @@ class textin (widget)
 {
 	Tnext = None
 
-	method Init (font=None, **kw)
+	method Init (font=None, $do_history=False, **kw)
 	{
+		if (do_history) {
+			$history = []
+			$hpos = None
+		}
+
 		$enter_tabgroup ()
 
 		$font = font or ($international ? $wm.fixed_utf_font () : $wm.tfont)
@@ -349,12 +354,42 @@ class textin (widget)
 		} else if (k in ('LEFT', 'RIGHT', 'END', 'HOME')) {
 			$cursorKey (k)
 		} else if (k == '\n') {
-			return $onEnter ()
+			r = $onEnter ()
+			if ($do_history and r -> str and r) {
+				$history.append (r)
+				$hpos = None
+			}
+			return True
 		} else if (k == "\t" and $Tnext) {
 			$Tnext.setKeyWidget ()
 			return 1
 		} else if (k in ('UP', 'DOWN')) {
-			$cursor_updown (k == "UP")
+			if ($do_history) {
+				if (k == "UP") {
+					if ($hpos is None) {
+						if ($history) {
+							$hsave = $getText ()
+							$hpos = len ($history) - 1
+							$setText ($history [$hpos], -1)
+						}
+					} else {
+						if ($hpos) {
+							$hpos -= 1
+							$setText ($history [$hpos], -1)
+						}
+					}
+				} else {
+					if ($hpos is not None) {
+						if ($hpos == len ($history) - 1) {
+							$hpos = None
+							$setText ($hsave, -1)
+						} else {
+							$hpos += 1
+							$setText ($history [$hpos], -1)
+						}
+					}
+				}
+			} else $cursor_updown (k == "UP")
 		} else if (k != 'DRAW')
 			return 0
 
@@ -377,17 +412,19 @@ class textin (widget)
 
 	method setText ($s, cursor=None)
 	{
-		text = $tlist ();
+		text = $tlist ()
 		if (cursor is not None) {
-			$cursor = cursor;
-			$adjOffset ();
-			text [$cursor - $offset] += 'x';
-			$setKeyWidget ();
-		} else  $cursor = $offset = 0;
+			if (cursor == -1)
+				cursor = len ($s)
+			$cursor = cursor
+			$adjOffset ()
+			text [$cursor - $offset] += 'x'
+			$setKeyWidget ()
+		} else  $cursor = $offset = 0
 
-		$selected = None;
-		$DrawText (text);
-		$Draw ();
+		$selected = None
+		$DrawText (text)
+		$Draw ()
 	}
 
 	method getText ()
