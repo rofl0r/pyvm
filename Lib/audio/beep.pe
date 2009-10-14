@@ -1,43 +1,70 @@
-# Beep using the soundcard
+# Beep code.
 __autosem__
 
-from audio.dev import AudioDev
-import thread
+# - console beep may not work if we can't rw /dev/console or /dev/tty0 (needed by linuxfb)
+# - soundcard beep is more expensive CPU-wise
+# - soundcard beep will "fail" if the volume is zero
+# - soundcard beep will "fail" if an mp3 player is running
+# - console beep "fails" if we're in another vt
+# - there is yet a third way by writting \a to stdout. may not work if redirected.
+# - which is nicer? YMMV (do sysconfig option?)
+# === hairy interface
 
-class beep
+from audio import dev
+import thread, os
+
+def audio_beep (hz, dur, vol)
 {
-	method __init__ (hz, dur, vol, $beep_console=0)
-	{
-		from math import sin, pi
-		pi2 = 2*pi
-		n = int (dur * 22050)
-		$a = a = array ("h", n)
-		V = 32000 * minmax (0, vol, 100) / 100.0
-		for (i in *n)
-			a [i] = int (V * sin ((pi2 * hz * i) / 22050))
-	}
-
-	method __call__ (*a)
-	{
-		d = AudioDev ()
-
-		if (!d.grab (22050, 1))
-			return
-		d.play ($a.tostring ())
-		return True
-	}
-
-	method dobeep ()
-		thread.start_new (self)
+	n = int (dur * 11025)
+	a = _buffer (2 * n)
+	dev.C.make_harmonic (a, n, hz, int (32000 * minmax (0, vol, 100) / 100.0))
+	d = dev.AudioDev ()
+	if (!d.grab (11025, 1))
+		return False
+	d.play (a)
+	return True
 }
 
+def console_beep (hz, dur, vol)
+{
+	cbeep = dev.C.beep
+	fd = os.openfd ("/dev/tty0", os.O_WRONLY, 0) ??
+	     os.openfd ("/dev/console", os.O_WRONLY, 0)
+	if (cbeep (fd, hz) == -1)
+		return False
+	sleep (dur)
+	cbeep (fd, 0)
+	os.close (fd)
+	return True
+}
+
+def can_beep_console ()
+{
+	try dev.C.beep
+	except return False
+	try os.close (os.openfd ("/dev/console", os.O_WRONLY, 0))
+	except try os.close (os.openfd ("/dev/tty0", os.O_WRONLY, 0))
+	       except return False
+	return True
+}
+
+def either_beep (*a)
+	try return audio_beep (*a) or console_beep (*a)
+std_beep = can_beep_console () ? console_beep : audio_beep
+
+def bg_beep (hz, dur, vol)
+	thread.start_new (std_beep, hz, dur, vol)
+def bg_either_beep (hz, dur, vol)
+	thread.start_new (either_beep, hz, dur, vol)
+
+# standard application beeps:
+
 def IRCBeep ()
-	return beep (900, 0.09, 50).dobeep
+	return bg_either_beep (900, 0.09, 50)
 
 if (__name__ == __main__)
 {
-	B = beep (600, 0.14, 100)
-	B = beep (800, 0.05, 60)
-	B.dobeep ()
-	sleep (1.2)
+	console_beep (900, 0.1, 80)
+	audio_beep (600, 0.1, 80)
+	console_beep (600, 1.1, 80)
 }

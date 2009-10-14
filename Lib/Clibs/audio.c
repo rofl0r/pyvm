@@ -16,6 +16,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <linux/soundcard.h>
+#include <linux/kd.h>	// KIOCSOUND -- console beep ioctl
+#include <math.h>
 
 static int fd = -1;
 
@@ -148,6 +150,21 @@ void stereo62mono (short int *src, short int *dest, int nsamp)
 	}
 }
 
+/* beeping utilities */
+#ifdef KIOCSOUND
+int beep (int fd, int hz)
+{
+	return ioctl (fd, KIOCSOUND, hz ? 1193180 / hz : 0);
+}
+#endif
+
+void make_harmonic (short int vals[], int nvals, int hz, int volume)
+{
+	int i;
+	for (i = 0; i < nvals; i++)
+		vals [i] = volume * sin ((M_PI * 2 * i * hz) / 11025);
+}
+
 const char ABI [] =
 "i open_audio	i	\n"
 "- close_audio	-	\n"
@@ -155,4 +172,8 @@ const char ABI [] =
 "i volume	ii	\n"
 "- stereo2mono	ssi	\n"
 "- stereo62mono	ssi	\n"
+#ifdef KIOCSOUND
+"i beep		ii	\n"
+#endif
+"- make_harmonic siii	\n"
 ;

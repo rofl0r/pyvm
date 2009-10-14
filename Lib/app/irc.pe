@@ -9,7 +9,7 @@ __autosem__
 
 import thread, gui
 
-BeepMsg = @audio.beep.IRCBeep ()
+BeepMsg = @audio.beep.IRCBeep
 
 A = @serialize.appdata ("xirc")
 A.preset ({"connects":{}, "joins":{}})
