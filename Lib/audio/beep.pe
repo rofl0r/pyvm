@@ -13,8 +13,10 @@ __autosem__
 from audio import dev
 import thread, os
 
+BEEP_LOCK = thread.xlock ()
+
 def audio_beep (hz, dur, vol)
-{
+with (BEEP_LOCK) {
 	n = int (dur * 11025)
 	a = _buffer (2 * n)
 	dev.C.make_harmonic (a, n, hz, int (32000 * minmax (0, vol, 100) / 100.0))
@@ -27,7 +29,7 @@ def audio_beep (hz, dur, vol)
 }
 
 def console_beep (hz, dur, vol)
-{
+with (BEEP_LOCK) {
 	cbeep = dev.C.beep
 	fd = os.openfd ("/dev/tty0", os.O_WRONLY, 0) ??
 	     os.openfd ("/dev/console", os.O_WRONLY, 0)
@@ -62,6 +64,8 @@ def bg_either_beep (hz, dur, vol)
 
 def IRCBeep ()
 	return bg_either_beep (900, 0.09, 50)
+def TorrentBeep ()
+	return bg_either_beep (500, 0.09, 50)
 
 if (__name__ == __main__)
 {

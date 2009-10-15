@@ -1021,11 +1021,10 @@ if (__name__ == __main__)
 	if (norev)
 		REVLOOKUP = False
 
+	from audio.beep import TorrentBeep
 	def beep ()
-		if (BEEP) {
-			sys.stdout.write ("\x07\n")
-			sys.stdout.flush ()
-		}
+		if (BEEP) 
+			TorrentBeep ()
 
 	if (x or xp) {
 		pattern = xp ? sys.argp.pop_one_arg () : None

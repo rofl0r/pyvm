@@ -116,6 +116,7 @@ unimaps = {
 	"windows-1251":"cp1251.uni",
 	"windows-1252":"cp1252.uni",
 	"windows-1253":"cp1253.uni",
+	"koi8-r":"koi8-r.uni",
 }
 
 charsets = unimaps.keys ()
