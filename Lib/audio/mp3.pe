@@ -33,11 +33,13 @@ class AudioFile
 			$channels = 1
 		else $mono = False
 		$audiobuf = _buffer (C.max_audio_frame_size)
+		$FFL = thread.xlock ()
 	}
 
 	method get_frame ()
 	{
-		n = C.next_frame ($av, 0, $audiobuf, pts)
+		with ($FFL)
+			n = C.next_frame ($av, 0, $audiobuf, pts)
 		if (n == -2) return ""
 		data = $audiobuf [:n]
 		if (!$mono)
@@ -47,7 +49,8 @@ class AudioFile
 	}
 
 	method seek (ts)
-		return C.ffseek ($av, ts * 1.0 / $duration)
+		with ($FFL)
+			return C.ffseek ($av, ts * 1.0 / $duration)
 
 	method __del__ ()
 		C.close_av ($av)

@@ -274,6 +274,7 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 					rval = avcodec_decode_audio2 (v->aCodecCtx, audio_dest, &bs,
 								v->pkt.data + ma, v->pkt.size - ma);
 				else rval = v->pkt.size - ma;
+//fprintf (stderr, "%p rval=%i bs=%i moreau=%i pktz=%i ma=%i\n", audio_dest, rval, bs, v->moreau, v->pkt.size, ma);
 				if (rval >= 0 && rval < v->pkt.size - ma)
 					v->moreau += rval;
 				else {
@@ -297,7 +298,9 @@ int ffseek (VideoStream *v, double frac)
 {
 	if (v->moreau)
 		av_free_packet (&v->pkt);
-	long long pos = v->fmtCtx->start_time + frac * v->fmtCtx->duration;
+	long long pos = frac * v->fmtCtx->duration;
+	if (v->fmtCtx->start_time != AV_NOPTS_VALUE)
+		pos += v->fmtCtx->start_time;
 	int ret = av_seek_frame (v->fmtCtx, -1, pos, 0);
 	if (ret >= 0) {
 		if (v->vCodecCtx) avcodec_flush_buffers (v->vCodecCtx);

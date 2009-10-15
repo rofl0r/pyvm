@@ -392,7 +392,8 @@ def do_sign_mime (infile, outfile)
 		if (k == "content-type") ct = v
 		else if (k == "content-transfer-encoding") cte = v
 		else h<< (k, v)
-	boundary = @random.hrandstr (10)
+	do boundary = @random.hrandstr (10)
+	while (boundary in M.text)
 	h<< ("content-type", 'multipart/signed; micalg=pgp-sha1; protocol="application/pgp-signature"; '
 			+ 'boundary="%s"'%boundary)
 

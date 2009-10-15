@@ -26,7 +26,7 @@ def statcommit (c)
 {
 	print c, dateof (c.date ())
 	t = r.open (c.tree)
-	f = t.lsfiles_r (r)
+	f = t.lsfiles_r ()
 	print "%i files" %len (f)
 
 	pes = pys = cs = 0
@@ -72,7 +72,7 @@ gen iterfiles (arg)
 			exit ()
 		}
 		t = r.open (c.tree)
-		f = t.lsfiles_r (r)
+		f = t.lsfiles_r ()
 	}
 	for (fn, hh in f)
 		yield fn, r.open (hh).data
@@ -135,7 +135,7 @@ if (arg == "past") {
 	O = []
 	for (d, c in reversed (L)) {
 		t = r.open (c.tree)
-		o = set ([x [1] for (x in t.lsfiles_r (r))])
+		o = set ([x [1] for (x in t.lsfiles_r ())])
 		O.append (len (o - objs))
 		objs = objs | o
 	}

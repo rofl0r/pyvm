@@ -22,6 +22,7 @@ def audio_beep (hz, dur, vol)
 	if (!d.grab (11025, 1))
 		return False
 	d.play (a)
+	d.release ()
 	return True
 }
 

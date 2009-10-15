@@ -259,10 +259,8 @@ class app
 
 		$PrefFile = opts.get ("m", $P.filename + ".markers")
 
-		$NFFT = 4096
-		$NBANDS = 12
 		$BW = 9
-		$FFT = FFT ($NFFT, $P.channels == 2, $NBANDS)
+		$FFT = FFT (nsamp=4096, stereo=$P.channels==2, nbands=12)
 		$fft_fifo = thread.fifo ()
 
 		$paused = True
@@ -270,7 +268,6 @@ class app
 		$fastmove = 0
 		$fine_volume = None
 		$main_state = "play"
-		thread.start_new ($Play)
 
 		$wm = gui.Wm (0, 0, "soundlab", KeyCtrl=$KeyCtrl)
 		$wm.avtheme ()
@@ -332,7 +329,7 @@ class app
 					$MarkerButton = gui.button ("    \\set marker    ",
 									 Action=$SetMarker)
 			}
-			$fft_fb = gui.fb (w = $BW * $NBANDS, h = 90)
+			$fft_fb = gui.fb (w = $BW * $FFT.nbands, h = 90)
 		}
 		with ($G3 = gui.hcontainer (lmargin="X")) {
 			$ChopButton = gui.button ("\\chop", Action=$Chop)
@@ -461,6 +458,7 @@ class app
 		for (t, p in $labels.items ())
 			$L.place_bar (t, p, 0xbbbb22)
 		$Update ()
+		thread.start_new ($Play)
 		thread.start_new ($SlideShow)
 		thread.start_new ($DrawFFT)
 	}
@@ -530,7 +528,7 @@ class app
 				if ($fastmove == -1)
 					$P.seek ($P.tpos - 0.3)
 			}
-			if (data = $P.get_samples ($NFFT)) {
+			if (data = $P.get_samples ($FFT.nsamp)) {
 				$fft_fifo.put (data)
 				$Update ()
 				$dev.play (data)

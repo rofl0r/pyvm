@@ -353,7 +353,10 @@ class newsgroup (*@mailnews.index.messages)
 			if ($NNTP.group != $group)
 				$NNTP.GROUP ($group)
 			return True
-		} except if (doraise) raise
+		} except {
+			$NNTP = None
+			if (doraise) raise
+		}
 		return False
 	}
 
