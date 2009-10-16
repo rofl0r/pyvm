@@ -230,6 +230,7 @@ while (deltas)
 	for (sig in deltas)
 		if.break (sig in stored) {
 			for (data in deltas.pop (sig)) {
+				# patch-delta.c
 				dp = data_parser (data)
 				r8 = dp.r8
 				parse_le (dp)
@@ -247,7 +248,7 @@ while (deltas)
 						if (cmd & 0x10) cpsz = r8 ()
 						if (cmd & 0x20) cpsz |= (r8 ()<<8)
 						if (cmd & 0x40) cpsz |= (r8 ()<<16)
-						if (cpsz == 0) raise Error ("PHAK")
+						if (cpsz == 0) cpsz = 0x10000
 						out += src [cpoff:cpoff+cpsz]
 					} else if (cmd) {
 						out += dp.read (cmd)

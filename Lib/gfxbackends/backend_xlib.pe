@@ -25,11 +25,15 @@ class Display (FBbase)
 
 	method __init__ ($width, $height, DISPLAY)
 	{
+		global USE_SHM
+
+		$dpy = XOpenDisplay (DISPLAY)
+		if (USE_SHM and !XShmQueryExtension ($dpy))
+			USE_SHM = False
+
 		# For some odd reason, XShm with width that's not a multiple of 2
 		# produces and X11 Failed Request
 		if (USE_SHM and width%2) $width = width += 1
-
-		$dpy = XOpenDisplay (DISPLAY)
 
 		attr = XSetWindowAttributes ()
 		attr.backing_store = X.Always

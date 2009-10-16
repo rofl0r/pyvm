@@ -52,7 +52,7 @@ def can_beep_console ()
 }
 
 def either_beep (*a)
-	try return audio_beep (*a) or console_beep (*a)
+	return audio_beep (*a) or console_beep (*a)
 std_beep = can_beep_console () ? console_beep : audio_beep
 
 def bg_beep (hz, dur, vol)
