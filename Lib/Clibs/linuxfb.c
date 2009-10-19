@@ -464,10 +464,8 @@ static void *mouse_thread (void *x)
 					if (D.mfd != -1)
 						put_mouse ();
 					sem_post (&D.sem);
-					if (D.hibernating) {
-						M.b = -1;
-						write (D.mpipe [1], &M, sizeof M);
-					}
+					M.b = -1;
+					write (D.mpipe [1], &M, sizeof M);
 				}
 			}
 			if (bstate != (mb [0] & 7)) {
@@ -603,6 +601,11 @@ int get_event (int ev[])
 #ifdef MOUSE_KILL
 			D.mqueued = 0;
 #endif
+			return 1;
+		} else if (r > 0) {
+			ev [0] = 7;
+			ev [1] = D.mx;
+			ev [2] = D.my;
 			return 1;
 		}
 	}

@@ -187,6 +187,8 @@ class Window (**BaseWin)
 			# it acts as a pressed modifier while ON.
 			"CAPS":False,
 		}
+
+		$mouse_xy = $qwhere ()
 	}
 
 	method resize (w, h)
@@ -215,12 +217,15 @@ class Window (**BaseWin)
 	method DirectFrameBuffer (w, h)
 		return WFrameBuffer (w, h, $dpy)
 
-	method where ()
+	method qwhere ()
 	{
 		xy = array ('i', 2)
 		sdl.where (xy)
 		return tuple (xy)
 	}
+
+	method where ()
+		return $mouse_xy
 
 	method move_mouse (x, y)
 		sdl.move_mouse (x, y)
@@ -255,6 +260,11 @@ class Window (**BaseWin)
 				} else # Initial delay before we enter repeating
 					$CURRENT_KEY_T = now () + $KEY_REPEAT_DL
 			}
+			return None
+		}
+
+		if (ee [0] == 6) {
+			$mouse_xy = ee [1], ee [2]
 			return None
 		}
 

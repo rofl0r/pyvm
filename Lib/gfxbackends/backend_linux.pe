@@ -196,6 +196,7 @@ class Window (**BaseWin)
 		$std_fonts ()
 		$fb.clear (0)
 		$have_vt = 3
+		$mouse_xy = $qwhere ()
 	}
 
 	method draw_line (x1, y1, x2, y2, c) $fb.draw_line (x1, y1, x2, y2, c)
@@ -209,8 +210,10 @@ class Window (**BaseWin)
 		$fb.flush (*area)
 	}
 
-
 	method where ()
+		return $mouse_xy
+
+	method qwhere ()
 	{
 		xy = array ('i', 2)
 		C.where (xy)
@@ -244,6 +247,11 @@ class Window (**BaseWin)
 			return
 
 		et = ee [0]
+
+		if (et == 7) {
+			$mouse_xy = ee [1], ee [2]
+			return
+		}
 
 		if (et == 0) {
 			n = ee [1]

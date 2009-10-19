@@ -181,8 +181,12 @@ int get_event (Display *d, int ret[])
 	case SDL_QUIT:
 		ret [0] = 5;
 	break;
-	default:
 	case SDL_MOUSEMOTION:
+		ret [0] = 6;
+		ret [1] = E.motion.x;
+		ret [2] = E.motion.y;
+	break;
+	default:
 		return 0;
 	}
 

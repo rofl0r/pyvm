@@ -81,7 +81,7 @@ class Display (FBbase)
 		vmask = X.GCFillStyle
 		$stdGC = XCreateGC ($dpy, $W, vmask, v)
 
-		$InputMask = X.KeyPressMask | X.KeyReleaseMask
+		$InputMask = X.KeyPressMask | X.KeyReleaseMask | X.PointerMotionMask
 			   | X.ExposureMask | X.StructureNotifyMask | X.KeymapStateMask
 			   | X.ButtonPressMask | X.ButtonReleaseMask
 		XSelectInput ($dpy, $W, $InputMask)
@@ -212,6 +212,7 @@ class Window (**BaseWin)
 			# it acts as a pressed modifier while ON.
 			"CAPS":False,
 		}
+		$mouse_xy = XQueryPointer ($dpy.dpy, $dpy.W)
 	}
 
 	method resize (w, h)
@@ -333,7 +334,10 @@ method Display.get_event0 ()
 			return 'RESIZE', E.width, E.height
 		} else if (E.type == X.KeymapNotify) {
 			return "FOCUS",
-		} else if (E.type != X.MotionNotify) print "UNKNOWN X11 event:", E.type
+		} else if (E.type == X.MotionNotify) {
+			E = xcast (XMotionEvent, E)
+			return "MOTION", E.x, E.y
+		} else print "UNKNOWN X11 event:", E.type
 	} 
 }
 
@@ -341,6 +345,11 @@ method Window.get_event ()
 {
 	if !(e = $dpy.get_event0 ())
 		return None
+
+	if (e [0] == "MOTION") {
+		$mouse_xy = e [1], e [2]
+		return None
+	}
 
 	if (e [0] == 'REDRAW') {
 		# the server may generate multiple
@@ -377,7 +386,7 @@ method Window.get_event ()
 }
 
 method Window.where ()
-	return XQueryPointer ($dpy.dpy, $dpy.W)
+	return $mouse_xy
 
 method Window.move_mouse (x, y)
 	XWarpPointer ($dpy.dpy, $dpy.W, x, y)
