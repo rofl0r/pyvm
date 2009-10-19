@@ -79,6 +79,7 @@ static struct {
 	int mx, my;		/* current mouse position */
 	int rmouse;		/* refresh mouse on unlock()? */
 	int mpipe [2];		/* send clicks from mouse thread to get_event() */
+	int mmoved;		/* mouse has moved? */
 	int mqueued;		/* #queued mouse events. MOUSE_KILL */
 	pthread_t th;		/* thread ID of mouse thread */
 	sem_t sem;		/* console lock */
@@ -160,6 +161,7 @@ static void clear_state ()
 	D.imps2 = 0;
 	D.away = 0;
 	D.keepmouse = 0;
+	D.mmoved = 0;
 }
 
 int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt, int screenshot)
@@ -464,8 +466,10 @@ static void *mouse_thread (void *x)
 					if (D.mfd != -1)
 						put_mouse ();
 					sem_post (&D.sem);
-					M.b = -1;
-					write (D.mpipe [1], &M, sizeof M);
+					if (D.hibernating) {
+						M.b = -1;
+						write (D.mpipe [1], &M, sizeof M);
+					} else D.mmoved = 1;
 				}
 			}
 			if (bstate != (mb [0] & 7)) {
@@ -540,7 +544,17 @@ int get_event (int ev[])
 	pfd [1].events = POLLIN | POLLERR | POLLHUP;
 	pfd [1].revents = 0;
 	r = poll (pfd, 2, 0);
-	if (r <= 0) return 0;
+	if (r <= 0) {
+		if (D.mmoved) {
+			ev [0] = 7;
+			ev [1] = D.mx;
+			ev [2] = D.my;
+			D.mmoved = 0;
+			return 1;
+		}
+		return 0;
+	}
+
 
 	if (pfd [0].revents) {
 		unsigned char ch;
@@ -609,6 +623,7 @@ int get_event (int ev[])
 			return 1;
 		}
 	}
+
 	return 0;
 }
 

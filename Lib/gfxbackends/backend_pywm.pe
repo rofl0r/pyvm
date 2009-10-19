@@ -218,15 +218,16 @@ class WindowClass (**BaseWin)
 			$EL.release ()
 			r = r.split ()
 			r0 = r [0]
-			# MotionNotification
-			if.continue (r0 == "M")
-				$mouse_xy = [int (x) for (x in r [1:])]
 			if.continue (r0 == "PASTED") {
 				$pasted = unhexlify (r [1])
 				$cblock.release ()
 			}
 
-			if (r0 == "CLICK")
+			# MotionNotification
+			if (r0 == "M") {
+				$mouse_xy = [int (x) for (x in r [1:])]
+				r = "MOTION",
+			} else if (r0 == "CLICK")
 				r [1:] = [int (x) for (x in r [1:])]
 			else if (r0 == "PRESS")
 				if (r [1] == "NL")

@@ -265,7 +265,7 @@ class Window (**BaseWin)
 
 		if (ee [0] == 6) {
 			$mouse_xy = ee [1], ee [2]
-			return None
+			return "MOTION",
 		}
 
 		$CURRENT_KEY = ""

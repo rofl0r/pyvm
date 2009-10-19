@@ -348,7 +348,7 @@ method Window.get_event ()
 
 	if (e [0] == "MOTION") {
 		$mouse_xy = e [1], e [2]
-		return None
+		return "MOTION",
 	}
 
 	if (e [0] == 'REDRAW') {

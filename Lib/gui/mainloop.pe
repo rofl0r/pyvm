@@ -273,6 +273,8 @@ class Wm
 		$strfg = $color_txt
 	}
 
+	# Special event handling
+
 	method get_event ()
 		if ($equeue) return $equeue.pop ()
 		else return $B.get_event ()
@@ -286,6 +288,54 @@ class Wm
 			$unget_event (e)
 		return e
 	}
+
+	# loop until some real event happens.
+	# if motion event, return true otherwise
+	# push back the event and return false
+	method track_motion ()
+	{
+		while !(e = $get_event ())
+			$sleep (0.024)
+		if (e [0] == "MOTION") {
+			$consume_motion ()
+			return True
+		}
+		$unget_event (e)
+		return False
+	}
+
+	method consume_motion ()
+		while (1) {
+			e = $get_event ()
+			if (!e) break
+			if (e [0] != "MOTION") {
+				$unget_event (e)
+				return
+			}
+		}
+
+	method track_motion_or_scroll ()
+	{
+		while !(e = $get_event ())
+			$sleep (0.024)
+		if (e [0] == "MOTION") {
+			$consume_motion ()
+			return True
+		}
+		$unget_event (e)
+		if (e [0] == "WHEEL")
+			return "WHEEL"
+		return False
+	}
+
+	# return the next event or None if there is no event
+	# but consume/ignore motion events
+	method get_event_nomotion ()
+		while (1) {
+			e = $get_event ()
+			if (!e or e [0] != "MOTION")
+				return e
+		}
 
 	# because the mainloop may be hibernating, this is a special quirk
 	# that releases the HBLOCK. This will falsely notify the main loop
@@ -304,15 +354,13 @@ class Wm
 	}
 
 	method untilUnclick ()
-	{
 		while (1) {
 			yield 1
 			$sleep (0.03)
 			$flush ()
-			if ($peek_event ())
+			if ($get_event_nomotion ())
 				break
 		}
-	}
 
 	method followAxisMotion (axis)
 	{
@@ -330,9 +378,8 @@ class Wm
 					x0 = x1
 				}
 			}
-			$sleep (0.03)
 			$flush ()
-			if ($peek_event ())
+			if (!$track_motion ())
 				break
 		}
 	}
@@ -344,9 +391,8 @@ class Wm
 			x1, y1 = $B.where ()
 			if ((x1, y1) != (x0, y0))
 				yield x0, y0 = x1, y1
-			$sleep (0.03)
 			$flush ()
-			if ($peek_event ())
+			if (!$track_motion ())
 				break
 		}
 	}
@@ -362,10 +408,10 @@ class Wm
 			}
 			$sleep (0.03)
 			$flush ()
-			if (e = $peek_event ())
-				if (e [0] == "WHEEL")
-					yield $get_event ()[1]
-				else break
+			if !(e = $track_motion_or_scroll ())
+				break
+			if (e == "WHEEL")
+				yield $get_event ()[1]
 		}
 	}
 
@@ -378,7 +424,7 @@ class Wm
 	method mouse_pressed ()
 	{
 		$sleep (0.18)
-		if !(en = $get_event ())
+		if !(en = $get_event_nomotion ())
 			return True
 		if (en [0] != "UNCLICK")
 			$unget_event (en)
@@ -388,14 +434,14 @@ class Wm
 	method double_click ()
 	{
 		$sleep (0.18)
-		if !(en = $get_event ())
+		if !(en = $get_event_nomotion ())
 			return False
 		if (en [0] != "UNCLICK") {
 			$unget_event (en)
 			return False
 		}
 		$sleep (0.18)
-		if !(en2 = $get_event ()) {
+		if !(en2 = $get_event_nomotion ()) {
 			$unget_event (en)
 			return False
 		}
@@ -851,6 +897,22 @@ method Wm.MainLoop (forever=True, onMove=None, onIdle=None)
 
 		if (not e) {
 			$sleep (CHECK_EVERY)
+			idle += 1
+			if (idle == min (2, NIDLE) and onIdle)
+				onIdle ()
+			if (idle > NIDLE) {
+				# release Main Gui Lock
+				$PLOCK.release ()
+				# kickstart hibernator
+				$BHLOCK.release ()
+				# wait for OK
+				$HBLOCK.acquire ()
+				# acquire MGL
+				$PLOCK.acquire ()
+				idle = 0
+			}
+			continue
+		} else if (e [0] == "MOTION") {
 			w = $B.where ()
 			if (w != LAST)  {
 				# tofix (modal?)
@@ -858,22 +920,6 @@ method Wm.MainLoop (forever=True, onMove=None, onIdle=None)
 				else if (onMove) onMove (*w)
 				else $winstack [-1].moved (w)
 				LAST = w
-			} else {
-				idle += 1
-				if (idle == min (2, NIDLE) and onIdle)
-					onIdle ()
-				if (idle > NIDLE) {
-					# release Main Gui Lock
-					$PLOCK.release ()
-					# kickstart hibernator
-					$BHLOCK.release ()
-					# wait for OK
-					$HBLOCK.acquire ()
-					# acquire MGL
-					$PLOCK.acquire ()
-					idle = 0
-				}
-				continue
 			}
 		} else if (e [0] == 'CLICK') {
 			b, x, y = e [1], e [2], e [3]
@@ -942,6 +988,8 @@ method Wm.MainLoop (forever=True, onMove=None, onIdle=None)
 					break
 		} else if (e [0] == 'exit')
 			break
+		else if (e [0] != "UNCLICK")
+			print "IGNORED backend event:", e
 
 		idle = 0
 	} while (forever)

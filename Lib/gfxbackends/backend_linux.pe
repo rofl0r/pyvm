@@ -243,6 +243,7 @@ class Window (**BaseWin)
 		}
 
 		ee = array ('i', 4)
+
 		if (!C.get_event (ee))
 			return
 
@@ -250,7 +251,7 @@ class Window (**BaseWin)
 
 		if (et == 7) {
 			$mouse_xy = ee [1], ee [2]
-			return
+			return "MOTION",
 		}
 
 		if (et == 0) {

@@ -273,7 +273,7 @@ class PullDown (*widget)
 			c = -1
 		} else c = $item_at (y)
 
-		if (!$wm.idle_for (0.04))
+		if (!$wm.idle_for (0.001))
 			return
 
 		if (c != $Current) {

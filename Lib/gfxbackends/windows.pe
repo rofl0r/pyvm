@@ -663,7 +663,7 @@ class Windows
 				$END.release ()
 			}
 
-			if.continue (!e) {
+			if.continue (!e or e [0] == "MOTION") {
 				xx, yy = $gfx.where ()
 				if (xx == x and yy == y)
 					continue
