@@ -141,9 +141,14 @@ class Wm
 		if (!$Alive) return
 
 		with ($LOCKED) {
-			f (*args, **kwargs)
-			if ($Hibernating) 
-				$flush ()
+			if ($B.CanInterruptHibernation) {
+				$pqueue.append ((f, args, kwargs))
+				$B.unblock ()
+			} else {
+				f (*args, **kwargs)
+				if ($Hibernating) 
+					$flush ()
+			}
 		}
 	}
 
@@ -154,8 +159,13 @@ class Wm
 
 		with ($LOCKED) {
 			if (!$Alive) return
-			f (*args, **kwargs)
-			$flush ()
+			if ($B.CanInterruptHibernation) {
+				$pqueue.append ((f, args, kwargs))
+				$B.unblock ()
+			} else {
+				f (*args, **kwargs)
+				$flush ()
+			}
 		}
 	}
 

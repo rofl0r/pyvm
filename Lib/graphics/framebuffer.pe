@@ -122,6 +122,9 @@ class FrameBuffer
 	method blit_data (x, y, data, w, h)
 		C.fb_put_image ($fb, data, x, y, 0, 0, w, h, w, h)
 
+	method blit_data2 (x, y, data, w, h, sw, sh)
+		C.fb_put_image ($fb, data, x, y, 0, 0, w, h, sw, sh)
+
 	method draw_line (x1, y1, x2, y2, c)
 		C.fb_draw_line ($fb, x1, y1, x2, y2, c)
 

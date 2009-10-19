@@ -46,8 +46,7 @@ __autosem__
 # routines for sharing a framebuffer and an IPC channel
 
 import DLL, ipc, random, os, time, thread
-
-FrameBuffer = importFB ()
+from graphics.framebuffer import FrameBuffer
 
 shmget = DLL.libcload ("i", "shmget", "iii")
 shmat  = DLL.libcload ("i", "shmat", "iii")

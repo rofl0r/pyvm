@@ -43,6 +43,32 @@ XSetWindowAttributes = straight_struct (
 	'cursor'
 );
 
+XGetWindowAttributes = straight_struct (
+	'x',
+	'y',
+	'width',
+	'height',
+	'border_width',
+	'depth',
+	'visual',
+	'root',
+	'class',
+	'bit_gravity',
+	'win_gravity',
+	'backing_store',
+	'backing_planes',
+	'backing_pixel',
+	'save_under',
+	'colormap',
+	'map_installed',
+	'map_state',
+	'all_event_masks',
+	'your_event_mask',
+	'do_not_propagate_mask',
+	'override_redirect',
+	'screen'	
+)
+
 XSizeHints = straight_struct (
 	'flags',
 	'x', 'y',
@@ -539,6 +565,10 @@ i XUnloadFont ii
 i XUnmapWindow ii
 i XWithdrawWindow iii
 i XWidthOfScreen i
+i XGetWindowAttributes iip32
+i XGetKeyboardMapping iiip32
+i XKeycodeToKeysym iii
+i XkbIgnoreExtension i
 """;
 
 # load functions from libX11
@@ -657,49 +687,7 @@ def XTranslateCoordinates (display, src_w, dest_w, src_x, src_y)
 
 for (n, f in XFunc.__dict__.items ())
 	if (n [0] == 'X' and n not in globals ())
-		globals ()[n] = f;
+		globals ()[n] = f
 
-xxx = globals ().keys ();
-__all__ = [k for (k in xxx) if (k [0] == 'X')];
-
-#
-# basic testing
-#
-
-if (__name__ == '__main__')
-{
-	width, height = 640, 480;
-	D = XOpenDisplay ();
-	attr = XSetWindowAttributes ();
-	attr.backing_store = XConst.Always;
-	W = XCreateWindow (D, XDefaultRootWindow (D),
-				 0, 0, width, height, 1, 0, 0, 0,
-				 XConst.CWBackingStore, attr);
-	sh = XSizeHints ();
-	sh.min_width = sh.max_width = width;
-	sh.min_height = sh.max_height = height;
-	sh.flags = XConst.PMinSize | XConst.PMaxSize;
-	XSetNormalHints (D, W, sh);
-	XMapWindow (D, W);
-	XFlush (D);
-	XStoreName (D, W, 'xxxx');
-	v = XGCValues ();
-	v.foreground = 65535;
-	stdGC = XCreateGC (D, W, XConst.GCForeground, v);
-	XDrawLine (D, W, stdGC, 0, 0, 640, 480);
-	XFillRectangle (D, W, stdGC, 0, 0, 640, 200);
-	XFlush (D);
-	from time import sleep;
-
-XSelectInput (D, W, XConst.KeyPressMask|XConst.KeyReleaseMask);
-while (1) {
-
-	if (XEventsQueued (D, 2)) {
-		E = XEvent ();
-		XNextEvent (D, E);
-		print "EVENT:", E.type;
-	}
-	sleep (0.001);
-}
-
-}
+xxx = globals ().keys ()
+__all__ = [k for (k in xxx) if (k [0] == 'X')]

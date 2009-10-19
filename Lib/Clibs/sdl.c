@@ -22,6 +22,7 @@ typedef struct {
 	SDL_Surface *screen;
 	int width, height;
 	int bpp;
+	int blocked;
 } Display;
 
 int sizeof_sdl ()
@@ -76,6 +77,7 @@ int init (Display *d, int w, int h, int depth, int ret[])
 	ret [1] = (int) d->screen->pixels;
 	d->width = ret [2] = d->screen->w;
 	d->height = ret [3] = d->screen->h;
+	d->blocked = 0;
 	ret [4] = (int) d->screen;
 	ret [5] = d->screen->format->Rshift;
 	ret [6] = d->screen->format->Gshift;
@@ -109,7 +111,9 @@ void flush (Display *d, int x0, int y0, int x1, int y1)
 			y1 = d->height;
 		if (x1 + x0 > d->width)
 			x1 = d->width;
+		SDL_LockSurface (d->screen);
 		SDL_UpdateRect (d->screen, x0, y0, x1 - x0, y1 - y0);
+		SDL_UnlockSurface (d->screen);
 	}
 }
 
@@ -130,7 +134,18 @@ void move_mouse (int x, int y)
 
 void block_until_event (Display *d)
 {
+	d->blocked = 1;
 	SDL_WaitEvent (0);
+	d->blocked = 0;
+}
+
+void unblock (Display *d)
+{
+	if (d->blocked) {
+		SDL_Event E;
+		E.type = SDL_USEREVENT;
+		SDL_PushEvent (&E);
+	}
 }
 
 int get_event (Display *d, int ret[])
@@ -262,6 +277,7 @@ const char ABI [] =
 "- where		p32		\n"
 "- move_mouse		ii		\n"
 "- block_until_event!	s		\n"
+"- unblock		s		\n"
 "i get_event		sp32		\n"
 "- terminate		-		\n"
 "i create_fb		siip32		\n"

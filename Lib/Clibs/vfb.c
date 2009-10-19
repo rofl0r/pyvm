@@ -525,7 +525,7 @@ void fb_to_rgb (fb *f, u24 out[])
 
 	switch (f->depth) {
 	case 1: {
-		uchar *buf = f->fb8, b;
+		uchar *buf = f->fb8;
 		for (i = 0; i < n; i++) {
 			out [i].r = out [i].g = out [i].b = *buf++;
 /*

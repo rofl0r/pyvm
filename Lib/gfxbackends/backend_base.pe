@@ -13,6 +13,8 @@ class Exit;
 
 class Window
 {
+	CanInterruptHibernation = False
+
 	# assuming full-screen mode. override
 	method screen_size ()
 		return $width, $height

@@ -111,7 +111,8 @@ class Display (FBbase)
 	# drawing functions are queued until the flush.
 	# this may be better for caching. (Looks good)
 	method qdraw (f, *args)
-		$Q.append ((f, args))
+		f (*args)
+#		$Q.append ((f, args))
 
 	method shutdown ()
 	{
@@ -167,6 +168,8 @@ Translate = {
 
 class Window (**BaseWin)
 {
+	CanInterruptHibernation = True
+
 	method __init__ (w=640, h=480)
 	{
 		$dpy = Display (w, h)
@@ -229,6 +232,9 @@ class Window (**BaseWin)
 			tt = max ($KEY_REPEAT_MS - (now () - $CURRENT_KEY_T), 0)
 			if (tt) sleep (tt)
 		}
+
+	method unblock ()
+		sdl.unblock ($dpy.dpy)
 
 	CURRENT_KEY = None
 	CURRENT_KEY_T = 0
