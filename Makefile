@@ -45,3 +45,6 @@ wd:
 alltime:
 	# diff cwd vs first commit ever
 	pyvm git diff ce92aa4a98 | pyvm diffstat --color
+
+sig:
+	pyvm git sigbranch master

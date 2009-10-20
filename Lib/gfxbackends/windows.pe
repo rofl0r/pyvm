@@ -768,7 +768,7 @@ class Windows
 			$L.acquire ()
 			e = $gfx.get_event ()
 
-			if (e) {
+			if (e and e [0] != "MOTION") {
 				$pevent = e
 				return
 			}

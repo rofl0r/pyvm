@@ -557,20 +557,21 @@ class avwidget
 USAGE = """Usage: avplay [-options] <filename>
 Video player
 
- -i	: show info about video and exit
- -p	: start playing immediately
- -s	: file is streamed, its size is checked and playback auto-resumes
- -f	: full screen
- -m	: mono audio
- -e	: exit after finished
- -2x	: double size
- --f	: no gui. just decode everything as quickly as possible (libav* testing)
+ -i		: show info about video and exit
+ -p		: start playing immediately
+ -s		: file is streamed, its size is checked and playback auto-resumes
+ -f		: full screen
+ -m		: mono audio
+ -e		: exit after finished
+ -sc <factor>	: magnify by factor (1.5, etc)
+ --f		: no gui. just decode everything as quickly as possible (libav* testing)
 """
 
 if (__name__ == __main__)
 {
-	info_only, fullscreen, x2, start_play, streamed, mono, opener, vexit, ftest =
-		sys.argp.check_switches ("-i", "-f", "-2x", "-p", "-s", "-m", "-open", "-e", "--f")
+	mfact = sys.argp.check_vswitch ("-sc")
+	info_only, fullscreen, start_play, streamed, mono, opener, vexit, ftest =
+		sys.argp.check_switches ("-i", "-f", "-p", "-s", "-m", "-open", "-e", "--f")
 	if (@sysconfig.GETCONF ("nostereo"))
 		mono = True
 
@@ -645,9 +646,12 @@ if (__name__ == __main__)
 		if (vr > sr)
 			WxH = wm.width, int (wm.width / vr)
 		else WxH = int (wm.height * vr), wm.height
-	} else if (x2) {
-		wm = gui.Wm (2 * width + 100, 2 * height + 74, KeyCtrl=KeyCtrl)
-		WxH = 2 * width, 2 * height
+	} else if (mfact) {
+		mfact = float (mfact)
+		rw = int (mfact * width)
+		rh = int (mfact * height)
+		wm = gui.Wm (rw + 100, rh + 74, KeyCtrl=KeyCtrl)
+		WxH = rw, rh
 	} else {
 		wm = gui.Wm (width + 100, height + 74, KeyCtrl=KeyCtrl)
 		WxH = width, height
