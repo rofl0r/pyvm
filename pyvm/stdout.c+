@@ -77,7 +77,7 @@ static void print_one (Rdata arg)
 		print_with_call (S.as_string);
 	}
 	ncase RCHAR: {
-		print_with_call ((StringObj*) char_string (arg.c));
+		print_with_call ((StringObj*) char_string ((unsigned char)arg.c));
 	}
 	ncase RSTR: {
 		REFPTR S = new StringObj (arg.s);

@@ -299,7 +299,7 @@ __object__ *RegmatchObj.__group (int i)
 	int l = eo - so;
 	if (l < 2) {
 		if (l == 1)
-			return char_string (S.as_string->str [so]);
+			return char_string ((unsigned char)S.as_string->str [so]);
 		return NILstring;
 	}
 	return new StringObj binctor (S.as_string->str + so, l);
