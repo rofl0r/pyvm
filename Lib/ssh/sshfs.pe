@@ -54,6 +54,12 @@ class sshfs_wsafe (**sshfs_ro)
 		$sftp.mkdir ($home + path, mode=mode)
 		return True
 	}
+
+	method do_chmod (path, mode)
+	try {
+		$sftp.chmod ($home + path, mode)
+		return True
+	}
 }
 
 # full write
@@ -85,7 +91,7 @@ USAGE = """pyvm sshfs [options] <mount-point> <host>
 RESTRICTIONS:
 
  - At the moment removing files and directories is not implemented. Use sshell
-   to do that. chmod/chown isn't implemented either, use sshell.
+   to do that.
  - This implementation doesn't work well with files bigger than 2GB (1<<31).
    Programs are considered broken until proven correct through testing and it
    has not been possible to test such a setup. Send mail.

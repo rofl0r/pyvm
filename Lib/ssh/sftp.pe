@@ -28,6 +28,7 @@ namespace FXP
 	READ     = 5
 	WRITE    = 6
 	LSTAT    = 7
+	SETSTAT  = 9
 	OPENDIR  = 11
 	READDIR  = 12
 	REMOVE   = 13
@@ -252,6 +253,9 @@ class SFTP
 			raise Error ("Bad path %s" %p)
 		return parse_name (ppacket (reply [4:])) [0]
 	}
+
+	method chmod (f, mode)
+		checkstatus ($send_command (FXP.SETSTAT, f, 4, mode & 0x1ff))
 }
 
 def packet (*args)

@@ -210,6 +210,19 @@ fprintf (stderr, "c %s mode=%x\n", __func__, mode);
 	return res;
 }
 
+static ufuse_chmod (const char *path, mode_t mode)
+{
+if (Debug)
+fprintf (stderr, "c %s mode=%x\n", __func__, mode);
+	LOCK
+	WBYTE (9);
+	WINT (mode);
+	WPATH (path);
+	int res = DO ();
+	UNLOCK
+	return res;
+}
+
 struct fuse_operations ufuse_oper;
 
 int main(int argc, char *argv[])
@@ -223,6 +236,7 @@ int main(int argc, char *argv[])
 	IFBF(0)  ufuse_oper.getattr	= ufuse_getattr;
 	IFBF(3)  ufuse_oper.readdir	= ufuse_readdir;
 	IFBF(5)  ufuse_oper.mkdir	= ufuse_mkdir;
+	IFBF(11) ufuse_oper.chmod	= ufuse_chmod;
 	IFBF(13) ufuse_oper.truncate	= ufuse_truncate;
 	IFBF(15) ufuse_oper.open	= ufuse_open;
 	IFBF(16) ufuse_oper.read	= ufuse_read;

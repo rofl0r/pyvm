@@ -248,6 +248,14 @@ class mounter
 				rez = guard (False, $ops.do_mkdir, path, mode) ? 0 : -2
 				$writes (rez)
 			}
+			if.continue (req == 9) {
+				if.continue ($ops.ReadOnly)
+					$writes (-C.eacces)
+				mode = $read_int ()
+				path = $read_path ()
+				rez = guard (False, $ops.do_chmod, path, mode) ? 0 : -2
+				$writes (rez)
+			}
 			print "UNEXPECTED TYPE:", req
 			break
 		}
