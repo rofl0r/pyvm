@@ -16,11 +16,12 @@ import thread, os
 BEEP_LOCK = thread.xlock ()
 
 def audio_beep (hz, dur, vol)
-with (BEEP_LOCK) {
+with (BEEP_LOCK) try {
 	n = int (dur * 11025)
 	a = _buffer (2 * n)
 	dev.C.make_harmonic (a, n, hz, int (32000 * minmax (0, vol, 100) / 100.0))
 	d = dev.AudioDev ()
+	# test zero volume?
 	if (!d.grab (11025, 1))
 		return False
 	d.play (a)
@@ -29,7 +30,7 @@ with (BEEP_LOCK) {
 }
 
 def console_beep (hz, dur, vol)
-with (BEEP_LOCK) {
+with (BEEP_LOCK) try {
 	cbeep = dev.C.beep
 	fd = os.openfd ("/dev/tty0", os.O_WRONLY, 0) ??
 	     os.openfd ("/dev/console", os.O_WRONLY, 0)
@@ -39,6 +40,15 @@ with (BEEP_LOCK) {
 	cbeep (fd, 0)
 	os.close (fd)
 	return True
+}
+
+def terminal_beep (hz, dur, vol)
+with (BEEP_LOCK) try {
+	if (sys.istty) {
+		sys.stdout.write ("\x07")
+		sys.stdout.flush ()
+		return True
+	}
 }
 
 def can_beep_console ()
@@ -52,7 +62,7 @@ def can_beep_console ()
 }
 
 def either_beep (*a)
-	return audio_beep (*a) or console_beep (*a)
+	return audio_beep (*a) or console_beep (*a) or terminal_beep (*a)
 std_beep = can_beep_console () ? console_beep : audio_beep
 
 def bg_beep (hz, dur, vol)
@@ -72,4 +82,5 @@ if (__name__ == __main__)
 	console_beep (900, 0.1, 80)
 	audio_beep (600, 0.1, 80)
 	console_beep (600, 1.1, 80)
+	terminal_beep (600, 1, 1)
 }

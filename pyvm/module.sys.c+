@@ -149,6 +149,8 @@ _module __object__ *tty_size ()
  * toggles the mode. If activated, use pty_getchar ().
  */
 
+extern int istty;
+
 _module __object__ *pty_stdin (REFPTR argv [0])
 {
 	termios ts;
@@ -156,7 +158,6 @@ static	termios orig;
 static	bool state;
 	int fd = fileno (stdin);
 
-	extern int istty;
 	if (!istty)
 		RaiseNotImplemented ("tty_stdin(): not a tty");
 
@@ -264,7 +265,7 @@ slowcold __object__ *import_sys ()
 		("modules", sys_modules.o),
 		("lost+found", lost_n_found.o),
 		("maxint", $INT_MAX),
-		("pyctmp", PYVM_HOME "tmp/pycdir"),
+		("istty", newIntObj (istty)),
 		("version_info", new Tuplen (newIntObj (2), newIntObj (4), newIntObj (1),
 				new StringObj ('final'), newIntObj (0))),
 		("copyright", "pyvm 2.0 (strawman) -- ``there's something wrong with spacetime in pyvm''"),

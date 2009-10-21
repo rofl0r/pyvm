@@ -120,11 +120,14 @@ class mbox (*@mailnews.index.messages)
 			print "Bad date [%s]" %gh ("date", "")
 			date = int (now ())
 		}
+		ref = gh ("in-reply-to", "")
+		if (!ref and "references" in M.HD)
+			ref = gh ("references").split ()[-1]
 		$IL<< "\t".join (("%x"%ID, gh ("message-id", "%x%i"%(ID, ID)),
 		      gh ("subject", "No subject"),
 		      gh ("from", ""),
 		      "%x" %date,
-		      gh ("in-reply-to", "")))
+		      ref))
 	}
 
 	method load_uidls ()

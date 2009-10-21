@@ -281,6 +281,12 @@ class WindowClass (**BaseWin)
 		e = $fifo ? $fifo.get () : None
 		return e -> str ? [e] : e
 	}
+
+	method get_event_blocking ()
+	{
+		e = $fifo.get ()
+		return e -> str ? [e] : e
+	}
 }
 
 def Window (pywm)

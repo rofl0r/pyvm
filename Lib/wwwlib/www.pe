@@ -801,7 +801,7 @@ class main_browser_loop
 				u = H [0]
 				def f ()
 					$JumpBack (n)
-				M << [u.Title (), 1, f]
+				M << [(u.Title () ?? "*error*"), 1, f]
 			}
 		}
 		M.reverse ()
@@ -1364,6 +1364,9 @@ class HistoryPage (**BASEURL)
 	is_visited = mark_visited = void
 	File = "HELLO"
 
+	method Title ()
+		return "History"
+
 	method content_type ()
 		return "text/html"
 
@@ -1394,6 +1397,9 @@ class BookmarkPage (**BASEURL)
 
 	method content_type ()
 		return "text/html"
+
+	method Title ()
+		return "Bookmarks"
 
 	same = void
 

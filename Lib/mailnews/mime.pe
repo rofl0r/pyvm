@@ -25,6 +25,7 @@ MULTIPARTe = re.re (r'multipart/.*?\s*boundary=(\S+)', re.I)
 FILENAMEe  = re.re (r'.*?filename\s*=\s*"(.*?)"', re.I)
 PARTNAMEe  = re.re (r'.*?name\s*=\s*"(.*?)"', re.I)
 CHARSETRe  = re.re (r'.*?charset=(.*)', re.I)
+HDRSEPRe   = re.compile ("\r?\n\r?\n").search
 
 class Mime
 {
@@ -33,17 +34,19 @@ class Mime
 		# Useful for PGP/Mime
 		$text = txt
 
-		nn = txt.find ('\n\n')
+		try nn = HDRSEPRe (txt).start ()
+		except nn = -1
+
 		$H = None
 		if (nn == -1) {
 			# theoretically invalid but has been seen
 			print "Message without body"
-			try parse_headers (txt [:nn])
+			try list (parse_headers (txt [:nn]))
 			except $H = []
 		}
 
 		if ($H is None)
-			$H = parse_headers (txt [:nn])
+			$H = [x for (x in parse_headers (txt [:nn]))]
 		$HD = dict ($H)
 
 		ctp, cdt = rfc822.parse_header ($HD.get ("content-type", "text/plain"))
@@ -165,21 +168,19 @@ def parse_header (l)
 
 def parse_headers (txt)
 {
-	if (!txt) return []
+	if (!txt) return
 
 	H = []
 	l = ''
 	if (txt [0] != '\n')
-		for (i in txt.split ('\n'))	# as generator...
+		for (i in txt.split ('\n'))
 			if (i [0] in ' \t')
-				l += ' ' + i.lstrip ()
+				l += ' ' + i.strip ()
 			else {
-				if (l) H.append (parse_header (l))
-				l = i
-
+				if (l) yield parse_header (l)
+				l = i.rstrip ()
 			}
-	if (l) H.append (parse_header (l))
-	return H
+	if (l) yield parse_header (l)
 }
 
 def lfind0 (lst, f0)
@@ -254,9 +255,9 @@ namespace rfc822
 		s = rfc822.split (h, sep)
 		d = {}
 		for (x in s [1:])
-			if ("=" not in x)
-				print "rfc822 BAD header?:", h
-			else {
+			if ("=" not in x) {
+				if (x) print "rfc822 BAD header?:", h
+			} else {
 				k, None, v = x.partition ("=")
 				v = v.strip ()
 				if (v [0] == v [-1] == '"')

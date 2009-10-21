@@ -103,6 +103,10 @@ class Process
 		return os.readlink ("/proc/%s/exe"%$pid) ?? "?"
 }
 
+# system uptime
+def uptime ()
+	return float (read_proc ("uptime").split ()[0])
+
 SELF = Process (str (os.getpid ()))
 
 USAGE = "procps, a tool like `ps`,`lsof`, etc.
@@ -111,6 +115,7 @@ Usage:
  procps		: show all pyvm processes
  procps 'a'	: show processes of current user
  procps 'aa'	: show processes of all users
+ procps 'ut'	: show system uptime in seconds
 "
 
 if (__name__ == __main__)
@@ -143,5 +148,7 @@ if (__name__ == __main__)
 			L<< (str (p.pid), p.user (), p.VmRSS (), p.nof (), p.nth (), p.cmdline ())
 
 		print @misc.tabprint (80, ["l", "r", "l", "l", "l", "r"], -1, L)
+	} else if (cmd == "ut") {
+		print uptime ()
 	}
 }

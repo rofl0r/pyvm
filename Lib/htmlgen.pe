@@ -1,6 +1,8 @@
 # HTML Generator. Idea from Richard Jone's blog post "Simple, elegant HTML generation"
 __autosem__
 
+MDRe = @re.compile ("_.*?_|\*.*?\*|/.*?/|`.*?`").splitsep
+
 def esc (t, q=0)
 {
 	if (t -> int)
@@ -14,6 +16,22 @@ def esc (t, q=0)
 	return t
 }
 
+def markdown_expand (x, H)
+{
+	S, P = MDRe (x)
+	if (!P) return S
+	L = [S [0]]
+	for (a, b in zip (S [1:], P)) {
+		s = b [0]
+		if (s == "*") t = H.b
+		else if (s == "_") t = H.em
+		else if (s == "/") t = H.i
+		else if (s == "`") t = H.tt
+		L<< t (b [1:-1])
+		L<< a
+	}
+	return L
+}
 
 class Tag
 {
@@ -21,6 +39,15 @@ class Tag
 		$attributes = attrs ? dict (attrs) : {}
 	method __call__ (*args, **kwargs)
 	{
+		if ("md" in kwargs) {
+			del kwargs ["md"]
+			a = []
+			for (x in args)
+				if (x -> str)
+					a.extend (markdown_expand (x, $HTML))
+				else a.append (x)
+			args = a
+		}
 		$content = [x -> str ? esc (x) : x for (x in args)]
 		try $nl = kwargs.pop ("nl")
 		$attributes.update ({k:esc(v,1) for (k, v in kwargs.items ())})
@@ -90,6 +117,8 @@ if (__name__ == __main__)
 			h.li (h.mytag ("foo", href="hi"))
 			h ("some text")
 		}
+
+	h.p ("Markdown /text/ *is* _possible_ in `pyvm`", md=True)
 
 	print h.dogen ()
 }
