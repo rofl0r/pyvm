@@ -61,7 +61,7 @@ class nntp
 	{
 		$s = @socket.Connect ($serv, $port, 23)
 		g = $greeting = $s.recv ()
-		#print "Connected:", $greeting
+		print "Connected:", $greeting
 		if (g.sw ("200")) $posting = True
 		else if (g.sw ("201")) $posting = False
 		else raise Error ("Connection failed")
@@ -72,7 +72,8 @@ class nntp
 
 	method cmd (s, recon=True)
 	{
-		$s.send (s + '\r\n')
+		try $s.send (s + '\r\n')
+		except raise EOF
 		if !(r = $r.readline ())
 			raise EOF
 		return int (r [:3]), r [4:]
@@ -426,8 +427,7 @@ class newsgroup (*@mailnews.index.messages)
 			return "Can't connect to NNTP server"
 		try data = $NNTP.ARTICLE (i)
 		except (EOF) {
-			$NNTP = None
-			if (!$connect ())
+			if (!$NNTP.connect ())
 				return "Can't re-connect to NNTP server"
 			data = $NNTP.ARTICLE (i)
 		}

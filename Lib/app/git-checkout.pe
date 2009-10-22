@@ -16,15 +16,21 @@ from misc import fprint
 
 VERBOSE = 0
 
-USAGE = "usage: git-checkout <git://host/path> <destination-directory>
+USAGE = "usage: git-checkout [-k] <git://host/path> <destination-directory>
+       git-checkout -p <dir>
        git-checkout -f <git://host/path>
 
 With the first form it fetches the files for the HEAD commit of the
 specified repository. Useful if you just want to download a project
 via git, but not maintain a full repo.
+With '-k' the packfile is kept.
 
-With the second form it just downloads the PACKFILE. After that you
-can use the official git to:
+With '-p' it will assume that the packfile has been fetched and
+saved in 'PACK.pack' and try to extract that in the specified
+directory.
+
+With the third form it downloads the *full history* PACKFILE.
+After that you can use the official git to:
 	git init
 	git unpack-objects < PACK.pack
 and have a nice repo with loose objects
@@ -32,7 +38,10 @@ and have a nice repo with loose objects
 
 if (fullpack = sys.argp.check_switch ("-f")) url = sys.argp.one ()
 else {
-	url, destdir = sys.argp.nargs (2)
+	keep_pack = sys.argp.check_switch ("-k")
+	if (use_pack = sys.argp.check_switch ("-p"))
+		destdir = sys.argp.one ()
+	else url, destdir = sys.argp.nargs (2)
 
 	if (os.access (destdir)) {
 		print "Destination directory %s already exists" % destdir
@@ -75,12 +84,18 @@ def get_packfile (url)
 	s.send (pack ("git-upload-pack %s\0host=%s\0" %(PATH, HOST)))
 	master = None
 	print 'scanning branches'
-	while (p = get_packet ())
-		try {
-			h, p = p.split ()
-			if (p == "refs/heads/master")
-				master = h
-		}
+	try {
+		while (p = get_packet ())
+			try {
+				h, p = p.split ()
+				if (p == "refs/heads/master")
+					master = h
+			}
+	} except {
+		print "Connection closed. Wrong url?"
+		exit ()
+	}
+
 	if (!master) {
 		print "Couldn't find master!"
 		exit ()
@@ -103,7 +118,9 @@ def get_packfile (url)
 	PACK.close ()
 }
 
-get_packfile (url)
+if (fullpack or !use_pack)
+	get_packfile (url)
+
 if (fullpack) {
 	print "OK, packfile saved"
 	exit ()
@@ -125,6 +142,7 @@ print nobj, "objects in pack"
 os.mkdir (destdir)
 
 paths = {}
+addpath = paths.gather
 haves = []
 
 trees = {}
@@ -173,7 +191,7 @@ for (i in *nobj) {
 		sig = SHA ("tree %i\0"%len (data) + data).hexlify ()
 		trees [sig] = data
 	} else if (t == 1) {
-		paths [data [5:45]] = destdir
+		paths [data [5:45]] = [destdir]
 	} else if (t == 7) {
 		deltas.gather (basesha, data)
 	}
@@ -184,35 +202,6 @@ dp.kill ()
 print "%i\ttrees" %len (trees)
 print "%i\tblobs" %len (blobs)
 print "%i\tdeltas" % (deltas ? sum ([len (x) for (x in deltas.values ())]) : 0)
-
-print 'making trees'
-while (trees)
-	for (sig in trees)
-		if.break (sig in paths) {
-			data = trees.pop (sig)
-			parent = paths [sig]
-			for (name, perm, sig in parse_tree (data)) {
-				perm = int (perm, 8)
-				if (perm & 040000) {
-					os.mkdir (parent + name)
-					if (VERBOSE)
-						print "MKDIR:", parent + name
-					paths [sig] = parent + name + "/"
-				} else paths [sig] = parent + name, perm
-			}
-		}
-
-stored = set ()
-print 'saving blobs'
-for (sig, data in blobs.items ()) {
-	path, mode = paths [sig]
-	stored.add (sig)
-	if (VERBOSE)
-		print "saving", len (data), path
-	open (path, "w").write (data)
-	os.chmod (path, mode)
-	haves<< "%s %s" %(path [len (destdir):], sig)
-}
 
 def parse_le (dp)
 {
@@ -228,14 +217,16 @@ def parse_le (dp)
 print 'restoring deltas'
 while (deltas)
 	for (sig in deltas)
-		if.break (sig in stored) {
+		if.break (sig in blobs or sig in trees) {
 			for (data in deltas.pop (sig)) {
 				# patch-delta.c
 				dp = data_parser (data)
 				r8 = dp.r8
 				parse_le (dp)
 				parse_le (dp)
-				src = readfile (paths [sig] [0])
+				if (isblob = (sig in blobs))
+					src = blobs [sig]
+				else src = trees [sig]
 				out = []
 				while (dp.left ()) {
 					cmd = r8 ()
@@ -256,21 +247,54 @@ while (deltas)
 				}
 				# we got our data
 				data = "".join (out)
-				newsig = SHA ("blob %i\0"%len (data) + data).hexlify ()
-				path, mode = paths [newsig]
-				stored.add (newsig)
-				if (VERBOSE)
-					print "saving from delta", len (data), path
-				open (path, "w").write (data)
-				os.chmod (path, mode)
-				haves<< "%s %s" %(path [len (destdir):], newsig)
+				if (isblob)
+					blobs [SHA ("blob %i\0"%len (data) + data).hexlify ()] = data
+				else    trees [SHA ("tree %i\0"%len (data) + data).hexlify ()] = data
 			}
 		}
 	else.for {
-		print "UNresolved cyclic delta!", deltas.keys ()
+		print "UNresolved cyclic deltas!"
+		exit ()
+	}
+print "results in:"
+print " %i\ttrees" %len (trees)
+print " %i\tblobs" %len (blobs)
+#@meminfo.mstat ()
+
+print 'making trees'
+while (trees)
+	for (sig in trees)
+		if.break (sig in paths) {
+			data = trees.pop (sig)
+			for (parent in paths [sig])
+				for (name, perm, sig in parse_tree (data)) {
+					perm = int (perm, 8)
+					if (perm & 040000) {
+						os.mkdir (parent + name)
+						if (VERBOSE)
+							print "MKDIR:", parent + name
+						addpath (sig, parent + name + "/")
+					} else addpath (sig, (parent + name, perm))
+				}
+		}
+	else.for {
+		print "Bad pack: trees"
 		exit ()
 	}
 
-os.remove ("PACK.pack")
+print 'saving blobs'
+for (sig, data in blobs.items ())
+	if (sig not in paths)
+		print "Dead blob:", sig
+	else for (path, mode in paths [sig]) {
+		if (VERBOSE)
+			print "saving", len (data), path, sig
+		open (path, "w").write (data)
+		os.chmod (path, mode)
+		haves<< "%s %s" %(path [len (destdir):], sig)
+	}
+
+if (!keep_pack)
+	os.remove ("PACK.pack")
 # GITHAVE is useful for the "update" op, not implemented yet
 open (destdir + "GITHAVE", "w").write ("\n".join (haves))
