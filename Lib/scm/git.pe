@@ -13,7 +13,7 @@ ReadFile = @scm."git-core".ReadFile
 MakeTagobj = @scm."git-core".make_tag
 
 import os, re, time
-from misc import fprint, tmpfile
+from misc import fprint, tmpfile, yn
 
 USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|tag|pull]
 
@@ -24,7 +24,7 @@ USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|
 	diff <t1> <t2>		: diff two commits (or branches)
 	cat <sha>		: show an object
 	past			: show last commits
-	checkin			: equivalent to 'commit -a' in standard git.
+	checkin	[<msgfile>]	: equivalent to 'commit -a' in standard git.
 	switch <branch>		: switch to other branch (not well tested/checkout not 100% OK)
 	files			: show if there are new untracked files, or missing tracked files
 	files ls		: list indexed files
@@ -640,9 +640,6 @@ if (__name__ == __main__)
 	} else if (cmd == "past") {
 		cmd_past (repo, *nargs (0, 1))
 	} else if (cmd == "checkin") {
-		#if (argv [2:] and argv [2] == "-")
-		#	print need_checkin (repo) ? "Check-in is needed." : "No check-in required."
-		#else
 		if (!need_checkin (repo))
 			print "Already checked-in. Won't make a new commit."
 		else {
@@ -651,7 +648,15 @@ if (__name__ == __main__)
 				print "run 'pyvm git files' and 'pyvm git files update' to resolve"
 				exit ()
 			}
-			msg = read_message ()
+			if (sys.argp.have_args ()) {
+				msg = sys.argp.Readfile ().strip ()
+				print "Commit Message:"
+				print "---------------"
+				print msg
+				print "---------------"
+				if (!yn ("Do commit"))
+					exit ()
+			} else msg = read_message ()
 			print "writting..."
 			cmd_checkin (repo, msg)
 		}

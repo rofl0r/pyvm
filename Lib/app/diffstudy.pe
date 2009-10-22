@@ -17,18 +17,18 @@ VERIFY = 1
 # Verify that our patch is correct?
 VERIFYPATCH = 1
 # maximum number of diffs to check
-MAXDIFF = 24000
+MAXDIFF = 13600
 # save the worst diff in ORIGINAL, MODIFIED, EXTDIFF, INTDIFF, in cwd?
 SAVEBADEST = True
 
 ###########################
-time     = @time.time;
-patch    = @scm.patch.patch;
-patch2   = @scm.diff.pypatch;
-diff     = @scm.diff.external_diff;
-diff2    = @scm.diff.pydiff;
-diffstat = @scm.diff.diffstat;
-fprint   = @misc.fprint;
+time     = @time.time
+patch    = @scm.patch.patch
+patch2   = @scm.diff.pypatch
+diff     = @scm.diff.external_diff
+diff2    = @scm.diff.pydiff
+diffstat = @scm.diff.diffstat
+fprint   = @misc.fprint
 
 def History ()
 {
@@ -45,8 +45,8 @@ def History ()
 			ii += 1
 			fprint ("\r %i diffs /commit: " %len (pairs) + p.sig)
 			pp = d.open (p.parents [0])
-			L = d.open (pp.tree).lsfiles_r (d)
-			D = dict (d.open (p.tree).lsfiles_r (d))
+			L = d.open (pp.tree).lsfiles_r ()
+			D = dict (d.open (p.tree).lsfiles_r ())
 			for (k, v in L)
 				try if (v != D [k]) pairs [v, D [k]] = k
 			p = pp

@@ -134,9 +134,17 @@ def lcs (l1, l2, time=0)
 
 	# Is patch bad?
 	if (time < 4) {
-		LS = set (L);
-		if (len ((S1 - LS) & (S2 - LS)) >= 13)
-			L = fixdiff (l1, l2, L, time + 1);
+		# the limits are tricky as this can be *very* expensive.
+		# If the diff is small, then, yes do try to fix it even
+		# for small common lines, otherwise use a larger value.
+		LS = set (L)
+		rmvs = S1 - LS
+		adds = S2 - LS
+		nmov = len (adds & rmvs)
+		ndiff = len (rmvs) + len (adds)
+		lim = ndiff < 40 ? 4 : 13
+		if (nmov >= lim)
+			L = fixdiff (l1, l2, L, time + 1)
 	}
 
 	return L;
@@ -328,6 +336,10 @@ class Hunk
 	method __init__ ($offset, $rmv, $add)
 		$end = offset + len (rmv)
 
+	# returns whether the hunk hits the end of files (for EOL\n)
+	method hitsend (ORI, MOD)
+		return $offset + len ($rmv) == len (ORI), $offset + len ($add) == len (MOD)
+
 	method __str__ ()
 		return "Hunk %i\n[--%s]\n[++%s]" %($offset, "\n--".join ($rmv), "\n++".join ($add))
 }
@@ -465,7 +477,28 @@ def hunks_by_diff (original, modified)
 		if (h) H.append (h)
 	}
 
-	return Hunks (H, !D1.nl, !D2.nl)
+	# special case: the last line of the two files is the
+	# same, but one file ends in newline while other doesn't.
+	# In this case we must produce:
+	#	- line
+	#	\ No newline at end of file
+	#	+ line
+	# or
+	#	- line
+	#	+ line
+	#	\ No newline at end of file
+	if (D1.nl != D2.nl and L1 [-1] == L2 [-1]) {
+		H.append (Hunk (len (L1) - 1, [L1[-1]], [L1[-1]]))
+		return Hunks (H, !D1.nl, !D2.nl)
+	}
+
+	# Report "no newline at end of file" only if
+	# the last line is part of the real diff "+/-" lines.
+	her, hea = H [-1].hitsend (L1, L2)
+	noeol1 = her and !D1.nl
+	noeol2 = hea and !D2.nl
+
+	return Hunks (H, noeol1, noeol2)
 }
 
 def pydiff (original, modified, f1="", f2="")
