@@ -533,11 +533,14 @@ class page_widget (gui.basecontainer)
 
 			if (aa = $find_clickarea (x, y)) {
 				xx, yy, href = aa
+				def copy_link ()
+					try $wm.Copy ($browser.url.generate (href).url)
 				if (href -> str)
 					M = [
 						["Open in new tab", 1, def () $browser.NewTab (href)],
 						["Open in new tab (no referrer)", 1,
 							 def () $browser.NewTab (href, False)],
+						["Copy link location", 1, copy_link],
 						["Download Link", 1, def () $browser.BgDownload (href)],
 						["Save As", 6, void],
 					]

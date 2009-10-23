@@ -29,8 +29,8 @@ ARC4:
    Copyright (c) April 29, 1997 Kalle Kaukonen.
 
 SHA:
-   SHA-1 in C
-   By Steve Reid <steve@edmweb.com>
+   sha.c from the git project.
+   Based on mozilla-sha, tweaked by git team.
 
 MD5:
    L. Peter Deutsch

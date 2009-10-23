@@ -8,6 +8,9 @@
 __autosem__
 import DLL
 
+# Works but disable it to be sure...
+DoAsmSha = False
+
 namespace C
 {
 	# cases:
@@ -20,7 +23,7 @@ namespace C
 	# Note: if you want to switch mode (from/to asm to/from plain C),
 	# you have to "touch" the file sha.c in order to recompile and
 	# use the new libs.
-	if (DLL.ARCH_586 ()) {
+	if (DoAsmSha and DLL.ARCH_586 ()) {
 		try {
 			# pelf relocatables. (this mess should be fixed in DLL.py)
 			asm = DLL.MakeLib ("asm/sha-x86", "", pelf=1)[1]
@@ -92,7 +95,9 @@ if (__name__ == "__main__")
 		exit ()
 	}
 
-	print digest ("abc").hexlify ().lower () == "a9993e364706816aba3e25717850c26c9cd0d89d"
+	if (digest ("abc").hexlify ().lower () == "a9993e364706816aba3e25717850c26c9cd0d89d")
+		print "OK"
+	else raise Error ("SHA is BROKEN!")
 	data = 1000000 * "a"
 	print digest (data).hexlify ().lower () == "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
 	print data == 1000000 * "a"
@@ -102,6 +107,13 @@ if (__name__ == "__main__")
 	print d.digest ().hexlify ().lower () == "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
 	N = 20
 	import time
+	print "Large buffers"
+	t = time.Timit ()
+	for (i in *N)
+		digest (data)
+	t.mbpsr (len (data) * N, 2)
+	data = "x"*32
+	print "Small buffers"
 	t = time.Timit ()
 	for (i in *N)
 		digest (data)

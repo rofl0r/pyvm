@@ -1,218 +1,337 @@
 /*
- * ftp://ftp.funet.fi/pub/crypt/hash/sha/sha1.c
- * 
- * SHA-1 in C
- * By Steve Reid <steve@edmweb.com>
- * 100% Public Domain
- * 
- * Test Vectors (from FIPS PUB 180-1)
- * "abc"
- * A9993E36 4706816A BA3E2571 7850C26C 9CD0D89D
- * "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
- * 84983E44 1C3BD26E BAAE4AA1 F95129E5 E54670F1
- * A million repetitions of "a"
- * 34AA973C D4C4DAA4 F61EEB2B DBAD2731 6534016F
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; version 2 of the License only.
  */
+
+// this is sha1.c from git, aka "linus et'al sha"
+// Changes by pyvm: whatever is in ASM_SHA, changed function names and the last lines
 
 /*
- * ASM_SHA means that there is an external implementation of hash_block.
- * --sxanth
+ * SHA1 routine optimized to do word accesses rather than byte accesses,
+ * and to avoid unnecessary copies into the context array.
+ *
+ * This was initially based on the Mozilla SHA1 implementation, although
+ * none of the original Mozilla code remains.
  */
 
-typedef unsigned int u_int32_t;
-#define SHA1_SIGNATURE_SIZE 20
-typedef struct {
-    u_int32_t state[5];
-    u_int32_t count[2];
-    unsigned char buffer[64];
-#ifdef ASM_SHA
-    // required by the asm implementation which comes from openssl
-    int num;
-#endif
-} SHA1_CTX;
-
-#ifdef ASM_SHA
-extern void sha1_block_asm_data_order (SHA1_CTX*, const void*, int);
-#endif
-
-/* #define SHA1HANDSOFF * Copies data before messing with it. */
+/* this is only to get definitions for memcpy(), ntohl() and htonl() */
 
 #include <netinet/in.h>	/* htonl() */
 #include <string.h>
 
-static void
-SHA1_Transform(u_int32_t[5], const unsigned char[64]);
+typedef struct {
+#ifndef ASM_SHA
+	unsigned long long size;
+	unsigned int H[5];
+	unsigned int W[16];
+#else
+	unsigned int H[5];
+	unsigned long long size;
+	unsigned int W[16];
+	int num;
+#endif
+} blk_SHA_CTX;
 
-#define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
+#ifdef ASM_SHA
+extern void sha1_block_asm_data_order (blk_SHA_CTX*, const void*, int);
+#endif
 
-/* blk0() and blk() perform the initial expand. */
-/* I got the idea of expanding during the round function from SSLeay */
-#define blk0(i) (block->l[i] = htonl(block->l[i]))
-#define blk(i) (block->l[i&15] = rol(block->l[(i+13)&15]^block->l[(i+8)&15] \
-    ^block->l[(i+2)&15]^block->l[i&15],1))
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 
-/* (R0+R1), R2, R3, R4 are the different operations used in SHA1 */
-#define R0(v,w,x,y,z,i) z+=((w&(x^y))^y)+blk0(i)+0x5A827999+rol(v,5);w=rol(w,30);
-#define R1(v,w,x,y,z,i) z+=((w&(x^y))^y)+blk(i)+0x5A827999+rol(v,5);w=rol(w,30);
-#define R2(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0x6ED9EBA1+rol(v,5);w=rol(w,30);
-#define R3(v,w,x,y,z,i) z+=(((w|x)&y)|(w&x))+blk(i)+0x8F1BBCDC+rol(v,5);w=rol(w,30);
-#define R4(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0xCA62C1D6+rol(v,5);w=rol(w,30);
+/*
+ * Force usage of rol or ror by selecting the one with the smaller constant.
+ * It _can_ generate slightly smaller code (a constant of 1 is special), but
+ * perhaps more importantly it's possibly faster on any uarch that does a
+ * rotate with a loop.
+ */
 
+#define SHA_ASM(op, x, n) ({ unsigned int __res; __asm__(op " %1,%0":"=r" (__res):"i" (n), "0" (x)); __res; })
+#define SHA_ROL(x,n)	SHA_ASM("rol", x, n)
+#define SHA_ROR(x,n)	SHA_ASM("ror", x, n)
 
-/* Hash a single 512-bit block. This is the core of the algorithm. */
+#else
+
+#define SHA_ROT(X,l,r)	(((X) << (l)) | ((X) >> (r)))
+#define SHA_ROL(X,n)	SHA_ROT(X,n,32-(n))
+#define SHA_ROR(X,n)	SHA_ROT(X,32-(n),n)
+
+#endif
+
+/*
+ * If you have 32 registers or more, the compiler can (and should)
+ * try to change the array[] accesses into registers. However, on
+ * machines with less than ~25 registers, that won't really work,
+ * and at least gcc will make an unholy mess of it.
+ *
+ * So to avoid that mess which just slows things down, we force
+ * the stores to memory to actually happen (we might be better off
+ * with a 'W(t)=(val);asm("":"+m" (W(t))' there instead, as
+ * suggested by Artur Skawina - that will also make gcc unable to
+ * try to do the silly "optimize away loads" part because it won't
+ * see what the value will be).
+ *
+ * Ben Herrenschmidt reports that on PPC, the C version comes close
+ * to the optimized asm with this (ie on PPC you don't want that
+ * 'volatile', since there are lots of registers).
+ *
+ * On ARM we get the best code generation by forcing a full memory barrier
+ * between each SHA_ROUND, otherwise gcc happily get wild with spilling and
+ * the stack frame size simply explode and performance goes down the drain.
+ */
+
+#if defined(__i386__) || defined(__x86_64__)
+  #define setW(x, val) (*(volatile unsigned int *)&W(x) = (val))
+#elif defined(__GNUC__) && defined(__arm__)
+  #define setW(x, val) do { W(x) = (val); __asm__("":::"memory"); } while (0)
+#else
+  #define setW(x, val) (W(x) = (val))
+#endif
+
+/*
+ * Performance might be improved if the CPU architecture is OK with
+ * unaligned 32-bit loads and a fast ntohl() is available.
+ * Otherwise fall back to byte loads and shifts which is portable,
+ * and is faster on architectures with memory alignment issues.
+ */
+
+#if defined(__i386__) || defined(__x86_64__) || \
+    defined(__ppc__) || defined(__ppc64__) || \
+    defined(__powerpc__) || defined(__powerpc64__) || \
+    defined(__s390__) || defined(__s390x__)
+
+#define get_be32(p)	ntohl(*(unsigned int *)(p))
+#define put_be32(p, v)	do { *(unsigned int *)(p) = htonl(v); } while (0)
+
+#else
+
+#define get_be32(p)	( \
+	(*((unsigned char *)(p) + 0) << 24) | \
+	(*((unsigned char *)(p) + 1) << 16) | \
+	(*((unsigned char *)(p) + 2) <<  8) | \
+	(*((unsigned char *)(p) + 3) <<  0) )
+#define put_be32(p, v)	do { \
+	unsigned int __v = (v); \
+	*((unsigned char *)(p) + 0) = __v >> 24; \
+	*((unsigned char *)(p) + 1) = __v >> 16; \
+	*((unsigned char *)(p) + 2) = __v >>  8; \
+	*((unsigned char *)(p) + 3) = __v >>  0; } while (0)
+
+#endif
+
+/* This "rolls" over the 512-bit array */
+#define W(x) (array[(x)&15])
+
+/*
+ * Where do we get the source from? The first 16 iterations get it from
+ * the input data, the next mix it from the 512-bit array.
+ */
+#define SHA_SRC(t) get_be32(data + t)
+#define SHA_MIX(t) SHA_ROL(W(t+13) ^ W(t+8) ^ W(t+2) ^ W(t), 1)
+
+#define SHA_ROUND(t, input, fn, constant, A, B, C, D, E) do { \
+	unsigned int TEMP = input(t); setW(t, TEMP); \
+	E += TEMP + SHA_ROL(A,5) + (fn) + (constant); \
+	B = SHA_ROR(B, 2); } while (0)
+
+#define T_0_15(t, A, B, C, D, E)  SHA_ROUND(t, SHA_SRC, (((C^D)&B)^D) , 0x5a827999, A, B, C, D, E )
+#define T_16_19(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (((C^D)&B)^D) , 0x5a827999, A, B, C, D, E )
+#define T_20_39(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (B^C^D) , 0x6ed9eba1, A, B, C, D, E )
+#define T_40_59(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, ((B&C)+(D&(B^C))) , 0x8f1bbcdc, A, B, C, D, E )
+#define T_60_79(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (B^C^D) ,  0xca62c1d6, A, B, C, D, E )
 
 #ifndef ASM_SHA
-static void
-SHA1_Transform(u_int32_t state[5], const unsigned char buffer[64])
+static void blk_SHA1_Block(blk_SHA_CTX *ctx, const unsigned int *data)
 {
-    u_int32_t a, b, c, d, e;
-    typedef union {
-	unsigned char c[64];
-	u_int32_t l[16];
-    } CHAR64LONG16;
-    CHAR64LONG16 *block;
+	unsigned int A,B,C,D,E;
+	unsigned int array[16];
 
-#ifdef SHA1HANDSOFF
-    static unsigned char workspace[64];
-    block = (CHAR64LONG16 *) workspace;
-    memcpy(block, buffer, 64);
-#else
-    block = (CHAR64LONG16 *) buffer;
-#endif
-    /* Copy context->state[] to working vars */
-    a = state[0];
-    b = state[1];
-    c = state[2];
-    d = state[3];
-    e = state[4];
-    /* 4 rounds of 20 operations each. Loop unrolled. */
-    R0(a,b,c,d,e, 0); R0(e,a,b,c,d, 1); R0(d,e,a,b,c, 2); R0(c,d,e,a,b, 3);
-    R0(b,c,d,e,a, 4); R0(a,b,c,d,e, 5); R0(e,a,b,c,d, 6); R0(d,e,a,b,c, 7);
-    R0(c,d,e,a,b, 8); R0(b,c,d,e,a, 9); R0(a,b,c,d,e,10); R0(e,a,b,c,d,11);
-    R0(d,e,a,b,c,12); R0(c,d,e,a,b,13); R0(b,c,d,e,a,14); R0(a,b,c,d,e,15);
-    R1(e,a,b,c,d,16); R1(d,e,a,b,c,17); R1(c,d,e,a,b,18); R1(b,c,d,e,a,19);
-    R2(a,b,c,d,e,20); R2(e,a,b,c,d,21); R2(d,e,a,b,c,22); R2(c,d,e,a,b,23);
-    R2(b,c,d,e,a,24); R2(a,b,c,d,e,25); R2(e,a,b,c,d,26); R2(d,e,a,b,c,27);
-    R2(c,d,e,a,b,28); R2(b,c,d,e,a,29); R2(a,b,c,d,e,30); R2(e,a,b,c,d,31);
-    R2(d,e,a,b,c,32); R2(c,d,e,a,b,33); R2(b,c,d,e,a,34); R2(a,b,c,d,e,35);
-    R2(e,a,b,c,d,36); R2(d,e,a,b,c,37); R2(c,d,e,a,b,38); R2(b,c,d,e,a,39);
-    R3(a,b,c,d,e,40); R3(e,a,b,c,d,41); R3(d,e,a,b,c,42); R3(c,d,e,a,b,43);
-    R3(b,c,d,e,a,44); R3(a,b,c,d,e,45); R3(e,a,b,c,d,46); R3(d,e,a,b,c,47);
-    R3(c,d,e,a,b,48); R3(b,c,d,e,a,49); R3(a,b,c,d,e,50); R3(e,a,b,c,d,51);
-    R3(d,e,a,b,c,52); R3(c,d,e,a,b,53); R3(b,c,d,e,a,54); R3(a,b,c,d,e,55);
-    R3(e,a,b,c,d,56); R3(d,e,a,b,c,57); R3(c,d,e,a,b,58); R3(b,c,d,e,a,59);
-    R4(a,b,c,d,e,60); R4(e,a,b,c,d,61); R4(d,e,a,b,c,62); R4(c,d,e,a,b,63);
-    R4(b,c,d,e,a,64); R4(a,b,c,d,e,65); R4(e,a,b,c,d,66); R4(d,e,a,b,c,67);
-    R4(c,d,e,a,b,68); R4(b,c,d,e,a,69); R4(a,b,c,d,e,70); R4(e,a,b,c,d,71);
-    R4(d,e,a,b,c,72); R4(c,d,e,a,b,73); R4(b,c,d,e,a,74); R4(a,b,c,d,e,75);
-    R4(e,a,b,c,d,76); R4(d,e,a,b,c,77); R4(c,d,e,a,b,78); R4(b,c,d,e,a,79);
-    /* Add the working vars back into context.state[] */
-    state[0] += a;
-    state[1] += b;
-    state[2] += c;
-    state[3] += d;
-    state[4] += e;
-    /* Wipe variables */
-    a = b = c = d = e = 0;
+	A = ctx->H[0];
+	B = ctx->H[1];
+	C = ctx->H[2];
+	D = ctx->H[3];
+	E = ctx->H[4];
+
+	/* Round 1 - iterations 0-16 take their input from 'data' */
+	T_0_15( 0, A, B, C, D, E);
+	T_0_15( 1, E, A, B, C, D);
+	T_0_15( 2, D, E, A, B, C);
+	T_0_15( 3, C, D, E, A, B);
+	T_0_15( 4, B, C, D, E, A);
+	T_0_15( 5, A, B, C, D, E);
+	T_0_15( 6, E, A, B, C, D);
+	T_0_15( 7, D, E, A, B, C);
+	T_0_15( 8, C, D, E, A, B);
+	T_0_15( 9, B, C, D, E, A);
+	T_0_15(10, A, B, C, D, E);
+	T_0_15(11, E, A, B, C, D);
+	T_0_15(12, D, E, A, B, C);
+	T_0_15(13, C, D, E, A, B);
+	T_0_15(14, B, C, D, E, A);
+	T_0_15(15, A, B, C, D, E);
+
+	/* Round 1 - tail. Input from 512-bit mixing array */
+	T_16_19(16, E, A, B, C, D);
+	T_16_19(17, D, E, A, B, C);
+	T_16_19(18, C, D, E, A, B);
+	T_16_19(19, B, C, D, E, A);
+
+	/* Round 2 */
+	T_20_39(20, A, B, C, D, E);
+	T_20_39(21, E, A, B, C, D);
+	T_20_39(22, D, E, A, B, C);
+	T_20_39(23, C, D, E, A, B);
+	T_20_39(24, B, C, D, E, A);
+	T_20_39(25, A, B, C, D, E);
+	T_20_39(26, E, A, B, C, D);
+	T_20_39(27, D, E, A, B, C);
+	T_20_39(28, C, D, E, A, B);
+	T_20_39(29, B, C, D, E, A);
+	T_20_39(30, A, B, C, D, E);
+	T_20_39(31, E, A, B, C, D);
+	T_20_39(32, D, E, A, B, C);
+	T_20_39(33, C, D, E, A, B);
+	T_20_39(34, B, C, D, E, A);
+	T_20_39(35, A, B, C, D, E);
+	T_20_39(36, E, A, B, C, D);
+	T_20_39(37, D, E, A, B, C);
+	T_20_39(38, C, D, E, A, B);
+	T_20_39(39, B, C, D, E, A);
+
+	/* Round 3 */
+	T_40_59(40, A, B, C, D, E);
+	T_40_59(41, E, A, B, C, D);
+	T_40_59(42, D, E, A, B, C);
+	T_40_59(43, C, D, E, A, B);
+	T_40_59(44, B, C, D, E, A);
+	T_40_59(45, A, B, C, D, E);
+	T_40_59(46, E, A, B, C, D);
+	T_40_59(47, D, E, A, B, C);
+	T_40_59(48, C, D, E, A, B);
+	T_40_59(49, B, C, D, E, A);
+	T_40_59(50, A, B, C, D, E);
+	T_40_59(51, E, A, B, C, D);
+	T_40_59(52, D, E, A, B, C);
+	T_40_59(53, C, D, E, A, B);
+	T_40_59(54, B, C, D, E, A);
+	T_40_59(55, A, B, C, D, E);
+	T_40_59(56, E, A, B, C, D);
+	T_40_59(57, D, E, A, B, C);
+	T_40_59(58, C, D, E, A, B);
+	T_40_59(59, B, C, D, E, A);
+
+	/* Round 4 */
+	T_60_79(60, A, B, C, D, E);
+	T_60_79(61, E, A, B, C, D);
+	T_60_79(62, D, E, A, B, C);
+	T_60_79(63, C, D, E, A, B);
+	T_60_79(64, B, C, D, E, A);
+	T_60_79(65, A, B, C, D, E);
+	T_60_79(66, E, A, B, C, D);
+	T_60_79(67, D, E, A, B, C);
+	T_60_79(68, C, D, E, A, B);
+	T_60_79(69, B, C, D, E, A);
+	T_60_79(70, A, B, C, D, E);
+	T_60_79(71, E, A, B, C, D);
+	T_60_79(72, D, E, A, B, C);
+	T_60_79(73, C, D, E, A, B);
+	T_60_79(74, B, C, D, E, A);
+	T_60_79(75, A, B, C, D, E);
+	T_60_79(76, E, A, B, C, D);
+	T_60_79(77, D, E, A, B, C);
+	T_60_79(78, C, D, E, A, B);
+	T_60_79(79, B, C, D, E, A);
+
+	ctx->H[0] += A;
+	ctx->H[1] += B;
+	ctx->H[2] += C;
+	ctx->H[3] += D;
+	ctx->H[4] += E;
 }
 #endif
 
-/* SHA1Init - Initialize new context */
-
-void sha_init(SHA1_CTX *context)
+void sha_init(blk_SHA_CTX *ctx)
 {
-    /* SHA1 initialization constants */
-    context->state[0] = 0x67452301;
-    context->state[1] = 0xEFCDAB89;
-    context->state[2] = 0x98BADCFE;
-    context->state[3] = 0x10325476;
-    context->state[4] = 0xC3D2E1F0;
-    context->count[0] = context->count[1] = 0;
+	ctx->size = 0;
+
+	/* Initialize H with the magic constants (see FIPS180 for constants) */
+	ctx->H[0] = 0x67452301;
+	ctx->H[1] = 0xefcdab89;
+	ctx->H[2] = 0x98badcfe;
+	ctx->H[3] = 0x10325476;
+	ctx->H[4] = 0xc3d2e1f0;
 }
 
-/* Run your data through this. */
-
-static void _sha_update(SHA1_CTX *context, const unsigned char *data, unsigned int len)
+void sha_update(blk_SHA_CTX *ctx, const void *data, unsigned long len)
 {
-    unsigned int i, j;
+	int lenW = ctx->size & 63;
 
-    j = (context->count[0] >> 3) & 63;
-    if ((context->count[0] += len << 3) < (len << 3)) context->count[1]++;
-    context->count[1] += (len >> 29);
+	ctx->size += len;
 
-    if ((j + len) > 63) {
-	if (!j) i = 0;
-	else {
-		memcpy(&context->buffer[j], data, (i = 64-j));
+	/* Read the data into W and process blocks as they get full */
+	if (lenW) {
+		int left = 64 - lenW;
+		if (len < left)
+			left = len;
+		memcpy(lenW + (char *)ctx->W, data, left);
+		lenW = (lenW + left) & 63;
+		len -= left;
+		data = ((const char *)data + left);
+		if (lenW)
+			return;
 #ifndef ASM_SHA
-		SHA1_Transform(context->state, context->buffer);
+		blk_SHA1_Block(ctx, ctx->W);
 #else
-		sha1_block_asm_data_order (context, context->buffer, 1);
+		sha1_block_asm_data_order (ctx, ctx->W, 1);
 #endif
 	}
 #ifndef ASM_SHA
-	for ( ; i + 63 < len; i += 64) {
-	    memcpy(context->buffer, &data [i], 64);
-	    SHA1_Transform(context->state, context->buffer);
+	while (len >= 64) {
+		blk_SHA1_Block(ctx, data);
+		data = ((const char *)data + 64);
+		len -= 64;
 	}
-        memcpy(context->buffer, &data[i], len - i);
 #else
-	j = i;
-	len -= i;
-	if (len / 64)
-		sha1_block_asm_data_order (context, &data [i], len / 64);
-	i = (len / 64) * 64;
-        memcpy(context->buffer, &data[i+j], len - i);
+	if (len >= 64) {
+		sha1_block_asm_data_order (ctx, data, len / 64);
+		data += 64 * (len / 64);
+		len -= 64 * (len / 64);
+	}
 #endif
-	return;
-    }
-
-    memcpy(&context->buffer[j], data, len);
+	if (len)
+		memcpy(ctx->W, data, len);
 }
 
-void sha_update(SHA1_CTX *context, const unsigned char *data, unsigned int len)
+void sha_final(unsigned char hashout[20], blk_SHA_CTX *ctx)
 {
-	_sha_update (context, data, len);
-}
+	static const unsigned char pad[64] = { 0x80 };
+	unsigned int padlen[2];
+	int i;
 
-/* Add padding and return the message digest. */
-void
-sha_final(unsigned char digest[20], SHA1_CTX *context)
-{
-    u_int32_t i;
-    unsigned char finalcount[8];
-    unsigned char c200 = '\200';
-    unsigned char c0 = '\0';
+	/* Pad with a binary 1 (ie 0x80), then zeroes, then length */
+	padlen[0] = htonl(ctx->size >> 29);
+	padlen[1] = htonl(ctx->size << 3);
 
-    for (i = 0; i < 8; i++) {
-        finalcount[i] = (unsigned char)((context->count[(i >= 4 ? 0 : 1)]
-         >> ((3-(i & 3)) * 8) ) & 255);  /* Endian independent */
-    }
-    _sha_update(context, &c200, 1);
-    while ((context->count[0] & 504) != 448) {
-	_sha_update(context, &c0, 1);
-    }
-    _sha_update(context, finalcount, 8);  /* Should cause a SHA1Transform() */
-    for (i = 0; i < 20; i++) {
-	digest[i] = (unsigned char)
-		     ((context->state[i>>2] >> ((3-(i & 3)) * 8) ) & 255);
-    }
-#ifdef SHA1HANDSOFF  /* make SHA1Transform overwrite it's own static vars */
-    SHA1Transform(context->state, context->buffer);
-#endif
+	i = ctx->size & 63;
+	sha_update(ctx, pad, 1+ (63 & (55 - i)));
+	sha_update(ctx, padlen, 8);
+
+	/* Output hash */
+	for (i = 0; i < 5; i++)
+		put_be32(hashout + i*4, ctx->H[i]);
 }
 
 /* digest in one step. --sxanth */
 
 void SHA (const unsigned char *data, int nbytes, unsigned char digest [20])
 {
-	SHA1_CTX ctx;
+	blk_SHA_CTX ctx;
 	sha_init (&ctx);
 	sha_update (&ctx, data, nbytes);
 	sha_final (digest, &ctx);
 }
 
-const int sizeof_sha = sizeof (SHA1_CTX);
+const int sizeof_sha = sizeof (blk_SHA_CTX);
 
 const char ABI [] =
 "i sizeof_sha		\n"
