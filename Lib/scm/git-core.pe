@@ -682,11 +682,13 @@ class INDEX
 
 	method update (path)
 	{
-		s = os.lstat (path);
-		sig = $repo.write ("blob", ReadFile (path));
+		s = os.lstat (path)
+		if (path in $D and s.st_mtime == $D [path][2])
+			return
+		sig = $repo.write ("blob", ReadFile (path))
 		p = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
-			 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig;
-		$D [path] = p;
+			 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig
+		$D [path] = p
 	}
 
 	method remove (path)
