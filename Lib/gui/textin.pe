@@ -271,6 +271,7 @@ class textin (widget)
 			}
 			$s = $inschars ($s, $cursor, k)
 			$cursor += len (k)
+			$adjOffset ()
 			$lasttext = $tlist ()
 			$DrawText ()
 			if (!$isKeyWidget ()) {
@@ -309,10 +310,10 @@ class textin (widget)
 			else ss0 = $cursor
 			$cursorKey (k)
 			$selected = [ss0, $cursor].sort ()
-			$adjOffset ();
+			$adjOffset ()
 
 			s, e = $selected
-			text = $tlist ();
+			text = $tlist ()
 
 			for (i in xrange (s, e+1)) {
 				i -= $offset

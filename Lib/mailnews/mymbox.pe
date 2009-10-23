@@ -573,11 +573,14 @@ class MList (gui.widget)
 	}
 
 	method onClick (x, y)
+	{
+		$setKeyWidget ()
 		for (x0, y0, x1, y1, cc in $clicks)
 			if (x0 < x < x1 and y0 < y < y1) {
 				cc ()
 				return True
 			}
+	}
 
 	method onKey (k)
 	{
