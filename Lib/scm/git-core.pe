@@ -310,6 +310,32 @@ def RemoteRepo (r)
 	return repository (r)
 }
 
+# Special case for pyvm upstream repository: fetch remote objects
+# only if not in local repository
+
+class dual_repository (repository)
+{
+	method __init__ ($local, $remote)
+		$base_init ()
+
+	# for normal files (HEAD, branches, etc) use the remote repo
+	method readfile (f)
+		return $remote.readfile (f)
+
+	# for objects, first try the local repo
+	method readobj (o)
+		try return $local.readobj (o)
+		except return $remote.readobj (o)
+}
+
+def UpstreamRepo ()
+{
+	r = http_repository ("http://students.ceid.upatras.gr/~sxanth/pyvm.git")
+	if (havefile (HOME + ".git"))
+		return dual_repository (repository (HOME + ".git"), r)
+	return r
+}
+
 #
 # Git objects
 #  we basically create a `repository` instance and then

@@ -16,7 +16,7 @@
 __autosem__
 
 from time     import monday, rfc1123 as strtime, MMYY
-from scm.git  import repository, RemoteRepo
+from scm.git  import repository, RemoteRepo, UpstreamRepo
 from scm.diff import pydiff as diff
 from misc     import memoizing
 from utfutil  import utf8_len as ulen, utf8_slice
@@ -29,14 +29,18 @@ is_remote = False
 if (sys.argp.have_args ())
 {
 	arg = sys.argp.one ()
-	if (arg == "upstream")
-		arg = "http://students.ceid.upatras.gr/~sxanth/pyvm.git"
-	try repo = RemoteRepo (arg)
-	except {
-		print "can't open repository"
-		exit ()
+	if (arg == "upstream") {
+		# special case
+		repo = UpstreamRepo ()
+		is_remote = True
+	} else {
+		try repo = RemoteRepo (arg)
+		except {
+			print "can't open repository"
+			exit ()
+		}
+		is_remote = arg.sw ("http://")
 	}
-	is_remote = arg.sw ("http://")
 } else 
 	try repo = repository ()
 	except {

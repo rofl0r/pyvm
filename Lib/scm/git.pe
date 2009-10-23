@@ -9,6 +9,7 @@
 __autosem__
 Repository = @scm."git-core".repository
 RemoteRepo = @scm."git-core".RemoteRepo
+UpstreamRepo = @scm."git-core".UpstreamRepo
 ReadFile = @scm."git-core".ReadFile
 MakeTagobj = @scm."git-core".make_tag
 

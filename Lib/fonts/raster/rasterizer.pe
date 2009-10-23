@@ -237,7 +237,7 @@ class BaseRasterizer
 		#	   - also, more whiteness makes the renderer faster (because it doesn't
 		#	     blend pixels that are 100% white).
 
-		if ($AUTOHINT and 1) {
+		if ($AUTOHINT and 0) {
 			# We have this in pure C
 			if (0) {	# very slow
 				vv = 0
