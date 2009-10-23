@@ -140,7 +140,7 @@ def need_checkin (repo)
 			files_to_diff.add (f)
 	L = []
 	for (f in list (files_to_diff).sort ())
-		try if (repo.openblob (treefiles [f]) != readfile (f))
+		try if (repo.openblob (treefiles [f]) != readfilee (f))
 			L.append (f)
 		except L.append (f)
 	return L
@@ -170,6 +170,7 @@ def find_files (exclude, dir=".")
 ##
 
 def readfilee (f)
+	# ReadFile(): if the file is s symlink returns readlink () else returns readfile()
 	return ReadFile (f) ?? ""
 
 from scm.diff import pydiff as diff
