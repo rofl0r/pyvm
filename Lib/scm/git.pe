@@ -25,7 +25,6 @@ USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|
 	diff <t1> <t2>		: diff two commits (or branches)
 	cat <sha>		: show an object
 	past			: show last commits
-	checkin	[<msgfile>]	: equivalent to 'commit -a' in standard git.
 	switch <branch>		: switch to other branch (not well tested/checkout not 100% OK)
 	files			: show if there are new untracked files, or missing tracked files
 	files ls		: list indexed files
@@ -35,6 +34,12 @@ USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|
 	history <path>		: print commits that modify the file in path
 	fork <branch>		: make a new branch, exactly the same as the current branch
 	sigbranch [<branch>]	: create a PGP signed branch (pulled with pullpgp)
+	checkin	[<msgfile>]	: equivalent to 'commit -a' in standard git. Simply put,
+				  it commits the changes into the repository. If the <msgfile>
+				  is specified it should contain the commit message (first
+				  line is the commit title). Initial lines starting with
+				  'From:' or 'Date:' are parsed and used for the Author
+				  field. Otherwise author=committer.
 
 	pull [-nostage] <remote-repo> <remote_branch> <local_branch>
 		the <remote_repo> can be another git directory or an http url.
@@ -221,7 +226,7 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 
 GitUser = @sysconfig.GETCONF ("gituser")
 
-def cmd_checkin (repo, message)
+def cmd_checkin (repo, message, Author=None, AuthDate=None)
 {
 	# checkin is the simple command to commit the current state
 	# of the working directory.  It is the two step procedure
@@ -246,8 +251,13 @@ def cmd_checkin (repo, message)
 
 	# make new commit and save to HEAD
 	# git-commit
-	hdr = "%s %i +0300" % (GitUser, int (now ()))
-	hdr = "author %s\ncommitter %s\n\n" %(hdr, hdr)
+	Committer = GitUser
+	CommitTime = "%i %s"% (int (now ()), time.LocalOffset)
+	if (!Author) Author = Committer
+	if (AuthDate) AuthTime = "%i %s" %time.datestr_to_secs (AuthDate, True)
+	else AuthTime = CommitTime
+
+	hdr = "author %s %s\ncommitter %s %s\n\n" %(Author, AuthTime, Committer, CommitTime)
 	message = hdr + message
 	try parents = repo.HEAD (),;
 	except {
@@ -650,8 +660,26 @@ if (__name__ == __main__)
 				print "run 'pyvm git files' and 'pyvm git files update' to resolve"
 				exit ()
 			}
+			Author = Date = None
 			if (sys.argp.have_args ()) {
 				msg = sys.argp.Readfile ().strip ()
+				while (msg.sw ("From:") or msg.sw ("Date:")) {
+					fl, None, msg = msg.partition ("\n")
+					if (fl [0] == "F") Author = fl [6:].strip ()
+					else {
+						Date = fl [6:].strip ()
+						try time.datestr_to_secs (Date, True)
+						except {
+							print "Bad Date:", Date
+							exit ()
+						}
+					}
+					msg = msg.strip ()
+				}
+				if (Author)
+					print "Author:", Author
+				if (Date)
+					print "Date:", Date
 				print "Commit Message:"
 				print "---------------"
 				print msg
@@ -660,7 +688,7 @@ if (__name__ == __main__)
 					exit ()
 			} else msg = read_message ()
 			print "writting..."
-			cmd_checkin (repo, msg)
+			cmd_checkin (repo, msg, Author, Date)
 		}
 	} else if (cmd == "switch") {
 		cmd_switch (repo, one ())

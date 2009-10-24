@@ -68,12 +68,18 @@ def MMYY (t):
 
 def ptime (t):
 	year, mon, mday, hour, min, sec, wday, yday, isdst = gmtime (t)
-	return "%02i-%s-%02i %02i:%02i:%02i" %(mday, MONTH [mon - 1], year % 100, hour, min, sec)
+	return "%s, %02i %s %i %02i:%02i:%02i" % (WDAY [wday], mday, MONTH [mon - 1],
+				 year, hour, min, sec)
 
 def ltime (t):
 	year, mon, mday, hour, min, sec, wday, yday, isdst = localtime (t)
 	return "%s, %02i %s %i %02i:%02i:%02i" % (WDAY [wday], mday, MONTH [mon - 1],
 				 year, hour, min, sec)
+
+def ltimetz (t):
+	year, mon, mday, hour, min, sec, wday, yday, isdst = localtime (t)
+	return "%s, %02i %s %i %02i:%02i:%02i %s" % (WDAY [wday], mday, MONTH [mon - 1],
+				 year, hour, min, sec, LocalOffset)
 
 # Various classes to be used for timing
 
@@ -196,7 +202,7 @@ TZN = {
 	"MST":-7, "MDT":-6
 }
 
-def datestr_to_secs (d):
+def datestr_to_secs (d, notz=False):
 	try:
 		day, month, year, hour, minute, sec, tz = parse (d)
 		if sec is None:
@@ -221,8 +227,27 @@ def datestr_to_secs (d):
 		else:
 			print "BAD TIMEZONE [%s]"% tz
 			tz = 0
-#	print rfc1123 (tm - timezone - tz), d
-	return tm - timezone - tz
+	if notz:
+		return tm, secs_to_offset (tz)
+	return tm - tz
+
+# compute the local time offset (for example "+0300" for EEST)
+def local_offset ():
+	n = now ()
+	return secs_to_offset (datestr_to_secs (ltime (n)) - datestr_to_secs (ptime (n)))
+
+def secs_to_offset (dsec):
+	if dsec < 0:
+		ew = "-"
+		dsec = -dsec
+	else:
+		ew = "+"
+	offset = dsec / 60
+	offset = (offset % 60) + 100 * (offset / 60)
+	offset = ew + "%04i"%offset
+	return offset
+
+LocalOffset = local_offset ()
 
 if __name__ == __main__:
-	print ltime (now ())
+	print ltimetz (now ())
