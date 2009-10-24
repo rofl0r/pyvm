@@ -18,6 +18,8 @@
 
 __autosem__
 
+import md5
+
 #
 # The way to use POP is "get in, get them messages, get out asap"
 #
@@ -36,21 +38,21 @@ class pop3
 		from net.socketfile import fileobj
 		$channel = fileobj (sock)
 		$greeting = $channel.readline ()
-		if ('<' in $greeting and '>' in $greeting) {
-			print "This POP server [%s] appears to support the APOP command!" %host
-			print "However, APOP is not implemented in Lib/net/pop.pe"
-			print "Please report this to the mailing list to help implement APOP"
-			print "Will not fetch."
-			raise Error ("Have APOP")
-		}
+		if ("<" in $greeting and len ($greeting.split ()) == 5)
+			apop_salt = $greeting.split ()[-1]
+		else apop_salt = None
 		if ($greeting.ew ('\r\n')) $NL = '\r\n'
 		else if ($greeting.ew ('\n')) $NL = '\n'
 		else raise "pop.pe: Unknown $NL terminator"
 		$EOM = '.' + $NL
 		s, msg = $cmd ('CAPA')
 		$caps = s ? set ($getdata ()) : set ()
-		$cmdok ('USER %s' %user, "No such user - no such song")
-		$cmdok ('PASS %s' %pass, "Authentication failed")
+		if (apop_salt) {
+			$cmdok ("APOP %s %s"%(user, md5.hexdigest (apop_salt + pass)), "APOP failed")
+		} else {
+			$cmdok ('USER %s' %user, "No such user")
+			$cmdok ('PASS %s' %pass, "Authentication failed")
+		}
 		s = $cmdok ('STAT', "can't stat!").strip ().split (' ')
 		$nmsg = int (s [0])
 		$noct = int (s [1])

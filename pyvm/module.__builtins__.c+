@@ -1258,14 +1258,18 @@ _module __object__ *__rgb___builtin (REFPTR argv[])
 _module __object__ *long2u64 (REFPTR argv[])
 {
 	LongObj *L = LongObj.checkedcast (argv [0].o);
-	if (L->L->size != 2 || L->L->sign < 0)
+	if (L->L->size > 2 || L->L->sign < 0)
 		RaiseNotImplemented ("Long out of range");
 	union {
 		char a [8];
 		unsigned long l [2];
+		unsigned long long ll;
 	} u;
 	u.l [0] = L->L->D [0];
-	u.l [1] = L->L->D [1];
+	if (L->L->size == 2)
+		u.l [1] = L->L->D [1];
+	else
+		u.l [1] = 0;
 	return new StringObj binctor (u.a, 8);
 }
 
