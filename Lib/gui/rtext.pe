@@ -321,7 +321,7 @@ class _rtext (fbview)
 	}
 }
 
-HTTPr = @re.compile ("(?:https?|ftp)://.*?(?:$|\s)")
+HTTPr = @re.compile (r"(?:https?|ftp)://.*?(?:$|\s|[])>])")
 from wwwlib import openurl
 
 def httsplit (l, col=None, style=None, link=None, hlcol=None)
@@ -335,8 +335,10 @@ def httsplit (l, col=None, style=None, link=None, hlcol=None)
 		if (n) L<< (n, col, style, link)
 		p = ""
 		if (m) {
-			if (m [-1] in ">.)] ")
-				m, p = m [:-1], m [-1]
+			while (m [-1] in ">.)], ") {
+				p = m [-1] + p
+				m = m [:-1]
+			}
 			L<< (m, hlcol, None, (openurl.Open, m))
 		}
 	}

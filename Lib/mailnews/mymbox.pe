@@ -791,7 +791,7 @@ class GL
 	}
 }
 
-wm = gui.Wm (0, 0)
+wm = gui.Wm (0, 0, CaptureStdout=True)
 
 REFRESHING = False
 def RefreshBG ()
