@@ -318,7 +318,11 @@ def cmd_switch (repo, branch)
 	if (branch == cur)
 		return
 	toc = repo.branch (branch)
-	if (toc.sig != repo.branch (cur).sig) {
+	cur = repo.branch (cur)
+	if (toc.sig != cur.sig) {
+		# which files should be really checked out
+		files = set ([x [0] for (x in repo.diff_trees (cur.tree, toc.tree))])
+
 		# do check-out
 		# read target tree into cache
 		repo.IDX.read_tree (repo.openobj (toc.tree))
@@ -327,7 +331,7 @@ def cmd_switch (repo, branch)
 		#cmd_diff (repo);
 
 		# check out files from cache
-		repo.IDX.check_out ()
+		repo.IDX.check_out (files)
 
 		# write cache
 		repo.IDX.write_index ()

@@ -269,8 +269,9 @@ def PROMPT.onEnter ()
 	if (!G.IRC) {
 		if (!t.sw ("/connect") or len ((snp = t.split ()[1:])) not in (2, 3))
 			Channel.addmsg ("Use /connect server nickname [password]")
-		Channel.addmsg ("Connecting...")
 		server, nick = snp [0], snp [1]
+		G.nick = nick
+		Channel.addmsg ("Connecting...")
 		pass = len (snp) == 3 ? snp [2] : None
 		Connect ((server, nick), pass)
 		A ["connects"][(server, nick)] = pass or ""

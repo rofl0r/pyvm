@@ -741,23 +741,31 @@ class INDEX
 		$D = D
 	}
 
-	method check_out ()
+	method check_out (files=None)
 	{
+		islink = os.path.islink
+		lstat  = os.lstat
 		for (path in $D) {
-			sig = $D [path][-1];
+			sig = $D [path][-1]
 			if ("/" in path)
 				if (!os.access (path.rpartition ("/")[0])) {
-					d = "";
+					d = ""
 					for (dd in path.split ("/")[:-1]) {
-						d += dd + "/";
-						try os.mkdir (d);
+						d += dd + "/"
+						try os.mkdir (d)
 					}
 				}
-print 'wrote:', path;
-			open (path, "w").write ($repo.openblob (sig));
-			s = os.stat (path);
+			if (files is None or path in files) {
+				if (islink (path)) {
+					print path, "is a symlink. won't do anything"
+				} else {
+					print 'writting:', path
+					open (path, "w").write ($repo.openblob (sig))
+				}
+			}
+			s = lstat (path)
 			$D [path] = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
-				 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig;
+				 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig
 		}
 	}
 }
