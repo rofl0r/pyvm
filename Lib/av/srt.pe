@@ -1,0 +1,74 @@
+##  srt subtitles
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+def parse (f)
+{
+	L = []
+	for (l in open (f)) {
+		l = l.strip ()
+		if (l) L<<l
+		else if (L) {
+			yield L
+			L = []
+		}
+	}
+}
+
+def mstime (t)
+{
+	h, m, s = t.strip ().split (":")
+	return int (h) * 3600 + int (m) * 60 + float (s.replace (",", "."))
+}
+
+def load_srt (f)
+{
+	T = []
+	t0 = 0
+	n = 1
+	for (l in parse (f)) {
+		if ("%s"%n != l [0])
+			raise Error ("Broken srt")
+		ts, te = [mstime (x) for (x in l [1].split ("->"))]
+		T<< (t0, ts, None)
+		T<< (ts, te, tuple (l [2:]))
+		t0 = te
+		n += 1
+	}
+	T<< (t0, t0+1000, None)
+	return tuple (T)
+}
+
+class Subtitles
+{
+	method __init__ (f)
+	{
+		$T = load_srt (f)
+		$i = 0
+	}
+
+	method at (ms)
+	{
+		if (ms < $T [$i][0])
+			$i = 0
+		while (ms > $T [$i][1] and $i < len ($T) - 1)
+			$i += 1
+		return $T [$i][2]
+	}
+}
+
+if (__name__ == __main__)
+{
+	s = Subtitles (sys.argp.one ())
+
+	print s.at (4.0)
+	print s.at (69.0)
+	print s.at (76.0)
+	print s.at (75.0)
+	print s.at (69.0)
+}

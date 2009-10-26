@@ -210,7 +210,7 @@ fprintf (stderr, "c %s mode=%x\n", __func__, mode);
 	return res;
 }
 
-static ufuse_chmod (const char *path, mode_t mode)
+static int ufuse_chmod (const char *path, mode_t mode)
 {
 if (Debug)
 fprintf (stderr, "c %s mode=%x\n", __func__, mode);

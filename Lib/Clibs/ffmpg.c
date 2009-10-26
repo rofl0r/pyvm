@@ -55,6 +55,11 @@ typedef struct
 
 const int sizeof_av = sizeof (VideoStream);
 
+static int myget_buffer (struct AVCodecContext *c, AVFrame *pic)
+{
+	return avcodec_default_get_buffer (c, pic);
+}
+
 int open_av (VideoStream *v, char *filename)
 {
 	AVCodecContext *vCodecCtx = 0, *aCodecCtx = 0;
@@ -97,6 +102,7 @@ int open_av (VideoStream *v, char *filename)
 			v->height = vCodecCtx->height;
 			v->fps = 1.0 / av_q2d (v->fmtCtx->streams [i]->r_frame_rate);
 			v->video_time_base = av_q2d (v->fmtCtx->streams [i]->time_base);
+			vCodecCtx->get_buffer = myget_buffer;
 		} else if (v->fmtCtx->streams [i]->codec->codec_type == CODEC_TYPE_AUDIO) {
 			if (v->iaudio >= 0) continue;
 			aCodecCtx = v->fmtCtx->streams [i]->codec;
@@ -234,27 +240,6 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 		goto more_audio;
 
 	while (1) {
-		while (v->bytesleft > 0) {
-			dsize = avcodec_decode_video (v->vCodecCtx, v->vFrame,
-						 &done, v->rawdata, v->bytesleft);
-			v->bytesleft -= dsize;
-			v->rawdata += dsize;
-			if (done) {
-				/* XXXX: study vFrame->repeat_pict */
-				if (v->vFrame->repeat_pict)
-					fprintf (stderr, "repeated frame!\n");
-				AVPicture p;
-				if (!dest) return 1;
-				p.data [0] = dest;
-				p.data [1] = 0; p.data [2] = 0; p.data [3] = 0;
-				p.linesize [0] = v->outw * v->outbpp;
-				p.linesize [1] = 0; p.linesize [2] = 0; p.linesize [3] = 0;
-				sws_scale (v->sws, v->vFrame->data, v->vFrame->linesize,
-					   0, v->height, p.data, p.linesize);
-				return -1;
-			}
-		}
-
 		if (v->pkt.data)
 			av_free_packet (&v->pkt);
 
@@ -280,6 +265,8 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 				else {
 					v->moreau = 0;
 					av_free_packet (&v->pkt);
+					if (rval < 0)
+						bs = 0;
 				}
 				if (bs)
 					return bs;
@@ -289,8 +276,22 @@ int next_frame (VideoStream *v, unsigned char *dest, short int *audio_dest, doub
 
 //fprintf (stderr, "video-dts=%f\n", v->pkt.dts * v->video_time_base);
 		pts [0] = v->pkt.dts == AV_NOPTS_VALUE ? -1 : v->pkt.dts * v->video_time_base;
-		v->bytesleft = v->pkt.size;
-		v->rawdata = v->pkt.data;
+		pts [1] = v->pkt.pts == AV_NOPTS_VALUE ? -1 : v->pkt.pts * v->video_time_base;
+		dsize = avcodec_decode_video (v->vCodecCtx, v->vFrame, &done, v->pkt.data, v->pkt.size);
+		if (done) {
+			/* XXXX: study vFrame->repeat_pict */
+			if (v->vFrame->repeat_pict)
+				fprintf (stderr, "repeated frame!\n");
+			AVPicture p;
+			if (!dest) return 1;
+			p.data [0] = dest;
+			p.data [1] = 0; p.data [2] = 0; p.data [3] = 0;
+			p.linesize [0] = v->outw * v->outbpp;
+			p.linesize [1] = 0; p.linesize [2] = 0; p.linesize [3] = 0;
+			sws_scale (v->sws, v->vFrame->data, v->vFrame->linesize,
+				   0, v->height, p.data, p.linesize);
+			return -1;
+		}
 	}
 }
 

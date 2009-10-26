@@ -52,7 +52,7 @@ class irc
 
 		#$cmd ('PASS needed?');
 		$cmd ("NICK %s" %nick)
-		$cmd ("USER mika_hackinen xxxx xxxx The Doctor")
+		$cmd ("USER xxx xxxx xxxx xxx")
 	}
 
 	method cmd (c)

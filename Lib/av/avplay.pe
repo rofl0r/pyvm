@@ -14,26 +14,12 @@ from audio.dev import AudioDev, volume, stereo2mono, stereo62mono
 from graphics import image
 from misc import fprint
 from av import libav as C
+from av.srt import Subtitles
 
 ### av stream.  In audio/visual media streams we get "packets" which can be
 ### either graphics or sound.  In order to be able to get a specific kind of
 ### data packet we have to use queues to store unwated packets of the other
 ### kind for the other thread.
-
-# Note: Syncing.  The right way to sync (according to ffplay) is by using the
-# `dts` values.  The problem is that some video formats don't provide this
-# value (because they are broken. Could they also provide bogus values?)
-# So ffplay gets into some more trouble to try and figure out the proper `pts`
-# (presentation timestamp).  This player does not use the dts values.
-# All syncing happens from the `fps` (frames per second) value. It appears
-# to work for the few samples tested.  If proven insufficient, we should
-# go for the dts/pts values from the demuxer.  Two questions:
-#
-#	1) There are streams that may say that a frame should be repeated.
-#	   ffplay mentions MPEG2. We need a sample file. Maybe repeating
-#	   can be still done on the fps syncing?
-#	2) Are there streams where frames have irregular pts and the
-#	   linear fps does not suffice?
 
 class avstream
 {
@@ -52,7 +38,7 @@ class avstream
 
 		if ($has_audio = C.has_audio ($VD)) {
 			$sample_rate = C.asample_rate ($VD)
-			$channels    = C.achannels ($VD)
+			$nchannels = $channels = C.achannels ($VD)
 
 			$monofunc = None
 			if (mono)
@@ -93,7 +79,7 @@ class avstream
 
 	method runqueue ()
 	{
-		pts = array ("d", 1)
+		pts = array ("d", 2)
 		audiopts = None
 		vbuf = _buffer_aligned ($vbufsize, 16)
 		$fflock.release ()
@@ -110,34 +96,14 @@ class avstream
 						$asem.up ()
 					}	
 					if (!$vqueue) {
-						$vqueue.append ("")
+						$vqueue.append (("", (0, 0)))
 						$vsem.up ()
 					}
 				} else if (r < 0) {
-					if ($resync) {
-						# after a seek the sync is lost. in this case
-						# we use the pts/dts values according to the
-						# ffmpeg tutorial. This only works for "good"
-						# av streams that provide proper [pd]ts values.
-						videopts = pts [0]
-						if (videopts < 0)
-							$resync = False
-						else if (audiopts is not None) {
-							# drop video frame until we are at
-							# the same time as the first queued
-							# audio frame
-							if (videopts < audiopts)
-								continue
-							$resync = False
-							audiopts = None
-						}
-					}
-					$vqueue.append (vbuf)
+					$vqueue.append ((vbuf, pts))
 					vbuf = _buffer ($vbufsize)
 					$vsem.up ()
 				} else {
-					if ($resync and audiopts is None)
-						audiopts = pts [0]
 					if ($monofunc)
 						$aqueue.append ($monofunc ($audiobuf [:r]))
 					else $aqueue.append ($audiobuf [:r])
@@ -148,7 +114,7 @@ class avstream
 			$rlock.release ()
 		}
 		$aqueue.append ("")
-		$vqueue.append ("")
+		$vqueue.append (("", (0, 0)))
 		$asem.up ()
 		$vsem.up ()
 	}
@@ -159,10 +125,89 @@ class avstream
 		try thread.interrupt ($rid)
 	}
 
+	method resync (frac)
+	{
+		# resync: may have to drop either video frames or
+		# part of the audio buffers to get the streams back in
+		# sync
+		frame_no = int (frac * $duration / $dt)
+		if (!$has_audio)
+			return frame_no
+
+		aq = []
+		vq = []
+		pts = array ("d", 2)
+		vbuf = _buffer_aligned ($vbufsize, 16)
+		# get to the first audio packet
+		while (1) {
+			r = C.next_frame ($VD, vbuf, $audiobuf, pts)
+			if (r == -2) break
+			# drop video
+			if (r < 0) continue
+			audiopts = pts [0] - r / ($nchannels * $sample_rate * 2.0)
+			aq.append ($audiobuf [:r])
+			break
+		}
+		##print "AUDIO starts at:", audiopts
+
+		# now get video frames until one whos pts is not before the
+		# audiopts from the first audio packet above.
+		while (1) {
+			r = C.next_frame ($VD, vbuf, $audiobuf, pts)
+			if (r == -2) break
+			if (r < 0) {
+				videopts = pts [0]	# XXX: or dts??? grrr
+				if (videopts < 0) {
+					##print "XXX"
+					break
+				}
+				# video packet presentation time before our first
+				# audio frame. Drop it.
+				if (videopts < audiopts) {
+					##print "DROP"
+					continue
+				}
+
+				# OK. We got a frame that's in sync
+				if (int ((videopts - audiopts) / $dt)) {
+					# XXX: this handles the case we have to drop audio
+					# because the video frame is much later than our first
+					# audio frame. is this possible at all?
+					rab = int (float (videopts - audiopts) * $sample_rate)
+					rab *= $nchannels * 2
+					while (rab and aq)
+						if (len (aq [0]) < rab)
+							rab -= len (aq.pop (0))
+						else {
+							aq [0] = aq [0][rab:]
+							break
+						}
+				}
+				vq.append ((vbuf, pts))
+				frame_no = int (videopts / $dt)
+				vbuf = _buffer ($vbufsize)
+				break
+			} else aq.append ($audiobuf [:r])
+		}
+
+		# push stuff in the queues
+		for (a in aq) {
+			$aqueue.append ($monofunc ? $monofunc (a) : a)
+			$asem.up ()
+		}
+		for (v in vq) {
+			$vqueue.append (v)
+			$vsem.up ()
+		}
+
+		return frame_no
+	}
+
 	method seek (frac)
 	{
-		# runqueue idle
+		# pause runqueue
 		$rlock.acquire ()
+
 		# empty queues
 		if ($has_audio) while ($aqueue) {
 			$aqueue.pop ()
@@ -172,14 +217,18 @@ class avstream
 			$vqueue.pop ()
 			$vsem.down ()
 		}
-		r = C.ffseek ($VD, frac) >= 0
-		$resync = True
+
+		# Do seek and resync
+		if (C.ffseek ($VD, frac) >= 0)
+			frame_no = $resync (frac)
+		else frame_no = None
+
 		$rlock.release ()
 		# runqueue
 		$fflock.release ()
 		$asem.ack ()
 		$vsem.ack ()
-		return r
+		return frame_no
 	}
 
 	method pull_audio ()
@@ -290,6 +339,44 @@ class time_progress (gui.widget) # (make nicer)
 		$seek ($w - 10, x)
 }
 
+##########################################################
+# Subtitle widget
+##########################################################
+
+class subtitlew (gui.widget)
+{
+	elasticH = False
+
+	method Init (**kw)
+	{
+		px = minmax (10, kw ["w"] / 50, 20)
+		$f = $wm.OpenFont ("serif", px).as_utf8 ()
+		kw ["h"] = $f.maxh * 2
+		$widget_init (**kw)
+		$t1 = $t2 = ""
+	}
+
+	method Draw ()
+	{
+		$draw_blank (0x000000)
+		x1 = ($w - $f.isizeof ($t1)) / 2
+		x2 = ($w - $f.isizeof ($t2)) / 2
+		$draw_string ($t1, x1, 0, 0xcccccc, $f, 0)
+		$draw_string ($t2, x2, $f.maxh, 0xcccccc, $f, 0)
+	}
+
+	method wr (s)
+	{
+		$t1 = $t2 = ""
+		if (!s) ;
+		else if (len (s) == 1)
+			$t1 = s [0]
+		else if (len (s) == 2)
+			$t1, $t2 = s
+		$Draw ()
+	}
+}
+
 SILENCE = "\0" * 1024
 
 class avwidget
@@ -301,9 +388,9 @@ class avwidget
 	# from a site like youtube and there are buttons to cancel
 	# the streaming, get the progress percentage, etc.
 
-	method __init__ ($wm, $vwidth, $vheight, $tubesite=False, fullscreen=False)
+	method __init__ ($wm, $vwidth, $vheight, $tubesite=False, fullscreen=False, $subs=None)
 	{
-		with (gui.vcontainer ()) {
+		with (MAIN = gui.vcontainer ()) {
 
 			if (tubesite)
 				gui.label (tubesite ["title"], w=vwidth, align="left",
@@ -339,7 +426,12 @@ class avwidget
 			}
 			if (tubesite)
 				gui.button ("Stop this crap")
+
+			if (subs)
+				$ST = subtitlew (w=vwidth)
 		}
+		if (!fullscreen)
+			wm.Resize (h=MAIN.h)
 		$pn = 0
 	}
 
@@ -430,8 +522,8 @@ class avwidget
 		if(p) $Pause (True)
 		frac = float (off) / tot
 		if (frac <= 1.0)
-			if ($vid.seek (frac))
-				$frn = int (frac * $vid.duration / $vid.dt)
+			if ((frame_no = $vid.seek (frac)) is not None)
+				$frn = frame_no
 		if(p) $Pause (False)
 	}
 
@@ -482,17 +574,29 @@ class avwidget
 	{
 		$frn = 0
 		spf = $vid.dt
+		sub = None
 		while (1) {
-			buff = $vid.pull_video ()
+			buff, (dts, pts) = $vid.pull_video ()
 			if.continue (!buff)
 				if ($EOF ()) break
 			$video_clock.tick ()
 			$put_frame (buff)
-			$progress.update ($frn * spf, $vid.duration)
+			ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
+			$progress.update (ts, $vid.duration)
+			if ($subs) {
+				s2 = $subs.at (ts)
+				if (s2 != sub) {
+					sub = s2
+					$write_subtitles (s2)
+				}
+			}
 			try $wm.async ($progress.Draw)
 			$frn += 1
 		}
 	}
+
+	method write_subtitles (s)
+		$wm.async ($ST.wr, s)
 
 	# if no audio to synchronize to
 	method pullvideo_only ()
@@ -500,12 +604,13 @@ class avwidget
 		$frn = 0
 		spf = $vid.dt
 		while (1) {
-			buff = $vid.pull_video ()
+			buff, pts = $vid.pull_video ()
 			if.continue (!buff)
 				if ($EOF ()) break
 			$video_clock.tick ()
 			$put_frame (buff)
-			$progress.update ($frn * spf, $vid.duration)
+			ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
+			$progress.update (ts, $vid.duration)
 			try $wm.async ($progress.Draw)
 			$frn += 1
 		}
@@ -554,7 +659,7 @@ class avwidget
 
 ##########################################################
 
-USAGE = """Usage: avplay [-options] <filename>
+USAGE = """Usage: avplay [-options] <filename> [<file.srt>]
 Video player
 
  -i		: show info about video and exit
@@ -564,14 +669,15 @@ Video player
  -m		: mono audio
  -e		: exit after finished
  -sc <factor>	: magnify by factor (1.5, etc)
+ -srt		: use subtitles from a file with the same name and .srt extension
  --f		: no gui. just decode everything as quickly as possible (libav* testing)
 """
 
 if (__name__ == __main__)
 {
 	mfact = sys.argp.check_vswitch ("-sc")
-	info_only, fullscreen, start_play, streamed, mono, opener, vexit, ftest =
-		sys.argp.check_switches ("-i", "-f", "-p", "-s", "-m", "-open", "-e", "--f")
+	srt, info_only, fullscreen, start_play, streamed, mono, opener, vexit, ftest =
+		sys.argp.check_switches ("-srt", "-i", "-f", "-p", "-s", "-m", "-open", "-e", "--f")
 	if (@sysconfig.GETCONF ("nostereo"))
 		mono = True
 
@@ -591,7 +697,7 @@ if (__name__ == __main__)
 		bpp = 2
 		C.setbpp (VD, bpp, vwidth, vheight)
 		vbufsize = vwidth * vheight * bpp
-		pts = array ("d", 1)
+		pts = array ("d", 2)
 		vbuf = _buffer (vbufsize)
 		while (1) {
 			r = C.next_frame (VD, vbuf, audiobuf, pts)
@@ -605,13 +711,27 @@ if (__name__ == __main__)
 		exit ()
 	}
 
+	srtfile = None
+	subtitles = None
+
 	if (opener) {
 		from gui.opener import Open
 		avfile = Open ("video")
 		if (!avfile)
 			exit ()
 		start_play = True
+	} else if (len (sys.argp.argv) == 2) {
+		a1, a2 = sys.argp.nargs (2)
+		if (a1.ew (".srt")) avfile, srtfile = a2, a1
+		else if (a2.ew (".srt")) avfile, srtfile = a1, a2
+		else sys.argp.help ()
 	} else avfile = sys.argp.filename_ex ()
+
+	if (srt) try srtfile = avfile.rpartition (".")[0] + ".srt"
+
+	if (srtfile)
+		try subtitles = Subtitles (srtfile)
+		except print "Failed to load subtitles from [%s]"%srtfile
 
 	vid = avstream (avfile, mono=mono)
 	print "Video:", avfile
@@ -650,15 +770,15 @@ if (__name__ == __main__)
 		mfact = float (mfact)
 		rw = int (mfact * width)
 		rh = int (mfact * height)
-		wm = gui.Wm (rw + 100, rh + 74, KeyCtrl=KeyCtrl)
+		wm = gui.Wm (rw, rh+100, KeyCtrl=KeyCtrl)
 		WxH = rw, rh
 	} else {
-		wm = gui.Wm (width + 100, height + 74, KeyCtrl=KeyCtrl)
+		wm = gui.Wm (max (width, 200), height+100, KeyCtrl=KeyCtrl)
 		WxH = width, height
 	}
 
 	wm.avtheme ()
-	avw = avwidget (wm, fullscreen=fullscreen, *WxH)
+	avw = avwidget (wm, fullscreen=fullscreen, subs=subtitles, *WxH)
 	avw.run_vid (vid, start_play, streamed, frn0)
 	wm.Start ()
 
