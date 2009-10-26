@@ -209,6 +209,11 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 			if (f not in repo.IDX.D or repo.IDX.D [f][-1] != sig)
 				files_to_diff.add (f)
 		treefiles = dict (treefiles)
+		# files that exist in cache but not in tree
+		for (f in repo.IDX.D)
+			if (f not in treefiles)
+				files_to_diff.add (f)
+		# do
 		for (f in list (files_to_diff).sort ()) {
 			oldf = repo.openblob (treefiles [f]) ?? ""
 			newf = readfilee (f)
@@ -289,18 +294,14 @@ def cmd_past (repo, arg=None)
 	}
 }
 
-def cmd_branch (repo, branchname, arg=None)
+def cmd_fork (repo, branch)
 {
-	# create a new branch by forking the specified branch/hash/HEAD
-	com = repo.open_commit (arg)
-
 	try {
-		repo.branch (branchname)
-		print "Branch [%s] exists already. Won't create" %branchname
+		repo.branch (branch)
+		print "Branch [%s] exists already. Won't create" %branch
 		return
 	}
-
-	open (repo.BASEDIR + "refs/heads/" + branchname, "w").write (com.sig + "\n")
+	repo.write_branch (branch, repo.HEAD ())
 }
 
 def cmd_switch (repo, branch)
@@ -489,9 +490,6 @@ def cmd_sigbranch (repo, branch="master")
 	open (repo.BASEDIR + "refs/signed/" + branch, "w").write (b + "\n" + sig)
 	print "OK, signed branch [%s] created" %branch
 }
-
-def cmd_fork (repo, branch)
-	repo.write_branch (branch, repo.HEAD ())
 
 def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=False)
 {
@@ -684,6 +682,7 @@ if (__name__ == __main__)
 					print "Author:", Author
 				if (Date)
 					print "Date:", Date
+				msg += "\n"
 				print "Commit Message:"
 				print "---------------"
 				print msg

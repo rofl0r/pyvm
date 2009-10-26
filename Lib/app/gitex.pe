@@ -102,7 +102,7 @@ def vblb (t, f, s) return t, BL, "bu", ("b", f, s)
 def vdf (t, c, p, fb1b2) return t, BL, "u", ("vd", c, p, fb1b2)
 def tbh (s)  return s, None, None, None
 def dl (s)   return bold (s, 0)
-def vtr (s)  return s, BL, None, ("t", s)
+def vtr (s)  return s, BL, None, None#("t", s)
 def swbr (b) return b, BL, "bu", ("sb", b)
 def info (s) return s, 0xffff00, "bi", None
 def help (s) return s, 0xffffbb, "bi", None

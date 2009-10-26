@@ -75,7 +75,6 @@ class avstream
 	}
 
 	killed = False
-	resync = False
 
 	method runqueue ()
 	{
@@ -144,7 +143,7 @@ class avstream
 			if (r == -2) break
 			# drop video
 			if (r < 0) continue
-			audiopts = pts [0] - r / ($nchannels * $sample_rate * 2.0)
+			audiopts = pts [0]
 			aq.append ($audiobuf [:r])
 			break
 		}
@@ -169,10 +168,8 @@ class avstream
 				}
 
 				# OK. We got a frame that's in sync
-				if (int ((videopts - audiopts) / $dt)) {
-					# XXX: this handles the case we have to drop audio
-					# because the video frame is much later than our first
-					# audio frame. is this possible at all?
+				if (videopts > audiopts) {
+					# drop some audio
 					rab = int (float (videopts - audiopts) * $sample_rate)
 					rab *= $nchannels * 2
 					while (rab and aq)
@@ -390,8 +387,8 @@ class avwidget
 
 	method __init__ ($wm, $vwidth, $vheight, $tubesite=False, fullscreen=False, $subs=None)
 	{
-		with (MAIN = gui.vcontainer ()) {
-
+		with (MAIN = gui.vcontainer ())
+		{
 			if (tubesite)
 				gui.label (tubesite ["title"], w=vwidth, align="left",
 					   font=wm.OpenFont ("serif-b", 8))
@@ -414,16 +411,25 @@ class avwidget
 				$progress = time_progress ($Seek, w=vwidth)
 			}
 			$View.onWheel = $onWheel
-			with (gui.hcontainer ()) {
-				$BPAUSE = gui.togglebutton (" Play/Pause ", onToggle=$Pause, state=True)
-				gui.label (" ")
-				$FFWD = gui.togglebutton (" ffwd ", state=False, onToggle=$FastForward)
-				gui.label (" ")
-				$Vup = gui.button ("+", Action=$VolumeUp)
-				$Vol = gui.status (w="100", fg=$wm.color_brown)
-				$Vdown = gui.button ("-", Action=$VolumeDown)
-				$ShowVolume ()
+			$Hidden = False
+			with ($U = gui.union ()) {
+				with (gui.hcontainer ()) {
+					$BPAUSE = gui.togglebutton (" Play/Pause ", onToggle=$Pause,
+								    state=True)
+					gui.label (" ")
+					$FFWD = gui.togglebutton (" ffwd ", state=False,
+								  onToggle=$FastForward)
+					gui.label (" ")
+					$Vup = gui.button ("+", Action=$VolumeUp)
+					$Vol = gui.status (w="100", fg=$wm.color_brown)
+					$Vdown = gui.button ("-", Action=$VolumeDown)
+					$ShowVolume ()
+					gui.label (" ")
+					gui.button ("hide", Action=$HideControls)
+				}
+				gui.space ()
 			}
+
 			if (tubesite)
 				gui.button ("Stop this crap")
 
@@ -433,6 +439,12 @@ class avwidget
 		if (!fullscreen)
 			wm.Resize (h=MAIN.h)
 		$pn = 0
+	}
+
+	method HideControls ()
+	{
+		$Hidden = True
+		$U.Switch (1)
 	}
 
 	Audio = None
@@ -475,14 +487,18 @@ class avwidget
 	}
 
 	method KeyCtrl (k)
+	{
+		if ($Hidden) {
+			$Hidden = False
+			$U.Switch (0)
+		}
 		if (k == " ")
 			$BPAUSE.toggle ()
 		else if (k == "UP")
 			$VolumeUp ()
 		else if (k == "DOWN")
 			$VolumeDown ()
-		#else if (k in "nN" and len (avfiles) > 1)
-		#	$GoNext ()
+	}
 
 	method VolumeUp ()
 		$ShowVolume (volume.mod_volume (1))
@@ -684,7 +700,7 @@ if (__name__ == __main__)
 	if (ftest) {
 		filename  = sys.argp.filename ()
 		VD        = _buffer (C.sizeof_av)
-		err       = C.open_av (filename)
+		err       = C.open_av (VD, filename)
 		vwidth    = C.vwidth (VD)
 		vheight   = C.vheight (VD)
 		dt        = C.vdelay (VD)
