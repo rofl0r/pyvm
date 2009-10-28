@@ -18,12 +18,7 @@
  level every "2048" input samples? hm.
 */
 
-extern double sqrt (double);
-
-static inline double sqr (double d)
-{
-	return d * d;
-}
+extern double hypot (double, double);
 
 void fft (unsigned int N, const short in[], int out[], const int bitrevtab[], const double costab[],
 	     const double sintab[], double real[], double imag[])
@@ -61,7 +56,7 @@ void fft (unsigned int N, const short in[], int out[], const int bitrevtab[], co
 	}
 
 	for (i = 0; i < N/2; i++)
-		out [i] = sqrt (sqr (real [i]) + sqr (imag [i]));
+		out [i] = hypot (real [i], imag [i]);
 }
 
 void bandize (const int spectrum[], int out[], const int bandsum[], unsigned int n)

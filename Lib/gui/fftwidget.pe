@@ -1,0 +1,67 @@
+# widget that works together with an audio input stream and
+# draws a frequency transform while returning the data
+__autosem__
+
+import thread
+
+class fft_widget (@gui.widget)
+{
+	elastic = False
+
+	method Init ($AudioInput, $nsamp, nbands, $BW, **kw)
+	{
+		$FFT = @audio.fft.FFT (nsamp=nsamp, stereo=AudioInput.channels==2, nbands=nbands)
+		kw ["w"] = w = BW * nbands
+		h = kw ["h"]
+		$widget_init (**kw)
+		$fb = @graphics.framebuffer.FrameBuffer (w, h, $wm.bpp)
+		$have_data = thread.xlock (False)
+		thread.start_new ($DrawFFT)
+	}
+
+	method Draw ()
+		$show_image ($fb.as_image (), 0, 0, 0, 0, $w, $h)
+	method onRedraw (x, y, w, h)
+		$show_image ($fb.as_image (), x, y, x, y, w, h)
+
+	method DrawFFT ()
+	{
+		maxvals = []
+		fb = $fb
+		H = fb.h
+		fb.clear (0x101020)
+		while (1) {
+			$have_data.acquire ()
+			if (!$data)
+				continue
+			o = $FFT.fft_s16le ($data)
+
+			# volume auto-adjust
+			maxvals.append (float (max (list (o))))
+			if (len (maxvals) > 100)
+				maxvals.pop (0)
+			maxval = max (maxvals)
+
+			fb.clear (0x101020)
+			for (i in *len (o)) {
+				val = min (o [i] / maxval, 1.0)
+				hh = int (0.9 * H * val)
+				fb.fill_rect ($BW * i, H - hh, $BW - 1, hh, 0x770000)
+			}
+			for (i in *(H/2))
+				fb.draw_line (0, 2 * i, fb.w, 2 * i, 0x101020)
+			$wm.async ($Draw)
+		}
+	}
+
+	method feed ($data)
+		$have_data.release ()
+
+	##
+	method get_audio ()
+	{
+		if (data = $AudioInput.get_samples ($nsamp))
+			$feed (data)
+		return data
+	}
+}

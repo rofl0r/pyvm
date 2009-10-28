@@ -13,7 +13,7 @@ from av import libav as C
 from audio.dev import stereo2mono
 import thread, time, random
 
-pts = array ("d", 1)
+pts = array ("d", 2)
 
 class AudioFile
 {

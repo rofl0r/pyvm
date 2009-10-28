@@ -71,7 +71,7 @@ class Tag
 			else C<<c.dogen ()
 		sep = $nl ? "\n" : ""
 		t = t + sep + sep.join (C) + sep
-		if ($name not in ("li", "br", "td", "tr"))
+		if ($name not in ("li", "br", "td", "tr", "hr", "dt", "dd"))
 			t += "</%s>"%$name
 		return t
 	}

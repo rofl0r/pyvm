@@ -32,7 +32,6 @@ In Fine Tune mode to set a marker precisely the above keys work for playing
 
 import gui, thread, time, misc, serialize, os
 from audio.dev import volume
-from audio.fft import FFT
 
 ####
 ####
@@ -58,7 +57,7 @@ def audio_chop (orig, newfile, start, end, title, artist, comment)
 	if (artist) L.extend (["-author", artist])
 	if (comment) L.extend (["-comment", comment])
 	L.append (newfile)
-	return !@os.execbin (*L)
+	return !os.execbin (*L)
 }
 
 class Timer (gui.widget)
@@ -202,7 +201,7 @@ class app
 		D = {
 			"start_marker": None,
 			"end_marker": None,
-			"pre_filename": "out.mp3",
+			"pre_filename": "out.%s"%$fileExt,
 			"chopped_areas": {},
 			"labels":{},
 			"current":None,
@@ -254,14 +253,12 @@ class app
 		$slide_delay = float (opts.get ("sd", 20))
 		
 		$P = @audio.mp3.player (mono=mono)
-		$P.open (sys.argp.filename_ex ())
+		filename = sys.argp.filename_ex ()
+		$P.open (filename)
+		$fileExt = filename.rpartition (".")[2] or "??"
 		$duration = $P.duration
 
 		$PrefFile = opts.get ("m", $P.filename + ".markers")
-
-		$BW = 9
-		$FFT = FFT (nsamp=4096, stereo=$P.channels==2, nbands=12)
-		$fft_fifo = thread.fifo ()
 
 		$paused = True
 		$pauselock = thread.xlock (False)
@@ -329,7 +326,7 @@ class app
 					$MarkerButton = gui.button ("    \\set marker    ",
 									 Action=$SetMarker)
 			}
-			$fft_fb = gui.fb (w = $BW * $FFT.nbands, h = 90)
+			$fftw = @gui.fftwidget.fft_widget ($P, 4096, 12, 9, h=90)
 		}
 		with ($G3 = gui.hcontainer (lmargin="X")) {
 			$ChopButton = gui.button ("\\chop", Action=$Chop)
@@ -460,7 +457,6 @@ class app
 		$Update ()
 		thread.start_new ($Play)
 		thread.start_new ($SlideShow)
-		thread.start_new ($DrawFFT)
 	}
 
 	method WhatTimeIsIt ()
@@ -474,33 +470,6 @@ class app
 			sleep (5)
 		}
 
-	method DrawFFT ()
-	{
-		maxvals = []
-		fb = $fft_fb.F
-		H = fb.h
-		while (1) {
-			d = $fft_fifo.get ()
-			if (!d) continue
-			o = $FFT.fft_s16le (d)
-			maxvals.append (float (max (list (o))))
-			if (len (maxvals) > 100)
-				maxvals.pop (0)
-			maxval = max (maxvals)
-			fb.clear (0x101020)
-			for (i in *len (o)) {
-				val = min (o [i] / maxval, 1.0)
-				hh = int (0.9 * H * val)
-				fb.fill_rect ($BW * i, H - hh, $BW - 1, hh, 0x770000)
-			}
-			for (i in *(H/2))
-				fb.draw_line (0, 2 * i, fb.w, 2 * i, 0x101020)
-			# drop overruns
-			while ($fft_fifo)
-				$fft_fifo.get ()
-			$wm.async ($fft_fb.Draw)
-		}
-	}
 
 	method SlideShow ()
 		for (i in $ImageList) {
@@ -528,15 +497,14 @@ class app
 				if ($fastmove == -1)
 					$P.seek ($P.tpos - 0.3)
 			}
-			if (data = $P.get_samples ($FFT.nsamp)) {
-				$fft_fifo.put (data)
+			if (data = $fftw.get_audio ()) {
 				$Update ()
-				$dev.play (data)
+				$dev.play_sync (data)
 				if ($fastmove == 1) {
 					for (i in *15)
-						$P.get_samples ()
+						$fftw.get_audio ()
 				} else if ($fastmove == -1) {
-					$P.seek ($P.tpos - 0.3)
+					$P.seek ($P.tpos - 0.5)
 					if ($P.tpos <= 0)
 						$selfPause ()
 				}
