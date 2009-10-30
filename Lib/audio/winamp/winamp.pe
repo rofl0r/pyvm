@@ -1,0 +1,182 @@
+__autosem__
+
+from audio.mp3 import player
+from graphics import ImageFile
+import gui, thread
+
+USAGE = "Usage: winamp [-r] <Files>
+
+Graphical audio player.
+Use up/down arrows or scrollwheel to set volume.
+File selection not implemented.
+"
+
+randomize = sys.argp.check_switch ("-r")
+
+if (!sys.argp.have_args ())
+	sys.argp.help ()
+
+Files = sys.argp.argv
+if (randomize)
+	@random.shuffle (Files)
+
+dev = @audio.dev.AudioDev ()
+Volume = @audio.dev.volume
+
+class Player
+{
+	method __init__ ()
+	{
+		$plock = thread.xlock (False)
+		$gonext = False
+		$doseek = None
+		$regrab = False
+		thread.start_new ($loop)
+	}
+
+	method loop ()
+	{
+		$plock.ack ()
+		$i = 0
+		vol.show ()
+		while ($i < len (Files)) {
+			wm.depcheck ()
+			$p = p = player ()
+			current = Files [$i]
+			try p.open (current)
+			except continue
+			fft.setAudioInput (p)
+			wm.set_title (current)
+			while (!dev.grab ($p.sample_rate, $p.channels)) {
+				title.setmsg ("audio Dev in use!")
+				sleep (0.5)
+			}
+			title.setmsg (current)
+			while (data = fft.get_audio ()) {
+				dev.play_sync (data)
+				timeline.update ()
+				$plock.ack ()
+				if ($regrab) {
+					while (!dev.grab ($p.sample_rate, $p.channels)) {
+						title.setmsg ("audio Dev in use!")
+						sleep (0.5)
+					}
+					title.setmsg (current)
+					$regrab = False
+				}
+				if ($doseek is not None) {
+					$p.seek ($doseek * $p.duration)
+					$doseek = None
+				}
+				if.break ($gonext) {
+					if ($gonext == -1)
+						$i -= 2
+					$gonext = False
+				}
+			}
+			dev.release ()
+			$i += 1
+		}
+		title.setmsg ("")
+	}
+
+	method Pause (state)
+		if (!state) {
+			if (!dev.in_use ())
+				return False
+			$plock.acquire ()
+			dev.release ()
+			title.setmsg ("PAUSED")
+			return True
+		} else {
+			if (dev.in_use ())
+				return False
+			$regrab = True
+			$plock.release ()
+			return True
+		}
+
+	method Seek ($doseek);
+	method Next ()
+		$gonext = 1
+	method haveNext ()
+		return $i < len (Files) - 1
+	method havePrev ()
+		return $i > 0
+	method Prev ()
+		$gonext = -1
+}
+
+class time_progress (gui.widget)
+{
+	elastic = False
+
+	method Init (**kw)
+	{
+		kw ['h'] = 6
+		kw ['w'] = 120
+		$widget_init (**kw)
+		$lastp = 5
+	}
+
+	method Draw ()
+	{
+		$draw_blank ()
+		$draw_line (5, 3, $lastp, 3, 0x5566cc)
+		$draw_line ($lastp, 3, $w-5, 3, 0x223377)
+		$draw_line ($lastp, 0, $lastp, 6, 0x999999)
+		$draw_line ($lastp+1, 0, $lastp+1, 6, 0x999999)
+	}
+
+	method update ()
+	{
+		curt = P.p.tpos
+		tott = P.p.duration
+		if (0 <= curt <= tott) {
+			curp = int (($w - 4) * curt / tott)
+			if (curp != $lastp) {
+				$lastp = curp
+				$asyncDraw ()
+			}
+		}
+	}
+
+	method onClick (x, y)
+		P.Seek (float (x) / ($w - 4))
+}
+
+def volup ()   vol.show (Volume.mod_volume (1))
+def voldown () vol.show (Volume.mod_volume (-1))
+def KeyCtrl (k)
+	if (k == "UP") volup ()
+	else if (k == "DOWN") voldown ()
+	else if (k == " ") PB.toggle ()
+
+P = Player ()
+wm = gui.Wm (120, 200, KeyCtrl=KeyCtrl)
+wm.avtheme ()
+with (c = gui.vcontainer ()) {
+	title = gui.status (w=wm.width, font=wm.OpenFont ("sans", -2))
+	title.active_fg = 0x444477
+	with (gui.hcontainer ()) {
+		gui.hspace (w=5)
+		fft = @gui.fftwidget.fft_widget (None, 4096, 12, 9, h=80)
+	}
+	timeline = time_progress ()
+	with (gui.hcontainer ()) {
+		def F (x) return HOME + "Lib/audio/winamp/%s.png"%x
+
+		gui.ImageButton (F ("Prev"), Action=P.Prev, depcheck=P.havePrev)
+		PB = gui.ImageToggleButton (F ("Play"), F ("Pause"), False, onToggle=P.Pause)
+		gui.ImageButton (F ("Next"), Action=P.Next, depcheck=P.haveNext)
+		vol = gui.status (w="100%", font=wm.OpenFont ("mono-b", -3))
+		vol.active_fg = 0xbbbbbb
+	}
+}
+
+def vol.show (v=None)
+	vol.setmsg ("%i%%"%(v or Volume.get_volume()))
+def vol.onWheel (w)
+	(w == "up" ? volup : voldown)()
+wm.Resize (h=c.h)
+wm.Start (setup=P.plock.release)

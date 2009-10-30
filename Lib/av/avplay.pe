@@ -583,7 +583,7 @@ class avwidget
 			$View.F.put_image (image (frame, $vwidth, $vheight, $View.F.bpp), 0, 0)
 		else
 			$View.setImage (image (frame, $vwidth, $vheight, 3))
-		try $wm.async ($View.Draw)
+		try $View.asyncDraw ()
 	}
 
 	method pullvideo ()
@@ -606,7 +606,7 @@ class avwidget
 					$write_subtitles (s2)
 				}
 			}
-			try $wm.async ($progress.Draw)
+			try $progress.asyncDraw ()
 			$frn += 1
 		}
 	}
@@ -627,7 +627,7 @@ class avwidget
 			$put_frame (buff)
 			ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
 			$progress.update (ts, $vid.duration)
-			try $wm.async ($progress.Draw)
+			try $progress.asyncDraw ()
 			$frn += 1
 		}
 	}

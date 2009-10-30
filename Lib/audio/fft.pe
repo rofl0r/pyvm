@@ -16,10 +16,11 @@ C = @DLL.Import ("fft", "-O3 -Wall", pelf=1)
 
 class FFT
 {
-	method __init__ ($nsamp, $stereo, $nbands=0, $Hz=44100)
+	method __init__ ($nsamp, stereo, $nbands=0, $Hz=44100)
 	{
 		from math import pi, cos, sin
 
+		$stereo = int (stereo)
 		# power of 2
 		if (nsamp not in (128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768))
 			raise Error ("nsamples must be power of 2")
@@ -39,6 +40,10 @@ class FFT
 			}
 			j += m
 		}
+
+		if ($stereo)
+			for (i in *N)
+				brt [i] *= 2
 
 		# cossintable
 		costab = []
@@ -107,22 +112,11 @@ class FFT
 
 	method fft_s16le (samples)
 	{
-		samples = array ("h", samples)
-		if ($stereo)
-			samples = half_signal (samples)
-
-		if (len (samples) != $nsamp)
-			raise Error ("samples in")
-
 		spectrum = $nbands ? $spectrum : array ("i", $nsamp / 2)
-
-		C.fft ($NFREQ, samples, spectrum, $bitrevtable, $costab, $sintab, $real, $imag)
-
+		C.fft ($NFREQ, samples, spectrum, $bitrevtable, $costab, $sintab, $real, $imag, $stereo)
 		if (!$nbands)
 			return spectrum
-
 		C.bandize (spectrum, $bandout, $BandSum, $nbands)
-
 		return $bandout
 	}
 }

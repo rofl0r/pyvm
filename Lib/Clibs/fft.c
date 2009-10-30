@@ -21,15 +21,22 @@
 extern double hypot (double, double);
 
 void fft (unsigned int N, const short in[], int out[], const int bitrevtab[], const double costab[],
-	     const double sintab[], double real[], double imag[])
+	     const double sintab[], double real[], double imag[], int stereo)
 {
 	double wr, wi, wpr, wpi, twr, tempr, tempi;
 	unsigned int i, m, j;
 
-	for (i = 0; i < N; i++) {
-		real [i] = in [bitrevtab [i]];
+	for (i = 0; i < N; i++)
 		imag [i] = 0;
-	}
+
+	if (stereo)
+		for (i = 0; i < N; i++)  {
+			j = bitrevtab [i];
+			real [i] = in [j] / 2 + in [j + 1] / 2;
+		}
+	else
+		for (i = 0; i < N; i++) 
+			real [i] = in [bitrevtab [i]];
 
 	unsigned int dftsize, t, d2;
 
@@ -78,6 +85,6 @@ void bandize (const int spectrum[], int out[], const int bandsum[], unsigned int
 }
 
 const char ABI [] =
-"- fft!		ip16p32p32pdpdpdpd	\n"
+"- fft!		isp32p32pdpdpdpdi	\n"
 "- bandize	p32p32p32i		\n"
 ;

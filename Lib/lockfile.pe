@@ -34,14 +34,14 @@ def validate (f)
 def lname (name)
 	return "/" in name ? name : LDIR + name + ".lock"
 
-def get (name)
+def get (name, v=True)
 {
 	f = lname (name)
 	if (havefile (f)) {
-		print "Lockfile found [%s]"%f
+		if (v) print "Lockfile found [%s]"%f
 		if (validate (f))
 			return False
-		print "stale lockfile. will delete"
+		if (v) print "stale lockfile. will delete"
 	}
 
 	s = procps.SELF
@@ -60,10 +60,10 @@ def leave (name)
 
 class lockfile
 {
-	method __init__ ($name)
+	method __init__ ($name, $v=True)
 		$held = False
 	method get ()
-		return $held = get ($name)
+		return $held = get ($name, $v)
 	method leave ()
 		if ($held) leave ($name)
 }

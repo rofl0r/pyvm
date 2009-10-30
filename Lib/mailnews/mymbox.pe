@@ -837,7 +837,7 @@ with (WIP) {
 	MSTATUS.async_msg ("OK." + " and ".join (L))
 	REFRESHING = False
 	sys.gc.collect ()
-	wm.async (G.Draw)
+	G.asyncDraw ()
 }
 def Refresh ()
 	if (!REFRESHING)

@@ -6,7 +6,7 @@ __autosem__
 from graphics import ImageFile, isImageFile
 import os, misc, gui
 
-USAGE = """usage: show [-f][-e][-sm][-ss n] <file-or-directory>+
+USAGE = """usage: show [-i][-f][-e][-sm][-ss n] <file-or-directory>+
 Display images. In case of directory, show all images therein.
 -f	: fit to screen (if larger).
 -F	: fit to screen. expand or shrink to do that
@@ -16,13 +16,14 @@ Display images. In case of directory, show all images therein.
 	  for whether they are images.
 -e	: exit after the last image shown (otherwise loop)
 -sm	: small
+-i	: info only
 
 if only filename is specified and it has the extension '.lst', it's
 taken as a "playlist" and the files are its lines.
 """
 #TODO: cat thumbnail of image to vt console without getting into graphics
 
-Fit, fit, xit, sm, mstudy = sys.argp.check_switches ("-F", "-f", "-e", "-sm", "-m")
+info, Fit, fit, xit, sm, mstudy = sys.argp.check_switches ("-i", "-F", "-f", "-e", "-sm", "-m")
 
 ss = sys.argp.opts ("ss")
 SlideShow = float (ss ["ss"]) ?? None
@@ -62,6 +63,12 @@ for (x in ilist)
 if (!I)
 	sys.argp.help ()
 
+if (info) {
+	for (i in I)
+		print i.fnm, i.size ()
+	exit()
+}
+
 if (Fit) W = H = 0
 else {
 	W = max ([i.size ()[0] for (i in I)])
@@ -74,6 +81,9 @@ else {
 	W += 1
 	H += 4
 }
+
+if (len (I) > 1 and !SlideShow)
+	H += 16
 
 wm = gui.Wm (W, H, sys.argp.argv [0], exit_at_esc=True)
 if (Fit)

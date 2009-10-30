@@ -28,6 +28,10 @@ class widget
 				 kwargs.pop ("international") : $wm.International
 		if ("elastic" in kwargs)
 			$elastic = kwargs.pop ("elastic")
+		if ("depcheck" in kwargs) {
+			$depcheck = kwargs.pop ("depcheck")
+			$wm.add_depwidget (self)
+		}
 		$root = domain.data.rootwin
 		$Init (*args, **kwargs)
 	}

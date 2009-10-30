@@ -196,9 +196,11 @@ class appwin (**deco_win)
 		while (1)
 			$ipc_channel.send ($ev_fifo.get ())
 
-	method wmclose ()
+	method wmclose (bywm=True)
 	{
-		$send_event (["exit"])
+		if (bywm)
+			$send_event (["exit"])
+		try $ipc_channel.close ()
 		$dpy.close_win (self)
 	}
 
@@ -234,7 +236,7 @@ class appwin (**deco_win)
 		}
 
 		with ($dpy.L)
-			$dpy.close_win (self)
+			$wmclose (False)
 	}
 
 }

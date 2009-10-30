@@ -87,7 +87,7 @@ class Timer (gui.widget)
 		if (tt != $tt) {
 			$fg = $fg1
 			$tt = tt
-			$wm.async ($Draw)
+			$asyncDraw ()
 		}
 	}
 
@@ -475,7 +475,7 @@ class app
 		for (i in $ImageList) {
 			$IView.load (i, fit=True, background=True)
 			$wm.async ($IView.clear)
-			$wm.async ($IView.Draw)
+			$IView.asyncDraw ()
 			thread.sched_yield ()
 			sleep ($slide_delay)
 		}

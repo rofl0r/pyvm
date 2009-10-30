@@ -13,7 +13,7 @@ from time import sleep
 C = @DLL.Import ("audio", "-Wall", pelf="try")
 
 # Only one program can grab the audio device.
-Lock = @lockfile.lockfile ("audio")
+Lock = @lockfile.lockfile ("audio", False)
 
 class AudioDev
 {
@@ -26,7 +26,7 @@ class AudioDev
 
 	method grab ($rate, $channels)
 	{
-		if (!Lock.get ())
+		if ($in_use () or !Lock.get ())
 			return False
 		$a = C.open_audio (0)
 		if ($a == -1) return False
@@ -60,6 +60,9 @@ class AudioDev
 			$a = -1
 		}
 	}
+
+	method in_use ()
+		return $a != -1
 
 	__del__ = release
 

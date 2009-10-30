@@ -8,9 +8,10 @@ class fft_widget (@gui.widget)
 {
 	elastic = False
 
-	method Init ($AudioInput, $nsamp, nbands, $BW, **kw)
+	method Init ($AudioInput, $nsamp, $nbands, $BW, **kw)
 	{
-		$FFT = @audio.fft.FFT (nsamp=nsamp, stereo=AudioInput.channels==2, nbands=nbands)
+		if (AudioInput)
+			$FFT = @audio.fft.FFT (nsamp=nsamp, stereo=AudioInput.channels==2, nbands=nbands)
 		kw ["w"] = w = BW * nbands
 		h = kw ["h"]
 		$widget_init (**kw)
@@ -18,6 +19,9 @@ class fft_widget (@gui.widget)
 		$have_data = thread.xlock (False)
 		thread.start_new ($DrawFFT)
 	}
+
+	method setAudioInput ($AudioInput)
+		$FFT = @audio.fft.FFT (nsamp=$nsamp, stereo=AudioInput.channels==2, nbands=$nbands)
 
 	method Draw ()
 		$show_image ($fb.as_image (), 0, 0, 0, 0, $w, $h)
@@ -50,7 +54,7 @@ class fft_widget (@gui.widget)
 			}
 			for (i in *(H/2))
 				fb.draw_line (0, 2 * i, fb.w, 2 * i, 0x101020)
-			$wm.async ($Draw)
+			$asyncDraw ()
 		}
 	}
 

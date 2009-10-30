@@ -195,7 +195,7 @@ gen gen_commit (c, par=0, fb1b2=None)
 		m = o.message.split ("\n")
 		adl (clt (m [0]))
 		for (l in m [1:])
-			adl (cl (l))
+			adl (cl (l.expandtabs ()))
 
 		if (!o.parents)
 			return

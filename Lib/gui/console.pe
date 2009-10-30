@@ -125,7 +125,7 @@ class stdoutw (widget)
 			$ULOCK.acquire ()
 			sleep (0.5)
 			if ($visible ()) {
-				$wm.async ($Draw)
+				$asyncDraw ()
 				if ($morelines) {
 					$wm.async ($ybar.modTVO)
 					$morelines = False

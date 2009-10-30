@@ -38,7 +38,8 @@ pyvm avplay <VIDEO-FILE>
 	video player.  see the file ffmpeg.txt for information to install ffmpeg.
 
 pyvm mp3 <MP3-FILES>
-	audio player (text mode).
+pyvm winamp <MP3-FILES>
+	audio player (text mode and gui).
 
 pyvm soundlab <MP3-FILE>
 	this is a graphical audio player with the ability to chop

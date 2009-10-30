@@ -668,7 +668,7 @@ class main_browser_loop
 		print "Network Activity:", net_status ? "on" : "off\n"
 		Downloader.setQoS (net_status)
 		$progress.async_msg ("")
-		$wm.async ($NetStatW.Draw)
+		$NetStatW.asyncDraw ()
 		$tabs.nschange ()
 	}
 
@@ -855,13 +855,13 @@ class main_browser_loop
 
 		if (im) $wm.async ($FavWidget.load_image, im)
 		else $wm.async ($FavWidget.no_image)
-		$wm.async ($FavWidget.Draw)
+		$FavWidget.asyncDraw ()
 	}
 
 	method change_title ($Title)
 	{
 		$wmtitle ()
-		$wm.async ($tabz.Draw)
+		$tabz.asyncDraw ()
 	}
 
 	method wmtitle ()
@@ -1422,7 +1422,7 @@ class BookmarkPage (**BASEURL)
 		return h.dogen ()
 	}
 
-	method generate (u)
+	method generate (u, referer=True)
 		if (u.sw ("bookmarks://"))
 			return BookmarkPage (u [12:])
 		else return BASEURL.generate (self, u)

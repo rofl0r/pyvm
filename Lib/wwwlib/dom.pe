@@ -841,9 +841,9 @@ def attribute_to_style (attrs)
 			if (k in d) {
 				if (v = d [k](v))
 					style += v
-			} else if (k == "style")
-				style += v + ";"
-			else {
+			} else if (k == "style") {
+				if (v) style += v + ";"
+			} else {
 				a << k
 				a << v
 			}

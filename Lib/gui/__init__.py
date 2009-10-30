@@ -1,6 +1,6 @@
 from mainloop   import Wm
 from container  import hcontainer, vcontainer, basecontainer
-from button     import button
+from button     import button, ImageButton, ImageToggleButton
 from label      import label
 from widget     import widget
 from image      import image

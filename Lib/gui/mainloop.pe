@@ -90,7 +90,21 @@ class Wm
 		$key_ctrl = $key_alt = $key_shift = False
 		#
 		$Menu = None
+		#
+		$depwidgets = []
 	}
+
+	method add_depwidget (w)
+		$depwidgets.append (w)
+
+	method depcheck ()
+		for (w in $depwidgets) {
+			r = bool (w.depcheck ())
+			if (r != w.enabled) {
+				w.enabled = r
+				w.Draw ()
+			}
+		}
 
 	method Resize (w=None, h=None)
 	{

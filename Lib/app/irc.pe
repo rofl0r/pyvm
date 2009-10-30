@@ -82,7 +82,7 @@ class channel
 			nms = m.sw (G.nick) ? 2 : 1
 			if (nms > $newmsgs) {
 				$newmsgs = nms
-				wm.async (TABS.Draw)
+				TABS.asyncDraw ()
 			}
 		} else {
 			if (!$drawn) {

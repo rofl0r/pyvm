@@ -1,4 +1,5 @@
 __autosem__
+from widget import widget
 from label import label
 
 # currently, backslashes in the button text are used to underline
@@ -53,31 +54,101 @@ class button (label)
 
 	method Draw ()
 	{
-		$draw_blank ($wm.color_button_bg);
-		$outline ('raised', funky=0);
-		$DrawText ();
-	}
-
-	method ClickEffect ()
-	{
-		$outline ('sunken');
-		$A.flush ();
-		$wm.sleep (0.1);
-		$Draw ();
-		$A.flush ();
+		$draw_blank ($wm.color_button_bg)
+		$outline ('raised', funky=0)
+		$DrawText ()
 	}
 
 	method onClick (x, y)
 	{
 		if (not $enabled)
-			return;
+			return
 
-		$ClickEffect ();
-		$Action ();
+		$outline ('sunken')
+		$A.flush ()
+		t0 = now ()
+		$Action ()
+		if ((dt = now () - t0) < 0.1)
+			$wm.sleep (0.1 - dt)
+		$Draw ()
+		$A.flush ()
 	}
 
 	method Click ()
-		$onClick (0, 0);
+		$onClick (0, 0)
 
-	Action = void;
+	Action = void
+}
+
+class ImageButton (widget)
+{
+	elastic = False
+	Action = void
+
+	method Init (img, **kw)
+	{
+		if (img -> str)
+			img = @graphics.ImageFile (img).read_image ()
+		$img = img.convert_bpp ($wm.bpp)
+		if ('Action' in kw)
+			$Action = kw.pop ('Action')
+		kw ["w"] = $img.w
+		kw ["h"] = $img.h
+		$widget_init (**kw)
+	}
+
+	method Draw ()
+		$show_image ($img, 0, 0)
+
+	method onClick (x, y)
+	{
+		if (!$enabled)
+			return
+		$show_image ($img, 1, 1, w=$w-1, h=$h-1)
+		$A.flush ()
+		t0 = now ()
+		$Action ()
+		if ((dt = now () - t0) < 0.1)
+			$wm.sleep (0.1 - dt)
+		$Draw ()
+	}
+}
+
+class ImageToggleButton (widget)
+{
+	elastic = False
+	onToggle = void
+
+	method Init (img1, img2, $state=True, **kw)
+	{
+		if (img1 -> str)
+			img1 = @graphics.ImageFile (img1).read_image ()
+		$img1 = img1.convert_bpp ($wm.bpp)
+		if (img2 -> str)
+			img2 = @graphics.ImageFile (img2).read_image ()
+		$img2 = img2.convert_bpp ($wm.bpp)
+		if ('onToggle' in kw)
+			$onToggle = kw.pop ('onToggle')
+		kw ["w"] = img1.w
+		kw ["h"] = img1.h
+		$widget_init (**kw)
+	}
+
+	method Draw ()
+		$show_image ($state ? $img1 : $img2, 0, 0)
+
+	method onClick (x, y)
+	{
+		if (!$enabled)
+			return
+		$toggle ()
+	}
+
+	method toggle ()
+	{
+		if ($onToggle ($state))
+			$state = not $state
+		$Draw ()
+	}
+
 }
