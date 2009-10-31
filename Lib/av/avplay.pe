@@ -259,40 +259,41 @@ class avstream
 
 ##########################################################
 # Synchronizer Clock
+# according to ffplay: "external clock source"
 ##########################################################
 
-class Clock
+class SyncClock
 {
-	method __init__ ($tick_time)
+	method __init__ ()
 	{
-		$paused = thread.sem ()
-		$tlock = thread.xlock (False)
-		$pack = $paused.ack
-		thread.start_new ($run)
+		$l = thread.xlock (False)
+		$ack = $l.ack
 	}
 
-	method start ()
+	method start ($t0, $div=1)
 	{
-		$tick_at = now ()
-		$paused.up ()
+		$start_time = now ()
+		$tr = t0
+		$l.release ()
+	}
+
+	method tick (t)
+	{
+		$ack ()
+		dt = ($start_time - now ()) + (t - $t0) / $div
+		if (dt > 0)
+			sleep (dt)
+		# else drop frame?
+	}
+
+	method tickrel (dt)
+	{
+		$ack ()
+		$tick ($tr += dt)
 	}
 
 	method stop ()
-		$paused.down ()
-
-	method run ()
-		while (1) {
-			$pack ()
-			$tick_at += $tick_time
-			dt = $tick_at - now ()
-			if (dt > 0)
-				sleep (dt)
-			$pack ()
-			$tlock.release ()
-		}
-
-	method tick ()
-		$tlock.acquire ()
+		$l.acquire ()
 }
 
 ##########################################################
@@ -317,8 +318,8 @@ class time_progress (gui.widget) # (make nicer)
 	method Draw ()
 	{
 		$draw_blank ()
-		$draw_line (5, 3, $lastp, 3, $A.color_dblue)
-		$draw_line ($lastp, 3, $w-5, 3, $A.color_txt)
+		$draw_line (5, 3, $lastp, 3, 0x4466aa)
+		$draw_line ($lastp, 3, $w-5, 3, 0x223388)
 		$draw_line ($lastp, 0, $lastp, 6, $A.color_dred)
 		$draw_line ($lastp+1, 0, $lastp+1, 6, $A.color_dred)
 	}
@@ -460,21 +461,19 @@ class avwidget
 		$abuf = ""
 		if (!$Audio)
 			$Audio = AudioDev ()
-		$video_clock = Clock ($vid.dt)
+
+		$video_time = 0.0
+		$clock = SyncClock ()
 
 		# start runqueue thread
 		$vid.go ($destbpp, ($vwidth, $vheight))
 		$frn = 0
 		$maxfrn = $vid.duration / $vid.dt - 2
 		if ($vid.has_audio) {
-			$audio_clock = Clock (float ($BUFFER_SIZE) /
-					 (2 * $vid.sample_rate * $vid.channels))  
+			$audio_tick = float ($BUFFER_SIZE) / (2 * $vid.sample_rate * $vid.channels)
 			thread.start_new ($pullvideo)
 			thread.start_new ($pullaudio)
-		} else {
-			$audio_clock = None
-			thread.start_new ($pullvideo_only)
-		}
+		} else  thread.start_new ($pullvideo_only)
 		$is_paused=True
 
 		if (frn0) {
@@ -521,16 +520,12 @@ class avwidget
 			$pn += 1
 			if ($vid.has_audio)
 				$Audio.release ()
-			if ($audio_clock)
-				$audio_clock.stop ()
-			$video_clock.stop ()
+			$clock.stop ()
 		} else {
 			$pn += 1
 			if ($vid.has_audio)
 				$Audio.grab ($vid.sample_rate, $vid.channels)
-			if ($audio_clock)
-				$audio_clock.start ()
-			$video_clock.start ()
+			$clock.start ($video_time)
 		}
 
 	method Seek (tot, off, p=True)
@@ -538,20 +533,22 @@ class avwidget
 		if(p) $Pause (True)
 		frac = float (off) / tot
 		if (frac <= 1.0)
-			if ((frame_no = $vid.seek (frac)) is not None)
+			if ((frame_no = $vid.seek (frac)) is not None) {
 				$frn = frame_no
+				$video_time = $frn * $vid.dt
+			}
 		if(p) $Pause (False)
 	}
 
 	method FastForward (state)
 		if (state) {
-			if ($audio_clock)
-				$audio_clock.tick_time /= 3
-			$video_clock.tick_time /= 3
+			$clock.stop ()
+			sleep (0.1)
+			$clock.start ($video_time, 3)
 		} else {
-			if ($audio_clock)
-				$audio_clock.tick_time *= 3
-			$video_clock.tick_time *= 3
+			$clock.stop ()
+			sleep (0.1)
+			$clock.start ($video_time, 1)
 		}
 
 	# stream threads
@@ -568,9 +565,10 @@ class avwidget
 			$abuf += d
 			OFFSET = 0
 			while (len ($abuf) - OFFSET >= BUFFER_SIZE) {
-				$audio_clock.tick ()
+				audata = $abuf [OFFSET:OFFSET+BUFFER_SIZE]
+				$clock.tickrel ($audio_tick)
 				if (!$FFWD.state)
-					$Audio.play ($abuf [OFFSET:OFFSET+BUFFER_SIZE])
+					$Audio.play (audata)
 				OFFSET += BUFFER_SIZE
 			}
 			$abuf = $abuf [OFFSET:]
@@ -593,11 +591,11 @@ class avwidget
 		sub = None
 		while (1) {
 			buff, (dts, pts) = $vid.pull_video ()
+			$video_time = ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
 			if.continue (!buff)
 				if ($EOF ()) break
-			$video_clock.tick ()
+			$clock.tick (ts)
 			$put_frame (buff)
-			ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
 			$progress.update (ts, $vid.duration)
 			if ($subs) {
 				s2 = $subs.at (ts)
@@ -621,11 +619,11 @@ class avwidget
 		spf = $vid.dt
 		while (1) {
 			buff, pts = $vid.pull_video ()
+			$video_time = ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
 			if.continue (!buff)
 				if ($EOF ()) break
-			$video_clock.tick ()
+			$clock.tick (ts)
 			$put_frame (buff)
-			ts = dts != -1 ? dts : pts != -1 ? pts : $frn*spf
 			$progress.update (ts, $vid.duration)
 			try $progress.asyncDraw ()
 			$frn += 1
@@ -650,7 +648,7 @@ class avwidget
 			$pn += 1
 			thread.start_new ($watch_file)
 		}
-		$video_clock.tick ()
+		$clock.tick ()
 	}
 
 	RESUME_KB = 200
