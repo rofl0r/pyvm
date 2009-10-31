@@ -227,7 +227,7 @@ class WindowClass (**BaseWin)
 			if (r0 == "M") {
 				$mouse_xy = [int (x) for (x in r [1:])]
 				r = "MOTION",
-			} else if (r0 == "CLICK")
+			} else if (r0 in ("CLICK", "UNCLICK"))
 				r [1:] = [int (x) for (x in r [1:])]
 			else if (r0 == "PRESS")
 				if (r [1] == "NL")

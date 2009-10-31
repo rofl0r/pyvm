@@ -117,9 +117,10 @@ You can switch between branches with:
 
 	pyvm git switch upstream
 
-but this can happen only if there are no un-commited changes (iow,
-the output of 'git diff' is empty).  Switching branches exports
-files in the pyvm tree, so some things will need recompilation, etc.
+If there are any uncommitted changes they'll be automatically
+stashed in a temporary tree and re-applied next time you swith
+back to the branch.  Switching branches exports files in the pyvm
+tree, so some things will need recompilation, etc.
 
 It is also possible to run:
 

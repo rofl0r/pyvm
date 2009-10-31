@@ -231,6 +231,21 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 
 GitUser = @sysconfig.GETCONF ("gituser")
 
+def write_cwd_tree (repo)
+{
+	idx = repo.IDX
+
+	# update the cache
+	# git-update-index --refresh
+	for (f in idx.D.keys ())
+		idx.update (f)
+	idx.write_index ()
+
+	# write the cache to a new tree object
+	# git-write-tree
+	return idx.write_tree ()
+}
+
 def cmd_checkin (repo, message, Author=None, AuthDate=None)
 {
 	# checkin is the simple command to commit the current state
@@ -242,17 +257,7 @@ def cmd_checkin (repo, message, Author=None, AuthDate=None)
 		exit ()
 	}
 
-	idx = repo.IDX
-
-	# update the cache
-	# git-update-index --refresh
-	for (f in idx.D.keys ())
-		idx.update (f)
-	idx.write_index ()
-
-	# write the cache to a new tree object
-	# git-write-tree
-	newtree = idx.write_tree ()
+	newtree = write_cwd_tree (repo)
 
 	# make new commit and save to HEAD
 	# git-commit
@@ -306,27 +311,40 @@ def cmd_fork (repo, branch)
 
 def cmd_switch (repo, branch)
 {
-	# simple command to checkout a branch, but not if data
-	# will be lost.
+	# simple command to switch between branches.
+	# Uncommitted changes are automatically stashed in
+	# a temporary tree pointed by stash/<branch-name>
 
-	if (need_checkin (repo)) {
-		print "Files that need check-in:", ",".join (need_checkin (repo))
-		print "switch aborted.  Use --force to do the switch anyway"
+	# target branch exists?
+	try repo.branch (branch)
+	except {
+		print "No such branch to switch to"
 		return
 	}
 
-	cur = os.readlink (repo.BASEDIR + "HEAD").rpartition ("/")[2]
+	cur = repo.HEAD_is ()
 	if (branch == cur)
 		return
-	toc = repo.branch (branch)
-	cur = repo.branch (cur)
-	if (toc.sig != cur.sig) {
+
+	# need to save changes to stash?
+	if (need_checkin (repo)) {
+		print "Uncommited changes. Writting stash"
+		current_tree = write_cwd_tree (repo)
+		repo.write_stash (cur, current_tree)
+	} else current_tree = repo.branch (cur).tree
+
+	# target tree: stashed of from commit?
+	if (target_stashed = repo.read_stash (branch))
+		target_tree = target_stashed
+	else target_tree = repo.branch (branch).tree
+
+	if (target_tree != current_tree) {
 		# which files should be really checked out
-		files = set ([x [0] for (x in repo.diff_trees (cur.tree, toc.tree))])
+		files = set ([x [0] for (x in repo.diff_trees (current_tree, target_tree))])
 
 		# do check-out
 		# read target tree into cache
-		repo.IDX.read_tree (repo.openobj (toc.tree))
+		repo.IDX.read_tree (repo.openobj (target_tree))
 
 		# print the diff that will be perfomed from the checkout
 		#cmd_diff (repo);
@@ -337,6 +355,13 @@ def cmd_switch (repo, branch)
 		# write cache
 		repo.IDX.write_index ()
 	}
+
+	# remove the "stash"
+	if (target_stashed) {
+		print "Stashed changes applied"
+		repo.remove_stash (branch)
+	}
+
 	repo.set_HEAD (branch)
 }
 

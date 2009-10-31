@@ -56,6 +56,7 @@ class repository
 	method readfile (f) return readfile ($BASEDIR + f)
 	method listdir (d)  return os.listdir ($BASEDIR + d)
 	method mkdir (d)    os.mkdir ($BASEDIR + d)
+	method remove (d)   os.remove ($BASEDIR + d)
 	method writefile (fnm, data) open ($BASEDIR + fnm, "w").write (data)
 
 	#
@@ -73,6 +74,18 @@ class repository
 
 	method branches ()
 		return [i, $readhead (i).strip () for (i in $listdir ("refs/heads"))]
+
+	# stashes
+	method write_stash (branch, tree)
+	{
+		try $mkdir ("stash")
+		$writefile ("stash/" + branch, tree + "\n")
+	}
+	method read_stash (branch)
+		if ($access ("stash/" + branch))
+			return $readfile ("stash/" + branch).strip ()
+	method remove_stash (branch)
+		$remove ("stash/" + branch)
 
 	# which branch is HEAD
 	method HEAD_is ()
