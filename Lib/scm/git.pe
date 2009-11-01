@@ -333,11 +333,8 @@ def cmd_switch (repo, branch)
 		repo.write_stash (cur, current_tree)
 	} else current_tree = repo.branch (cur).tree
 
-	# target tree: stashed of from commit?
-	if (target_stashed = repo.read_stash (branch))
-		target_tree = target_stashed
-	else target_tree = repo.branch (branch).tree
-
+	# check out
+	target_tree = repo.branch (branch).tree
 	if (target_tree != current_tree) {
 		# which files should be really checked out
 		files = set ([x [0] for (x in repo.diff_trees (current_tree, target_tree))])
@@ -356,9 +353,31 @@ def cmd_switch (repo, branch)
 		repo.IDX.write_index ()
 	}
 
-	# remove the "stash"
-	if (target_stashed) {
-		print "Stashed changes applied"
+	# apply stash
+	if (stashed_tree = repo.read_stash (branch)) {
+		print "Applying stashed changes"
+		# same procedure as above: check out stashed files
+		# (but do not call write_index() at the end)
+		files = set ([x [0] for (x in repo.diff_trees (target_tree, stashed_tree))])
+		repo.IDX.read_tree (repo.openobj (stashed_tree))
+		repo.IDX.check_out (files)
+
+		# Touch stashed out files so they are detected by 'git diff'
+		# If we have nanosecond precission in stat() we can just do the
+		# touch immediatelly. If not (currently the case) we sleep
+		# for some time so that one second will have ellapsed since
+		# the file creation.
+		if (files) {
+			dt = 1.05 + max ([os.stat (ff).st_mtime for (ff in files)]) - now ()
+			if (dt > 0) {
+				print "sleep: %.2f"%dt
+				sleep (dt)
+			}
+		}
+		for (f in files)
+			os.touch (f)
+
+		# remove the stash
 		repo.remove_stash (branch)
 	}
 

@@ -395,6 +395,8 @@ class commit
 		$headers, None, $message = data [i:].partition ("\n\n")
 	}
 
+	method Parent (i)
+		return $repo.openobj ($parents [i])
 	method Parents ()
 		for (p in $parents)
 			yield $repo.openobj (p)
