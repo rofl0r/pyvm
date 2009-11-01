@@ -105,7 +105,8 @@ class deco_win (**basewin)
 
 	method make_bars ()
 	{
-		$wbara.clear (0x6666ff)
+		for (y in *BH)
+			$wbara.draw_line (0, y, $wbara.w, y, 0x333355 + y * 4)
 		$wbard.clear (0x776677)
 		GFonts.render_to ($wbara, 0, 0, $title, 0xf0f0f0)
 		GFonts.render_to ($wbard, 0, 0, $title, 0)

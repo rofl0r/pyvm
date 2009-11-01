@@ -39,7 +39,7 @@ def Open (filename, ptsize=None, builtin_raster=@sysconfig.GETCONF ("pyvmRasteri
 	  gamma=1.0, lz=0, ffixed=0)
 with (FLOCK) {
 #builtin_raster = 0
-	key = filename, ptsize, builtin_raster, ffixed
+	key = filename, ptsize, builtin_raster, ffixed, gamma
 	try return FontRef [key]
 
 	if (filename [0] == '$')

@@ -1,31 +1,31 @@
 __autosem__
 
 # Selector of type1 or trutype
-def Rasterizer (filename, data=None, **kw)
+def Rasterizer (filename, data, gamma, **kw)
 {
 	if (!data)
 		data = readfile (filename)
 
 	if (data.sw ("\0\1\0\0") or data.sw ("OTTO")) {
 		from fonts.raster.truetype import TTF
-		return TTF (filename, data, **kw)
+		return TTF (filename, data, gamma, **kw)
 	}
 
 	from fonts.raster.type1 import Type1
-	return Type1 (filename, data, **kw)
+	return Type1 (filename, data, gamma, **kw)
 }
 
 # weak reference interface of open rasterizers
 Faces = {}
 __weakrefs__.append (Faces)
 
-def open_face (filename, data, encoding=None)
+def open_face (filename, data, gamma, encoding=None)
 {
 	if (filename)
-		try return Faces [filename]
-	R = Rasterizer (filename, data, encoding=encoding)
+		try return Faces [(filename, gamma)]
+	R = Rasterizer (filename, data, gamma, encoding=encoding)
 	if (filename)
-		Faces [filename] = R
+		Faces [(filename, gamma)] = R
 	return R
 }
 
@@ -39,7 +39,7 @@ class BuiltinRasterizer
 
 	method __init__ (ptsize, $filename, mem, encoding, gamma, $ffixed)
 	{
-		$R = open_face (filename, mem, encoding=encoding)
+		$R = open_face (filename, mem, gamma, encoding=encoding)
 		$ucs = $R.ucs
 
 		char2id = $R.char2id

@@ -1,0 +1,35 @@
+__autosem__
+
+import gui
+from fonts.render import Open
+import time
+sys.gc.disable ()
+
+g = 1.0
+
+FF = "$corefonts/mono"
+FF = "$urw/mono"
+
+def doo (f=1)
+{
+	global g
+	if (f == "UP") g += 0.02
+	else if (f == "DOWN") 
+		if (g - 0.02 > 0) g -= 0.02
+	f = Open (FF, 17, gamma=g)
+	f2 = Open (FF + "-b", 17, gamma=g)
+	F.fb.fill_rect (0, 0, 1250, 50, 0xffffff)
+	F.fb.fill_rect (0, 50, 1250, 50, 0x0)
+	S = "Test gamma correction. White characters on black bg are different. Use up/down arrows %.2f"%g
+	f.render_to (F.fb, 0, 0, S, 0)
+	f2.render_to (F.fb, 0, 20, S, 0)
+	f.render_to (F.fb, 0, 50, S, 0xffffff)
+	f2.render_to (F.fb, 0, 70, S, 0xffffff)
+	F.flip_fb ()
+	wm.flush_inqueue ()
+}
+
+wm =gui.Wm (0, 0, KeyCtrl=doo)
+with (gui.vcontainer ())
+	F = gui.fbview (w=1250, h=100, setupcb=doo)
+wm.Start ()

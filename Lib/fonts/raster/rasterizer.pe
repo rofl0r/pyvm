@@ -7,7 +7,7 @@
 
 __autosem__
 
-__bind__ = ["MakeBitmap", "MakeBitmap2"]
+__bind__ = ["MakeBitmap", "MakeBitmap2", "prepBitmap"]
 
 from rglyph import RenderedGlyph
 from graphics.framebuffer import FrameBuffer
@@ -15,18 +15,14 @@ from math import floor, ceil
 
 C = @DLL.Import ("mkglyph", "-O3 -Wall", pelf=1)
 
-if (0) {
-	def make_gamma_table (gamma)
-		return "".join ([chr (int (256 * pow (i / 256.0, gamma))) for (i in *256)])
-
-	Gamma = make_gamma_table (0.92)
-	C.set_gamma (Gamma)
-}
+def make_gamma_table (gamma)
+	return "".join ([chr (int (256 * pow (i / 256.0, gamma))) for (i in *256)])
 
 MakeBitmap = C.MakeGlyph
 MakeBitmapAH = C.MakeGlyphAH
 MakeBitmap2 = C.MakeGlyph2
 MakeBitmap3 = C.MakeGlyph3
+prepBitmap = C.prepBitmap
 
 def NA ()
 	raise Error ("Not Subclassed!")
@@ -57,9 +53,10 @@ class BaseRasterizer
 
 	# ----------------------------------------------------
 
-	method __init__ ($filename="", data=None, **kw)
+	method __init__ ($filename="", data=None, gamma=1.0, **kw)
 	{
 		if (!data) data = readfile (filename)
+		$Gamma = gamma == 1.0 ? 0 : make_gamma_table (gamma)
 
 		# Must set: $BBox, $FontName, $UnitsPerEM
 		$Init (data, **kw)
@@ -278,6 +275,7 @@ class BaseRasterizer
 			bitmap = _buffer (cols * rows)
 			MakeBitmap (fb.buffer, fb.w, x_start, y_start, rows, cols, MPP, bitmap)
 		}
+		prepBitmap (bitmap, cols * rows, $Gamma)
 
 		return RenderedGlyph (g, bitmap, advance, rows, cols, int (px_lbear), py, issp)
 	}

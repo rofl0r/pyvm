@@ -97,8 +97,6 @@ void MakeGlyphAH2 (const unsigned char *fb, uint fw, int x0, int y0, uint rows, 
 	MakeGlyphAH (fb, fw, x0, y0, rows, cols, mpp, bitmap);
 }
 
-static const unsigned char *gamma = 0;
-
 #if 0
 /* Same thing auto-hinted but 50% faster */
 int G (const unsigned char *fb, uint fw, int x0, int y0, uint rows, uint cols,
@@ -190,10 +188,6 @@ int MakeGlyph3 (const unsigned char *fb, uint fw, int x0, int y0, uint rows, uin
 		}
 	}
 
-	if (gamma)
-		for (jj = 0; jj < rxc; jj++)
-			bitmap [jj] = gamma [bitmap [jj]];
-
 #if 0
 	for (jj = 0; jj < rxc; jj++)
 		bitmap [jj] = bitmap [jj] < 100 ? 0 : bitmap [jj];
@@ -201,9 +195,16 @@ int MakeGlyph3 (const unsigned char *fb, uint fw, int x0, int y0, uint rows, uin
 	return xb - dm;
 }
 
-void set_gamma (const unsigned char *p)
+void prepBitmap (unsigned char bitmap[], int rxc, const unsigned char gamma[])
 {
-	gamma = p;
+	int jj;
+
+	for (jj = 0; jj < rxc; jj++)
+		bitmap [jj] = 255 - bitmap [jj];
+
+	if (gamma)
+		for (jj = 0; jj < rxc; jj++)
+			bitmap [jj] = gamma [bitmap [jj]];
 }
 
 const char ABI [] = 
@@ -212,5 +213,5 @@ const char ABI [] =
 "- MakeGlyphAH2!  siiiiiis		\n"
 "i MakeGlyph2     siiiiiis		\n"
 "i MakeGlyph3     siiiiiis		\n"
-"- set_gamma	  s			\n"
+"- prepBitmap	  siv			\n"
 ;

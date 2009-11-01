@@ -6,7 +6,7 @@ import gui, thread
 
 USAGE = "Usage: winamp [-r] <Files>
 
-Graphical audio player.
+Graphical audio player. Looks better standalone on linuxfb.
 Use up/down arrows or scrollwheel to set volume.
 File selection not implemented.
 "

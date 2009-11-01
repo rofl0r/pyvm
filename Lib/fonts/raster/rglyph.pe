@@ -16,7 +16,6 @@ class RenderedGlyph
 		if (ffixed)
 			advance = 64 * ffixed
 		return "%ai%ai%ai%ai%ai%ai%ai" %(
-			advance, $px, $py, $rows, $cols, $cols, $g == "space" or $issp) + 
-				"".join ([chr (255 - ord (c)) for (c in $bitmap)])
+			advance, $px, $py, $rows, $cols, $cols, $g == "space" or $issp) + $bitmap
 	}
 }
