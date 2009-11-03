@@ -519,16 +519,17 @@ def jpeg2rgb16 (data, scale, quality, output, ljpeg=@sysconfig.GETCONF ("AlwaysU
 
 ###########################################################
 
-USAGE = """pyvm jpeg [-8] [-j] [-i] file.jpg
+USAGE = """pyvm jpeg [-8] [-j] [-i] [-2] file.jpg
 -i:  info only
 Will decode the jpeg and store in into WOOT.ppm
 -8:  scale down 8 times
 -j:  also decode with libjpeg, save as TOOW.ppm, and report time/signal differences
+-2:  16bpp decoder (doesn't work with -j and -8)
 """
 
 if (__name__ == __main__)
 {
-	info_only, jswitch, scale = sys.argp.check_switches ("-i", "-j", "-8")
+	info_only, jswitch, scale, bpp16 = sys.argp.check_switches ("-i", "-j", "-8", "-2")
 	scale = scale ? 8 : 1
 	f = sys.argp.filename_ex ()
 	data = readfile (f)
@@ -540,14 +541,17 @@ if (__name__ == __main__)
 	if (info_only) exit ()
 	try {
 		T = @time.Timit ()
-		rgb, w, h = jpeg (data=data).jpeg2rgb (scale=scale)
+		if (bpp16)
+			rgb, w, h = jpeg (data=data).jpeg2rgb16 (scale=scale)
+		else rgb, w, h = jpeg (data=data).jpeg2rgb (scale=scale)
+		fb = @graphics.framebuffer.FrameBuffer (w, h, bpp16?2:3, rgb)
 		t1 = T.pr ("Native jpeg decoder:\t")
 	} except {
 		print "Native jpeg decoder could not process this file."
 		raise
 		exit ()
 	}
-	@graphics.ppm.store ("WOOT.ppm", rgb.tostring (), w, h)
+	fb.save_as_ppm ("WOOT.ppm")
 	if (jswitch) {
 		T.r ()
 		out = _buffer (3 * w * h)

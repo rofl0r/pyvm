@@ -1013,10 +1013,12 @@ static inline void blit (const blitctx *b, unsigned int x, unsigned int y, int e
 	unsigned int nc = mcuw;
 	unsigned int xx, yy;
 	unsigned int w = b->width, h = b->height;
+	unsigned int ds = 0;
 
 	if (edge) {
 		if (nr + yp > h) nr = h - yp;
 		if (nc + xp > w) nc = w - xp;
+		ds = 3 * (mcuw - nc);
 	}
 
 	unsigned int nc3 = 3 * nc;
@@ -1031,6 +1033,7 @@ static inline void blit (const blitctx *b, unsigned int x, unsigned int y, int e
 			*dest++ = *src++;
 		}
 		dest += w - nc3;
+		src += ds;
 	}
 }
 
@@ -1045,16 +1048,18 @@ static inline void blit16 (const blitctx *b, unsigned int x, unsigned int y, int
 	unsigned int nc = mcuw;
 	unsigned int xx, yy;
 	unsigned int w = b->width, h = b->height;
+	unsigned int ds = 0;
 
 	if (edge) {
 		if (nr + yp > h) nr = h - yp;
 		if (nc + xp > w) nc = w - xp;
+		ds = 3 * (mcuw - nc);
 	}
 
 	ushort *dest = (ushort*) b->dest + (w * yp + xp);
 	const unsigned char *src = b->src;
 
-	for (yy = 0; yy < nr; yy++, dest += w)
+	for (yy = 0; yy < nr; yy++, dest += w, src += ds)
 		for (xx = 0; xx < nc; xx++, src += 3)
 			put_rgb_ushort (&dest [xx], src [0], src [1], src [2]);
 }
