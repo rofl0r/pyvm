@@ -16,7 +16,7 @@ static const char chars [256] = {
 	[' '] = 1,
 };
 
-int urlencode_len (unsigned char str[], int len)
+int urlencode_len (const unsigned char str[], int len)
 {
 	int sz = 0, i;
 	for (i = 0; i < len; i++)
@@ -26,7 +26,7 @@ int urlencode_len (unsigned char str[], int len)
 
 static const char hexchar [] = "0123456789abcdef";
 
-void urlencode (unsigned char in[], int len, unsigned char *out)
+void urlencode (const unsigned char in[], int len, unsigned char *out)
 {
 	int i;
 	for (i = 0; i < len; i++)
