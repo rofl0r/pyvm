@@ -28,6 +28,8 @@ from net import http, resolv
 
 from socket import socket
 
+WEBC = @DLL.Import ("web", "-O2", pelf=1)
+
 socket.DoNetStats = True
 
 DebugNet      = 0
@@ -104,13 +106,16 @@ def canon (s, eslash=False)
 
 # encode a dictionary of key/values for the form submit via GET
 
-def percent_enc (x)
-	return "%%%02x" % ord (x.group (0))
-
-VENC = re.replace (r"[\x00-\x20\x7f-\xff&=; %@]", percent_enc)
+def urlencode (x)
+{
+	ll = WEBC.urlencode_len (x, len (x))
+	r = _buffer (ll)
+	WEBC.urlencode (x, len (x), r)
+	return r
+}
 
 def urlencodev (vals)
-	return "&".join (["%s=%s" %(VENC (k), VENC (v)) for (k, v in vals.items ())])
+	return "&".join (["%s=%s" %(urlencode (k), urlencode (v)) for (k, v in vals.items ())])
 
 # URL, a centric element of the browser
 # The url, for one is a resource locator (or file path).

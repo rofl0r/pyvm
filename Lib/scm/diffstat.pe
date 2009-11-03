@@ -46,7 +46,7 @@ def common_prefix (s1, s2)
 	return ss
 }
 
-def diffstat (R, maxw, color=False)
+def diffstat (R, maxw, color=False, html=False)
 {
 	R = rewinder (iter (R))
 
@@ -91,8 +91,16 @@ def diffstat (R, maxw, color=False)
 	maxl = max ([len (x) for (x in files)])
 	fs = " %%-%is | %%4s %%s" %maxl
 
+	if (html) print """<style>
+body { background:black; font-weight: bold; color: white }
+.color_b { color: blue }
+.color_g { color: green}
+.color_r { color: red }
+</style>
+<pre>"""
+
 	totadd = totrmv = 0
-	if (!color) {
+	if (!color and !html) {
 		wleft = max (maxw - (maxl + 10), 10)
 		maxh = max ([x [2] for (x in rez.values ())])
 		if (maxh <= wleft) factor = 1.0
@@ -106,7 +114,10 @@ def diffstat (R, maxw, color=False)
 		}
 		yield " %i files changed, %i insertions (+), %i deletions (-)" %(len (files), totadd, totrmv)
 	} else {
-		from ttycolor import color
+		if (color)
+			from ttycolor import color
+		else def color (text, c)
+			return "<span class=color_%s>%s</span>"%(c, text)
 		def coldr (sign, n)
 		{
 			n0 = n / 1000
@@ -130,6 +141,8 @@ def diffstat (R, maxw, color=False)
 		yield " %i files changed, %i insertions (+), %i deletions (-), %+i difference, %i mods" %
 			(len (files), totadd, totrmv, totadd-totrmv, totadd+totrmv)
 	}
+
+	if (html) print "</pre>"
 }
 
 USAGE = "usage: diffstat [--color] [<file>]"
@@ -142,8 +155,8 @@ if (__name__ == __main__) {
 	# get from sys.tty_size
 	maxw = 80
 
-	color = sys.argp.check_switch ("--color")
+	color, html = sys.argp.check_switches ("--color", "--html")
 	input = sys.argp.have_args () ? open (sys.argp.filename_ex ()) : iter (sys.stdin)
-	for (l in diffstat (stripnl (input), maxw, color=color))
+	for (l in diffstat (stripnl (input), maxw, color=color, html=html))
 		print l
 }
