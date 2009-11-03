@@ -1,0 +1,257 @@
+##  git rebase
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from git import need_checkin
+from misc import yn, menu
+from scm.diff3 import diff3, HAVE_DIFF3
+import time
+
+def Quit (x)
+{
+	print x
+	exit ()
+}
+def End (x)
+{
+	print x
+	exit (0)
+}
+
+if (__name__ != __main__)
+	Quit ("rebase is a toplevel script")
+
+USAGE = "pyvm rebase [--other] <branch>
+
+Suppose the repository looks like this:
+
+              A---B---C hacks
+             /
+	D---E---F---G upstream
+
+If you are on branch 'hacks' and you run
+	pyvm rebase upstream
+the repository would be transformed into:
+
+		      A'---B'---C' hacks
+                     /
+	D---E---F---G upstream
+
+In simple words, after the rebase, branch 'hacks'
+would contain all the goodies combined (assuming
+that 'F', 'A', etc are improvements).
+
+The rebase may succeed automatically or there
+may be conflicts (imagine that the same line of
+the same file is modified in both branches
+differently).  This is an *interactive* program
+that may ask you to edit files and manually
+resolve conflicts.
+
+In any case, the changes are really written
+into the repository after all the steps have
+been performed and the program hasn't been
+interrupted.
+
+This rebase implementation works *only* on
+repositories with linear history (ie commits
+cannot have more than 1 parent). For that
+reason it will not work for repositories other
+than the pyvm repo, unless the command line
+option '--other' is enabled.
+"
+
+repo = @scm."git-core".current_working_repository (norw=True)
+other = sys.argp.check_switch ("--other")
+if (!repo.isPyvmRepo and !other)
+	Quit ("rebase should be used only on the pyvm repository for now (use --other)")
+
+branch = sys.argp.one ()
+if (!repo.branch (branch))
+	Quit ("No such branch [%s]"%branch)
+current = repo.HEAD_is ()
+if (current == branch)
+	Quit ("Already at [%s]"%branch)
+
+if (need_checkin (repo))
+	Quit ("Current branch has uncommitted changes. Cannot rebase")
+
+c1 = repo.open_commit (current)
+c2 = repo.open_commit (branch)
+common = repo.find_common_ancestor (c1, c2)		# E
+
+##
+## Same line behind us
+##
+if (c2.sig == common.sig)
+	End ("Alreay on base")
+
+##
+## Quick fast forward
+## 
+if (c1.sig == common.sig) {
+	print "Fast forward rebase"
+	repo.write_HEAD (c2.sig)
+	files = set ([x [0] for (x in repo.diff_trees (c1.tree, c2.tree))])
+	repo.IDX.read_tree (repo.openobj (c2.tree))
+	print "Checking out files"
+	repo.IDX.check_out (files)
+	repo.IDX.write_index ()
+	repo.COMMIT ()
+	End ("Done.")
+}
+
+##
+## Real merge work
+##
+
+if (!HAVE_DIFF3)
+	Quit ("can't find the 'diff3' program on this system. aborted")
+
+print "rebase may need to write temporary files in the currect directory to resolve conflicts"
+if (!yn ("Is currect directory good for this purpose"))
+	exit ()
+
+CBA = []
+for (p in repo.MainHistory (c1))
+	if (p.sig == common.sig) break
+	else CBA<< p
+ABC = CBA.reverse ()
+
+print "%i commits to rebase" %len (ABC)
+
+def merge_trees (repo, tbase, t1, t2)
+{
+	d1 = {f:(b1, b2) for (f, b1, b2 in repo.diff_trees (tbase, t1))}
+	d2 = {f:(b1, b2) for (f, b1, b2 in repo.diff_trees (tbase, t2))}
+
+	# files that are modified in both trees and need diff3
+	resolve = set ()
+	for (f in d1)
+		if (f in d2)
+			if (d1 [f] != d2 [f])
+				resolve.add (f)
+
+	T0 = repo.openobj (tbase).lstree ()
+	T1 = repo.openobj (t1).lstree ()
+	T2 = repo.openobj (t2).lstree ()
+
+	# modify the base tree dictionary (T0) accordingly
+
+	for (f in d1)
+		if (f not in resolve)
+			if (f in T1) {
+				T0 [f] = T1 [f]
+				print " %s: using file from this branch"%f
+			} else {
+				print " %s: removed in this branch"%f
+				del T0 [f]
+			}
+
+	for (f in d2)
+		if (f not in resolve and f not in d1)
+			if (f in T2) {
+				T0 [f] = T2 [f]
+				print " %s: using file from other branch"%f
+			} else {
+				print " %s: removed in other branch"%f
+				del T0 [f]
+			}
+
+	for (f in resolve) {
+		if.continue (f not in T0) {
+			a = menu (" %s: new in both branches"%f,
+				  "select the one from this branch",
+				  "select the one from other branch")
+			T0 [f] = (a == 1 ? T1 : T2)[x]
+		}
+		if.continue (f not in T1) {
+			a = menu (" %s: modified in other branch, deleted in this branch"%f,
+				  "delete it",
+				  "use file from other branch")
+			if (a == 1) del T0 [f]
+			else T0 [f] = T2 [f]
+		}
+		if.continue (f not in T2) {
+			a = menu (" %s: modified in this branch, deleted in other branch"%f,
+				  "delete it",
+				  "use file from this branch")
+			if (a == 1) del T0 [f]
+			else T0 [f] = T1 [f]
+		}
+		print " resolving %s"%f
+		newblob = merge_files (repo, f, T0 [f][1], T1 [f][1], T2 [f][1])
+		# (assuming modes are the same...)
+		T0 [f] = T1 [f][0], newblob
+	}
+
+	return repo.write_tree ([(f, mode, sig) for (f, (mode, sig) in T0.items ().sort ())])
+}
+
+def merge_files (repo, path, b0, b1, b2)
+{
+	if ("/" in path)
+		path = path.rpartition ("/")[2]
+	conflict, data = diff3 (path, repo.openobj (b0).data,
+				repo.openobj (b1).data, repo.openobj (b2).data)
+	if (conflict) {
+		filename = data
+		print "Merge conflict! Please edit file %s in another vt/window to resolve"%filename
+		while (1) {
+			raw_input ("Press <enter> when done")
+			data = readfile (filename)
+			if ("<<<<<<" not in data)
+				break
+			print """The file contains the "<<<<<<<" merge conflict marker!"""
+			if (!yn ("Re-edit it"))
+				break
+		}
+	} else print "  OK"
+	return repo.write ("blob", data)
+}
+
+GitUser = @sysconfig.GETCONF ("gituser")
+
+def rebase1 (repo, common, this, baseto)
+{
+	print
+	print "Rebasing commit:", this.title ()
+	print this.sig
+	print "Onto:", baseto.title ()
+	message = this.authorship () + "committer %s %i %s\n\n"%
+		(GitUser, int (now ()), time.LocalOffset) + this.message
+	newtree = merge_trees (repo, common.tree, this.tree, baseto.tree)
+	return repo.openobj (repo.do_commit (message, newtree, (baseto.sig,)))
+}
+
+# The heart of rebase
+baseto = c2
+for (r in ABC) {
+	b = rebase1 (repo, common, r, baseto)
+	common = r
+	baseto = b
+}
+
+print
+print "Rebase done."
+if (!yn ("commit changes"))
+	exit ()
+
+bk = current + ".backup"
+print " If anything goes wrong copy the file %s to .git/refs/heads/%s" %(bk, current)
+print " and run: pyvm git switch -nostash %s"%current
+print " to undo everything"
+open (bk, "w").write (c1.sig + "\n")
+repo.write_HEAD (b.sig)
+repo.COMMIT ()
+print "Rebase committed."
+print "Checking out files"
+files = set ([x [0] for (x in repo.diff_trees (c1.tree, b.tree))])
+repo.IDX.read_tree (repo.openobj (b.tree))
+repo.IDX.check_out (files)
+repo.IDX.write_index ()

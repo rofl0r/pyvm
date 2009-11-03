@@ -137,49 +137,45 @@ to, make a branch "hacks" which is initially the same as the current
 branch.
 
 
-5. Distributed
+5. Combining branches
 --------------
 
-In order to generate a patch that contains the above changes and can be
-applied to an upstream branch, the changes must, somehow be combined with
-other people's changes.  This is the job of "merging".  Currently pyvm's
-git cannot do merges so you'll have to either prepare the patch manually
-or use the official git tool.
+Suppose that you've implemented some new stuff in the personal branch
+"master" which are committed as "A", "B" and "C". Meanwhile, the upstream
+branch has some new commits "F" and "G". After 'git pull' the repository
+would be something like this:
 
-If you're on branch master, you can type:
+	      A---B---C master
+	     /
+	D---E---F---G upstream
 
-	git merge upstream
+What we'd want now is to combine all the goodies and work with a state
+of the project that contains all the new features from both branches
+combined.  This is the job of 'rebase'. From branch "master", running
 
-to do it's magic.  Usually, `git merge` manages to combine everything
-automatically; there is the possibility that there will be "conflicts"
-and some files will have to be edited to resolve them.
-After that run:
+	pyvm rebase upstream
+
+will transform the repository into
+
+		      A'---B'---C' master
+		     /
+	D---E---F---G upstream
+
+which can then be explored/verified with 'pyvm gitex'.
+
+To send the new stuff to the upstream, run the command:
 
 	pyvm git diff master upstream > PATCH.txt
 
 send the PATCH to some people and the next time you pull
 from upstream, the patch should be in there.
-
-If you have multiple patches in your branch, the thing to do is "rebase to
-upstream" and then use some other magic git command to generate a bunch of
-rebased patches, as e-mails. [[This section will be updated with more info]]
+(right now this command will generate one big patch. generating
+smaller patches for each commit "A", "B", "C" is not implemented yet)
 
 "Rebasing" is necessary for having a linear history which is preferred
 for pyvm since it has a small project space and makes reviewing the updates
 by random people much easier.  OTOH, the linear history makes cherry picking
 commits from forks more difficult.
-
-Finally, just note that the upstream repository is constantly advancing.
-The commands:
-
-	pyvm git pull ... master upstream
-	# from branch `master`
-	git merge upstream
-	pyvm git diff master upstream > PATCH.txt
-	... send e-mail with [PATCH] ...
-
-should be done quickly in a bunch in order to ensure that the PATCH is
-really against the current upstream branch.
 
 
 6. Digitally signed pulls

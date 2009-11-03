@@ -1,0 +1,37 @@
+__autosem__
+
+# diff3 is the heart of 3-way merge.
+# For now we use the external diff3 program.
+# (making diff3 if we already have diff is easy but
+# it will need some serious testing on another existing
+# repository with many merges)
+
+from os import system, remove
+
+HAVE_DIFF3 = system ("diff3 -v > /dev/null") == 0
+KEEP_FILES = False
+
+# Return:
+#	True, filename		# merge conflict, edit filename to resolve
+#	False, data		# merge sucess, result is data
+def diff3 (filename, old, f1, f2)
+{
+	ffo = "OLD-" + filename
+	ff1 = "THIS-" + filename
+	ff2 = "OTHER-" + filename
+	ffn = "NEW-" + filename
+	open (ffo, "w").write (old)
+	open (ff1, "w").write (f1)
+	open (ff2, "w").write (f2)
+	system ("diff3 -m %s %s %s > %s"% (ff1, ffo, ff2, ffn))
+	new = readfile (ffn)
+	if ("\n<<<<<<< " in new or "\n||||||| " in new or new.sw ("<<<<<<"))
+		return True, ffn
+	if (!KEEP_FILES) {
+		remove (ffo)
+		remove (ff1)
+		remove (ff2)
+		remove (ffn)
+	}
+	return False, new
+}

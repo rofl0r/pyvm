@@ -534,3 +534,17 @@ def yn (msg, default=None)
 			return yn == "y"
 	}
 }
+
+def menu (msg, *choices)
+{
+	print msg
+	for (n, x in enumerate (choices))
+		print " %i) %s"%(n+1, x)
+	while (1) {
+		ch = raw_input ("Enter choice: ").lower ().strip ()
+		try ch = int (ch)
+		except continue
+		if (0 < ch <= len (choices))
+			return ch
+	}
+}

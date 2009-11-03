@@ -63,6 +63,7 @@ pyvm torfs
 	mount downloaded torrents into the filesystem
 
 pyvm git [diff|init-db|checkin|checkout|...]
+pyvm rebase <branch>
 	Minimal implementation of the git distributed version control
 	system, mainly useful for self-hosting pyvm and fetching "updates".
 	See GIT.txt for more

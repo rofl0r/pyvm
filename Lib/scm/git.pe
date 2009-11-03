@@ -8,6 +8,7 @@
 # This module provides some simple higher level git commands (porcelain)
 __autosem__
 Repository = @scm."git-core".repository
+find_repository = @scm."git-core".find_repository
 RemoteRepo = @scm."git-core".RemoteRepo
 UpstreamRepo = @scm."git-core".UpstreamRepo
 ReadFile = @scm."git-core".ReadFile
@@ -25,7 +26,8 @@ USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|
 	diff <t1> <t2>		: diff two commits (or branches)
 	cat <sha>		: show an object
 	past			: show last commits
-	switch <branch>		: switch to other branch (not well tested/checkout not 100% OK)
+	switch <branch>		: switch to other branch. Changes in working tree automatically stashed
+	switch -nostash <br>	: switch to other branch. Changes in working tree discarded
 	files			: show if there are new untracked files, or missing tracked files
 	files ls		: list indexed files
 	files update		: update the file index according to the output of `git files`
@@ -113,24 +115,12 @@ def init_db ()
 ## Utility
 ##
 
-def find_repository ()
-{
-	cwd = os.getcwd ()
-	while (1) {
-		if (os.access (cwd + "/.git"))
-			return cwd + "/.git/"
-		cwd, None, None = cwd.rpartition ("/")
-		if (!cwd) raise "No .git repository in here"
-	}
-}
-
 def repository (BASEDIR=None)
 	return Repository (BASEDIR or find_repository ())
 
 def need_checkin (repo)
 {
-	try cur = repo.branch (os.readlink (repo.BASEDIR + "HEAD").rpartition ("/")[2])
-	except {
+	if !(cur = repo.branch (os.readlink (repo.BASEDIR + "HEAD").rpartition ("/")[2])) {
 		print "No HEAD commit"
 		return [f for (f, sig in repo.IDX.lsfiles ())]
 	}
@@ -301,33 +291,39 @@ def cmd_past (repo, arg=None)
 
 def cmd_fork (repo, branch)
 {
-	try {
-		repo.branch (branch)
+	if (repo.branch (branch)) {
 		print "Branch [%s] exists already. Won't create" %branch
 		return
 	}
 	repo.write_branch (branch, repo.HEAD ())
 }
 
-def cmd_switch (repo, branch)
+def cmd_switch (repo, branch, nostash=False)
 {
 	# simple command to switch between branches.
 	# Uncommitted changes are automatically stashed in
 	# a temporary tree pointed by stash/<branch-name>
 
 	# target branch exists?
-	try repo.branch (branch)
-	except {
+	if (!repo.branch (branch)) {
 		print "No such branch to switch to"
 		return
 	}
 
 	cur = repo.HEAD_is ()
-	if (branch == cur)
+	if (branch == cur) {
+		# Special case: switch to self with -nostash the same as
+		# 	git reset --hard HEAD
+		if (nostash) {
+			repo.IDX.read_tree (repo.openobj (repo.branch (cur).tree))
+			repo.IDX.check_out ()
+			repo.IDX.write_index ()
+		}
 		return
+	}
 
 	# need to save changes to stash?
-	if (need_checkin (repo)) {
+	if (need_checkin (repo) and !nostash) {
 		print "Uncommited changes. Writting stash"
 		current_tree = write_cwd_tree (repo)
 		repo.write_stash (cur, current_tree)
@@ -350,6 +346,11 @@ def cmd_switch (repo, branch)
 		repo.IDX.check_out (files)
 
 		# write cache
+		repo.IDX.write_index ()
+	} else if (nostash) {
+		# same tree but checkout to discard changes
+		repo.IDX.read_tree (repo.openobj (current_tree))
+		repo.IDX.check_out ()
 		repo.IDX.write_index ()
 	}
 
@@ -524,8 +525,7 @@ def cmd_tar (repo, *options)
 # it
 def cmd_sigbranch (repo, branch="master")
 {
-	try b = repo.branch (branch).sig
-	except {
+	if !(b = repo.branch (branch).sig) {
 		print "No such branch [%s]"%branch
 		return
 	}
@@ -738,7 +738,8 @@ if (__name__ == __main__)
 			cmd_checkin (repo, msg, Author, Date)
 		}
 	} else if (cmd == "switch") {
-		cmd_switch (repo, one ())
+		nostash = sys.argp.check_switch ("-nostash")
+		cmd_switch (repo, one (), nostash)
 	} else if (cmd == "files") {
 		cmd_files (repo, *nargs (0, 1))
 	} else if (cmd == "cat") {

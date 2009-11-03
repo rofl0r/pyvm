@@ -16,6 +16,8 @@ from misc import fprint
 from av import libav as C
 from av.srt import Subtitles
 
+NOPTS = False
+
 ### av stream.  In audio/visual media streams we get "packets" which can be
 ### either graphics or sound.  In order to be able to get a specific kind of
 ### data packet we have to use queues to store unwated packets of the other
@@ -31,10 +33,13 @@ class avstream
 		if (!C.has_video ($VD))
 			raise Error ("No video")
 
-		$vwidth    = C.vwidth ($VD)
-		$vheight   = C.vheight ($VD)
-		$dt        = C.vdelay ($VD)
-		$duration  = C.duration ($VD)
+		$vwidth    = C.vwidth     ($VD)
+		$vheight   = C.vheight    ($VD)
+		$dt        = C.vdelay     ($VD)
+		$duration  = C.duration   ($VD)
+		$nopts	   = C.broken_pts ($VD) or NOPTS
+		if ($nopts)
+			print "ignoring broken pts.."
 
 		if ($has_audio = C.has_audio ($VD)) {
 			$sample_rate = C.asample_rate ($VD)
@@ -99,6 +104,7 @@ class avstream
 						$vsem.up ()
 					}
 				} else if (r < 0) {
+					if ($nopts) pts = -1, -1
 					$vqueue.append ((vbuf, pts))
 					vbuf = _buffer ($vbufsize)
 					$vsem.up ()
@@ -648,7 +654,7 @@ class avwidget
 			$pn += 1
 			thread.start_new ($watch_file)
 		}
-		$clock.tick ()
+		$clock.tick ($video_time)
 	}
 
 	RESUME_KB = 200
@@ -684,14 +690,16 @@ Video player
  -e		: exit after finished
  -sc <factor>	: magnify by factor (1.5, etc)
  -srt		: use subtitles from a file with the same name and .srt extension
+ -nopts		: do not use the pts values supplied by ffmpeg (workaround for some broken vids)
  --f		: no gui. just decode everything as quickly as possible (libav* testing)
 """
 
 if (__name__ == __main__)
 {
 	mfact = sys.argp.check_vswitch ("-sc")
-	srt, info_only, fullscreen, start_play, streamed, mono, opener, vexit, ftest =
-		sys.argp.check_switches ("-srt", "-i", "-f", "-p", "-s", "-m", "-open", "-e", "--f")
+	srt, info_only, fullscreen, start_play, streamed, mono, opener, vexit, ftest, NOPTS =
+		sys.argp.check_switches ("-srt", "-i", "-f", "-p", "-s", "-m", "-open", "-e",
+					 "--f", "-nopts")
 	if (@sysconfig.GETCONF ("nostereo"))
 		mono = True
 
@@ -803,10 +811,6 @@ if (__name__ == __main__)
 }
 
 ## TODO
-##  study pts values	(- there is a fprintf() in `ffmpg.c`. find sample with repeat)
-##  seek		(- Even without AVSEEK_FLAG_BACKWARD it works!)
-##  key control
-##  widgets		(- done/rearrange)
 ##  xv extension
 ##  mp3-only
 ##  mute

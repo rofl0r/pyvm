@@ -33,14 +33,17 @@ def ReadFile (path)
 
 class repository
 {
+	isPyvmRepo = False
+
 	method __init__ ($BASEDIR)
 	{
 		if ($BASEDIR [-1] != "/") $BASEDIR += "/"
+		$isPyvmRepo = $BASEDIR == HOME + ".git/"
 		$IDX = INDEX ($BASEDIR, self)
-		$base_init ()
+		$init_domain ()
 	}
 
-	method base_init ()
+	method init_domain ()
 	{
 		# regenerate git object classes so the current repository
 		# is a -common- class member
@@ -70,12 +73,13 @@ class repository
 
 	# which commit is branch
 	method branch (h)
-		return $open ($readhead (h).strip ())
+		try return $open ($readhead (h).strip ())
+		except return ""
 
 	method branches ()
 		return [i, $readhead (i).strip () for (i in $listdir ("refs/heads"))]
 
-	# stashes
+	### stashes
 	method write_stash (branch, tree)
 	{
 		try $mkdir ("stash")
@@ -119,6 +123,7 @@ class repository
 		os.symlink ("refs/heads/" + branch, $BASEDIR + "HEAD")
 	}
 
+	### Reading operations
 	method haveobj (sig)
 		return $access ("objects/" + sig [:2] + "/" + sig [2:])
 
@@ -162,6 +167,7 @@ class repository
 	method openblob (sig)
 		return $open (sig).data
 
+	### Writting operations
 	method write_object (sig, data)
 	{
 		dir = "objects/" + sig [:2]
@@ -181,6 +187,20 @@ class repository
 		return sig
 	}
 
+	method write_tree_rec (L)
+	{
+		t = []
+		for (path, mode, sig in L) {
+			if (sig -> list) sig = $write_tree_rec (sig)
+			t.append ("%o %s\0%s" %(mode, path, unhexlify (sig)))
+		}
+		t = "".join (t)
+		return $write ("tree", t)
+	}
+
+	method write_tree (L)
+		return $write_tree_rec (nest_tree (L))
+
 	method create_tag (tag_name, sig)
 		$writefile ("/refs/tags/" + tag_name, sig + "\n")
 
@@ -193,9 +213,9 @@ class repository
 		return $write ("commit", t)
 	}
 
+	### Starting Object
 	# The string can be: a hash, a partial hash, a branch name, a tag name or nothing (HEAD).
 	# all produce a hash
-
 	method open_commit (s=None)
 	{
 		if (s is None)
@@ -206,6 +226,7 @@ class repository
 		return $open ($findsig (s))
 	}
 
+	### Diff operations
 	# files that differ between the cache and the wd
 	method diff_files ()
 	{
@@ -283,12 +304,35 @@ class repository
 	}
 }
 
-# Remote read-only
+# A repository where the "write" operations happen in RAM
+class norw_repository (repository)
+{
+	method __init__ (BASEDIR)
+	{
+		repository.__init__ (self, BASEDIR)
+		$ramobjs = {}
+	}
+	method readfile (f)
+		try return $ramobjs [f]
+		except return readfile ($BASEDIR + f)
+	method writefile (fnm, data)
+		$ramobjs [fnm] = data
+	# do in disk
+	method COMMIT ()
+	{
+		wr = repository.writefile
+		for (k, v in $ramobjs.items ())
+			wr (self, k, v)
+		$ramobjs = {}
+	}
+}
+
+# Remote http read-only
 class http_repository (repository)
 {
 	method __init__ (url)
 	{
-		$base_init ()
+		$init_domain ()
 		from net import http
 		p = http.urlparse (url)
 		host = p ["host"]
@@ -329,7 +373,7 @@ def RemoteRepo (r)
 class dual_repository (repository)
 {
 	method __init__ ($local, $remote)
-		$base_init ()
+		$init_domain ()
 
 	# for normal files (HEAD, branches, etc) use the remote repo
 	method readfile (f)
@@ -348,6 +392,22 @@ def UpstreamRepo ()
 		return dual_repository (repository (HOME + ".git"), r)
 	return r
 }
+
+def find_repository ()
+{
+	cwd = os.getcwd ()
+	while (1) {
+		if (os.access (cwd + "/.git"))
+			return cwd + "/.git/"
+		cwd, None, None = cwd.rpartition ("/")
+		if (!cwd) raise "No .git repository in here"
+	}
+}
+
+def current_working_repository (norw=False)
+	return (norw ? norw_repository : repository) (find_repository ())
+
+###############################################################################
 
 #
 # Git objects
@@ -368,6 +428,7 @@ def UpstreamRepo ()
 #
 
 GETDATE = @re.re (r"author.*?\ncommitter.*?>\s*(\d+)")
+AUTHDATE = @re.re (r"author.*?>\s+(\d+)")
 
 class commit
 {
@@ -406,6 +467,7 @@ class commit
 	method __str__ ()
 		return "commit: %s" %$sig;
 
+	# commit time
 	method date ()
 	{
 		m = GETDATE ($headers)
@@ -413,11 +475,19 @@ class commit
 		return 0
 	}
 
+	method authtime ()
+		return int (AUTHDATE ($headers) [1])
+
 	method title ()         return $message [:$message.find ("\n")]
 	method author ()        return $headers.split ("\n")[0][7:].partition (">")[0] + ">"
 	method authorName ()    return $author ().partition (">")[0]+">"
 	method committer ()     return $headers.split ("\n")[1][10:].partition (">")[0] + ">"
 	method committerName () return $committer ().partition (">")[0]+">"
+	method authorship ()
+	{
+		l = $headers.partition ("\n")[0]
+		return l.sw ("author") ? l + "\n" : ""
+	}
 
 	method objs ()
 	{
@@ -516,6 +586,9 @@ class tree
 			} else F.append ((path + k, sig, int (mod, 8)))
 		return F
 	}
+
+	method lstree ()
+		return {k:(mode, sig) for (k, sig, mode in $lsr ()) if (sig)}
 
 	# locate the blob of a file.
 	method find (path)
@@ -645,6 +718,26 @@ method repository.file_history_master (c, file)
 	}
 }
 
+# common ancestor for 3-way merge. Works only for linear repositories!
+method repository.find_common_ancestor (c1, c2)
+{
+	if (c1.sig == c2.sig)
+		return c1
+	A = {c1.sig, c2.sig}
+	while (1)
+		if (c1.date () > c2.date ()) {
+			c1 = c1.Parent (0)
+			if (c1.sig in A)
+				return c1
+			A.add (c1.sig)
+		} else {
+			c2 = c2.Parent (0)
+			if (c2.sig in A)
+				return c2
+			A.add (c2.sig)
+		}
+}
+
 ##
 ## The Index file (cache)
 ##  Git (the concept) could work without an index file.
@@ -731,21 +824,7 @@ class INDEX
 
 	####
 	method write_tree ()
-	{
-		L = nest_tree ([(k, v [6], v [-1]) for (k, v in $D.items ().sort ())]);
-		return $write_tree_rec (L);
-	}
-
-	method write_tree_rec (L)
-	{
-		t = [];
-		for (path, mode, sig in L) {
-			if (sig -> list) sig = $write_tree_rec (sig);
-			t.append ("%o %s\0%s" %(mode, path, unhexlify (sig)));
-		}
-		t = "".join (t);
-		return $repo.write ("tree", t);
-	}
+		return $repo.write_tree ([(k, v [6], v [-1]) for (k, v in $D.items ().sort ())])
 
 	#
 	method read_tree (t)
@@ -774,7 +853,7 @@ class INDEX
 				if (islink (path)) {
 					print path, "is a symlink. won't do anything"
 				} else {
-					print 'writting:', path
+					print ' writting:', path
 					open (path, "w").write ($repo.openblob (sig))
 				}
 			}
