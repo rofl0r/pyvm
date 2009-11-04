@@ -37,9 +37,7 @@ class avstream
 		$vheight   = C.vheight    ($VD)
 		$dt        = C.vdelay     ($VD)
 		$duration  = C.duration   ($VD)
-		$nopts	   = C.broken_pts ($VD) or NOPTS
-		if ($nopts)
-			print "ignoring broken pts.."
+		$nopts	   = NOPTS
 
 		if ($has_audio = C.has_audio ($VD)) {
 			$sample_rate = C.asample_rate ($VD)
@@ -169,7 +167,7 @@ class avstream
 				# video packet presentation time before our first
 				# audio frame. Drop it.
 				if (videopts < audiopts) {
-					##print "DROP"
+				##	print "DROP"
 					continue
 				}
 
@@ -186,8 +184,9 @@ class avstream
 							break
 						}
 				}
+				if ($nopts) pts = -1, -1
+				else frame_no = int (videopts / $dt)
 				vq.append ((vbuf, pts))
-				frame_no = int (videopts / $dt)
 				vbuf = _buffer ($vbufsize)
 				break
 			} else aq.append ($audiobuf [:r])
@@ -295,7 +294,11 @@ class SyncClock
 	method tickrel (dt)
 	{
 		$ack ()
-		$tick ($tr += dt)
+		$tr += dt
+		t = $tr
+		dt = ($start_time - now ()) + (t - $t0) / $div
+		if (dt > 0)
+			sleep (dt)
 	}
 
 	method stop ()
@@ -433,6 +436,13 @@ class avwidget
 					$ShowVolume ()
 					gui.label (" ")
 					gui.button ("hide", Action=$HideControls)
+					if (!NOPTS) {
+						gui.label (" ")
+						with ($BRU = gui.union ()) {
+							gui.button ("broken?", Action=$Broken)
+							gui.label (" nopts ")
+						}
+					}
 				}
 				gui.space ()
 			}
@@ -444,8 +454,27 @@ class avwidget
 				$ST = subtitlew (w=vwidth)
 		}
 		if (!fullscreen)
-			wm.Resize (h=MAIN.h)
+			wm.Resize (w=MAIN.w, h=MAIN.h)
 		$pn = 0
+	}
+
+	method Broken ()
+	{
+		p = $is_paused
+		if (!p) {
+			$BPAUSE.toggle ()
+			$wm.sleep (0.4)
+		}
+		if (gui.Dialogue ($wm, "Is this video broken?",
+					 [("Yes! Try nopts", True), ("It's OK", False)])) {
+			for (t in $th)
+				thread.interrupt (t, thread.Interrupt, 1)
+			$vid.nopts = True
+			$BRU.Switch (1)
+			$wm.sleep (0.4)
+			$run_vid ($vid, frn0=0)
+		}
+		if (!p) $BPAUSE.toggle ()
 	}
 
 	method HideControls ()
@@ -477,12 +506,11 @@ class avwidget
 		$maxfrn = $vid.duration / $vid.dt - 2
 		if ($vid.has_audio) {
 			$audio_tick = float ($BUFFER_SIZE) / (2 * $vid.sample_rate * $vid.channels)
-			thread.start_new ($pullvideo)
-			thread.start_new ($pullaudio)
-		} else  thread.start_new ($pullvideo_only)
+			$th = [thread.start_new ($pullvideo), thread.start_new ($pullaudio)]
+		} else  $th = [thread.start_new ($pullvideo_only)]
 		$is_paused=True
 
-		if (frn0) {
+		if (frn0 is not None) {
 			$Seek ($vid.duration, frn0 * $vid.dt, False)
 			$progress.update ($frn * $vid.dt, $vid.duration)
 		}
@@ -562,7 +590,7 @@ class avwidget
 	BUFFER_SIZE = 4096
 
 	method pullaudio ()
-	{
+	try {
 		BUFFER_SIZE = $BUFFER_SIZE
 		while (1) {
 			d = $vid.pull_audio ()
@@ -579,7 +607,7 @@ class avwidget
 			}
 			$abuf = $abuf [OFFSET:]
 		}
-	}
+	} except (thread.Interrupt);
 
 	method put_frame (frame)
 	{
@@ -591,7 +619,7 @@ class avwidget
 	}
 
 	method pullvideo ()
-	{
+	try {
 		$frn = 0
 		spf = $vid.dt
 		sub = None
@@ -613,14 +641,14 @@ class avwidget
 			try $progress.asyncDraw ()
 			$frn += 1
 		}
-	}
+	} except (thread.Interrupt);
 
 	method write_subtitles (s)
 		$wm.async ($ST.wr, s)
 
 	# if no audio to synchronize to
 	method pullvideo_only ()
-	{
+	try {
 		$frn = 0
 		spf = $vid.dt
 		while (1) {
@@ -634,7 +662,7 @@ class avwidget
 			try $progress.asyncDraw ()
 			$frn += 1
 		}
-	}
+	} except (thread.Interrupt);
 
 	# EOF. For normal files, we Pause. For streaming
 	# (files whos size may increase in the meantime) we have

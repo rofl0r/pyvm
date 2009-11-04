@@ -44,7 +44,7 @@ typedef struct
 
 	double audio_time_base;
 	double video_time_base;
-	int broken_pts;
+//	int broken_pts;
 
 	AVPacket pkt;
 	int bytesleft;
@@ -73,7 +73,7 @@ int open_av (VideoStream *v, char *filename)
 	v->vCodecCtx = 0;
 	v->aCodecCtx = 0;
 	v->vFrame = 0;
-	v->broken_pts = 0;
+//	v->broken_pts = 0;
 	v->sws = 0;
 	v->moreau = 0;
 
@@ -106,12 +106,12 @@ int open_av (VideoStream *v, char *filename)
 			v->video_time_base = av_q2d (v->fmtCtx->streams [i]->time_base);
 			vCodecCtx->get_buffer = myget_buffer;
 			/* workaround for ffmpeg bug */
-			if (!strcmp (v->fmtCtx->iformat->name, "asf")) {
-				if (v->video_time_base != av_q2d (v->fmtCtx->streams [i]->r_frame_rate)) {
-					fprintf (stderr, "Probably broken wmv3\n");
-					v->broken_pts = 1;
-				}
-			}
+		//	if (!strcmp (v->fmtCtx->iformat->name, "asf")) {
+		//		if (v->video_time_base != av_q2d (v->fmtCtx->streams [i]->r_frame_rate)) {
+		//			fprintf (stderr, "Probably broken wmv3\n");
+		//			v->broken_pts = 1;
+		//		}
+		//	}
 		} else if (v->fmtCtx->streams [i]->codec->codec_type == CODEC_TYPE_AUDIO) {
 			if (v->iaudio >= 0) continue;
 			aCodecCtx = v->fmtCtx->streams [i]->codec;
@@ -228,10 +228,10 @@ double duration (VideoStream *v)
 	return v->duration;
 }
 
-int broken_pts (VideoStream *v)
-{
-	return v->broken_pts;
-}
+//int broken_pts (VideoStream *v)
+//{
+//	return v->broken_pts;
+//}
 
 /*
  This function is called if we have both audio and video.  Return values:
@@ -345,7 +345,7 @@ const char ABI [] =
 "i achannels		s	\n"
 "i vwidth		s	\n"
 "i vheight		s	\n"
-"i broken_pts		s	\n"
+//"i broken_pts		s	\n"
 "d vdelay		s	\n"
 "d duration		s	\n"
 "i next_frame!		svvpd	\n"

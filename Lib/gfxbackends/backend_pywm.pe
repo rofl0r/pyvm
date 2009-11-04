@@ -172,6 +172,7 @@ from backend_base import Window as BaseWin
 
 class WindowClass (**BaseWin)
 {
+	Backend = "pywm"
 	inX = False
 
 	method screen_size ()

@@ -13,6 +13,7 @@ class Exit;
 
 class Window
 {
+	Backend = "base"
 	CanInterruptHibernation = False
 
 	# assuming full-screen mode. override

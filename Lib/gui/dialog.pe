@@ -1,3 +1,4 @@
+# Needs redesign wrt the mainloop
 from container import vcontainer, hcontainer;
 from space import space;
 from button import button;
@@ -11,9 +12,9 @@ def Dialogue (wm, message, buttons, font=None)
 	if (font is None)
 		font = wm.dfont;
 	message = message.split ('\n');
-	SIZEX, SIZEY = 240, 70 + len (message) * font.h;
+	SIZEX, SIZEY = 240, 70 + len (message) * font.maxh;
 	ww, wh = wm.basewin.w, wm.basewin.h;
-	W = wm.toplev (ww/2-SIZEX/2, wh/2 - SIZEY, SIZEX, SIZEY);
+	W = wm.subWindow(ww/2-SIZEX/2, wh/2 - SIZEY, SIZEX, SIZEY);
 	V = vcontainer ();
 		for (m in message)
 			label (m, elastic=1, font=font);
@@ -31,6 +32,10 @@ def Dialogue (wm, message, buttons, font=None)
 		H.pack ();
 		space ();
 	V.pack ();
+	def V.onKey (k)
+		if (k == "ESC")
+			raise ModalOk (None);
+	V.setKeyWidget ();
 
 	W.resize (0, 0);
 	W.resize_w (SIZEX - W.w);
@@ -38,7 +43,7 @@ def Dialogue (wm, message, buttons, font=None)
 	W.Draw ();
 	wm.flush ();
 	try
-		try while (54) wm.MainLoop ();
+		try while (1) wm.MainLoop ();
 		except (ModalOk, e) return e.rez;
 	finally
 		W.Close ();
