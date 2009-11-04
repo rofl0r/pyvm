@@ -7,11 +7,10 @@
 
 __autosem__
 
-zlib      = @zlib
 unpack    = @struct.unpack
-os        = @os
-SHA       = @sha.digest
 fprint    = @misc.fprint
+import os, zlib
+from sha import digest as SHA
 
 # Base access to a git repository.  With this module we can write little
 # scripts to work with git repositories and easilly perform all the git
@@ -754,7 +753,11 @@ method repository.find_common_ancestor (c1, c2)
 class INDEX
 {
 	method __init__ ($BASEDIR, $repo)
+	{
+		$PROJDIR = BASEDIR [:-5]
 		$read_index ()
+		$wrfiles = set ()
+	}
 
 	method read_index ()
 	{
@@ -790,7 +793,7 @@ class INDEX
 
 	method update (path)
 	{
-		s = os.lstat (path)
+		s = os.lstat ($PROJDIR + path)
 		if (path in $D and s.st_mtime == $D [path][2])
 			return
 		sig = $repo.write ("blob", ReadFile (path))
@@ -842,22 +845,23 @@ class INDEX
 		for (path in $D) {
 			sig = $D [path][-1]
 			if ("/" in path)
-				if (!os.access (path.rpartition ("/")[0])) {
+				if (!os.access ($PROJDIR + path.rpartition ("/")[0])) {
 					d = ""
 					for (dd in path.split ("/")[:-1]) {
 						d += dd + "/"
-						try os.mkdir (d)
+						try os.mkdir ($PROJDIR + d)
 					}
 				}
 			if (files is None or path in files) {
-				if (islink (path)) {
+				if (islink ($PROJDIR + path)) {
 					print path, "is a symlink. won't do anything"
 				} else {
 					print ' writting:', path
-					open (path, "w").write ($repo.openblob (sig))
+					$wrfiles.add (path)
+					open ($PROJDIR + path, "w").write ($repo.openblob (sig))
 				}
 			}
-			s = lstat (path)
+			s = lstat ($PROJDIR + path)
 			$D [path] = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
 				 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig
 		}

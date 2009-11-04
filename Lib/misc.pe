@@ -535,6 +535,9 @@ def yn (msg, default=None)
 	}
 }
 
+def yN (msg) return yn (msg, "n")
+def Yn (msg) return yn (msg, "y")
+
 def menu (msg, *choices)
 {
 	print msg

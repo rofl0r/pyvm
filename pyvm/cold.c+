@@ -505,9 +505,6 @@ __object__ *do_binary_lsh (__object__ *o1, __object__ *o2)
 __object__ *do_unary_neg (__object__ *o)
 {
 	return o->type.meth->neg (o);
-//	if (LongObj.isinstance (o))
-//		return LongObj.cast (o)->unary_neg ();
-//	RaiseNoAttribute (Interns.__and__);	// xxx
 }
 
 __object__ *do_inplace_div (__object__ *o1, __object__ *o2)

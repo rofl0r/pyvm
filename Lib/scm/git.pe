@@ -15,7 +15,7 @@ ReadFile = @scm."git-core".ReadFile
 MakeTagobj = @scm."git-core".make_tag
 
 import os, re, time
-from misc import fprint, tmpfile, yn
+from misc import fprint, tmpfile, yn, yN
 
 USAGE = "Usage: pyvm git [init-db|which|diff|past|checkin|switch|files|tar|head|tag|pull]
 
@@ -298,6 +298,30 @@ def cmd_fork (repo, branch)
 	repo.write_branch (branch, repo.HEAD ())
 }
 
+# pyvm only depcheck after a checkout to rebuild stuff
+def rebuild_pyvm (repo)
+	if (repo.isPyvmRepo) {
+		dopyc = dovm = False
+		for (f in repo.IDX.wrfiles)
+			if (f.sw ("pyvm/") and eww (f, ".c", ".c+", ".h"))
+				dovm = True
+			else if (f.sw ("Lib/pyc/") and f.ew (".py"))
+				dopyc = True
+		if (!dopyc and !dovm)
+			return
+		print "Depcheck:"
+		if (dopyc)
+			print "- pyc compiler modified. Will need Lib rebuild"
+		if (dovm)
+			print "- pyvm modified. Will need recompile"
+		if (yN ("rebuild necessary parts")) {
+			if (dovm) 
+				@os.system ("cd %spyvm; make cclean; make o3" %HOME)
+			if (dopyc)
+				@os.system ("cd %sLib; make rebuild" %HOME)
+		}
+	}
+
 def cmd_switch (repo, branch, nostash=False)
 {
 	# simple command to switch between branches.
@@ -318,6 +342,7 @@ def cmd_switch (repo, branch, nostash=False)
 			repo.IDX.read_tree (repo.openobj (repo.branch (cur).tree))
 			repo.IDX.check_out ()
 			repo.IDX.write_index ()
+			rebuild_pyvm (repo)
 		}
 		return
 	}
@@ -381,6 +406,7 @@ def cmd_switch (repo, branch, nostash=False)
 		# remove the stash
 		repo.remove_stash (branch)
 	}
+	rebuild_pyvm (repo)
 
 	repo.set_HEAD (branch)
 }
