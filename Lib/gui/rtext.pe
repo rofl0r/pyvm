@@ -28,7 +28,7 @@ class _rtext (fbview)
 	FG = 0
 	ybar = None
 
-	method Init (dowheel=False, $lst0=[], fontsize=0, $bolds=False, **kw)
+	method Init (dowheel=False, $lst0=[], fontsize=0, $bolds=False, $blackbg=False, **kw)
 	{
 		$fbview_init (**kw)
 		$setfont (fontsize)
@@ -55,7 +55,8 @@ class _rtext (fbview)
 
 	method setfont (sz)
 	{
-		$fnt   = $wm.OpenFixedFont ("mono",    sz).as_utf8 ()
+		gamma = $blackbg ? 0.5 : 1.0
+		$fnt   = $wm.OpenFixedFont ("mono",    sz, gamma=gamma).as_utf8 ()
 		$fntb  = $wm.OpenFixedFont ("mono-b",  sz).as_utf8 ()
 		$fnti  = $wm.OpenFixedFont ("mono-i",  sz).as_utf8 ()
 		$fntbi = $wm.OpenFixedFont ("mono-bi", sz).as_utf8 ()

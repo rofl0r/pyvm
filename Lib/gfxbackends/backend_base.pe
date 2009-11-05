@@ -93,8 +93,8 @@ class Window
 
 			def OpenFont (f, px)
 				return Open (FF + f, px + pt)
-			def OpenFixedFont (f, px)
-				return Open (FF + f, px + pt, ffixed=px + PX) 
+			def OpenFixedFont (f, px, **kw)
+				return Open (FF + f, px + pt, ffixed=px + PX, **kw) 
 		}
 	}
 

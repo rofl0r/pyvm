@@ -64,6 +64,8 @@ if (is_remote) {
 	current = HEAD.sig
 }
 
+OPN = repo.openobj
+
 def sc (t, l)
 {
 	l2 = ulen (t)
@@ -74,6 +76,9 @@ def sc (t, l)
 
 print "reading history... (this may take some time for cold cache)"
 history = list (repo.MainHistory (HEAD, !quiet))
+
+# Show pending commits in other branches?
+BRANCHDIFF = len (history) < 500
 
 states = [[["shortlog"],0]]
 
@@ -92,6 +97,7 @@ def cdate (d)   return sc (d, 6), 0xd48440, None, None
 def cno (d)   return sc (d, 4), None, None, None
 def commiter (o) return sc (NameFromAddr (o.author ()), M), 0xd48440, None, None
 def ctitle (o)  return o.title (), 0xffffff, "bu", ("c", o.sig, 0)
+def cstash (o)  return "Stashed changes", 0xffffff, "bu", ("s", o)
 def tblh (s)    return s, BR, "b", None
 def ctitle2 (o) return o.title (), 0xffffff, "b", None
 def psig (p)    return p.sig, BL, "u", ("c", p.sig, 0)
@@ -100,6 +106,7 @@ def ddesc (s)   return s, 0xf0f0f0, "b", None
 def bff (s)     return s, 0xffffff, "b", None
 def vblb (t, f, s) return t, BL, "bu", ("b", f, s)
 def vdf (t, c, p, fb1b2) return t, BL, "u", ("vd", c, p, fb1b2)
+def vdfs (t, b, fb1b2) return t, BL, "u", ("vs", b, fb1b2)
 def tbh (s)  return s, None, None, None
 def dl (s)   return bold (s, 0)
 def vtr (s)  return s, BL, None, None#("t", s)
@@ -127,16 +134,38 @@ gen gen_commits (branch=None)
 		for (b, sig in branches)
 			if.break (b == branch)
 				current = sig
-		history = list (repo.MainHistory (repo.openobj (current)))
+		history = History (current)
 	}
+	hset = set ([x.sig for (x in history)])
 
 	adl (info ("Branches"))
-	for (b, sig in branches)
-		adl (" [", sig == current ? b : swbr (b), "]", sig == HEAD.sig ? bold (" HEAD") : "")
+	for (b, sig in branches) {
+		if.continue (sig == current)
+			adl (bold ("->", 0xaa3333), "[", b, "]", sig == HEAD.sig ? bold (" HEAD") : "")
+		adl ("  [", swbr (b), "]", sig == HEAD.sig ? bold (" HEAD") : "")
+		if (!BRANCHDIFF) continue
+		if (repo.read_stash (b))
+			adl ("    ", cstash (b))
+		if (sig in hset) continue
+		h2 = History (sig)
+		if (current in [x.sig for (x in h2)]) continue
+		if (ca = repo.find_common_ancestor (OPN(sig), OPN(current))) {
+			for (h in h2)
+				if (ca.sig == h.sig)
+					break
+				else adl ("    ", ctitle (h))
+		}
+	}
 	adl ()
 	M = maun = max ([ulen (NameFromAddr (h.author ())) for (h in history)])
 	N = len (history)
 	mmyy = None
+
+	if (branch and repo.read_stash (branch)) {
+		adl (cstash (branch))
+		adl ()
+	}
+
 	for (n, h in enumerate (history)) {
 		if (MMYY (h.date ()) != mmyy) {
 			mmyy = MMYY (h.date ())
@@ -153,12 +182,15 @@ diff_trees = memoizing (diff_trees)
 def diffstat_blobs (b1, b2, f)
 {
 	np = nm = 0
-	for (l in diff (repo.openobj (b1).data, repo.openobj (b2).data, f, f).split ("\n") [2:])
+	for (l in diff (OPN (b1).data, OPN (b2).data, f, f).split ("\n") [2:])
 		if (l.sw ("+")) np += 1
 		else if (l.sw ("-")) nm += 1
 	return np, nm
 }
 diffstat_blobs = memoizing (diffstat_blobs)
+def History (sig)
+	return list (repo.MainHistory (OPN (sig)))
+History = memoizing (History)
 
 gen pluses_n_minuses (np, nm)
 {
@@ -177,11 +209,47 @@ gen pluses_n_minuses (np, nm)
 def cl (l)  return l, 0xcccccc, "b", None
 def clt (l) return l, 0xffffff, "b", None
 
+gen gen_stash (b, fb1b2=None)
+{
+	HEAD = repo.branch (b)
+	STASH = OPN (repo.read_stash (b))
+	None, None, None, diffed = diff_trees (HEAD.tree, STASH.sig)
+	adl (ddesc ('Stash diffstat of branch "%s"'%b))
+	adl ()
+	if (diffed)
+		adls ([("VIEW DIFF", BR, "bu", ("cd", HEAD.tree, STASH.sig))], [])
+	if (diffed) {
+		fmax = max ([len (f) for (f, None, None in diffed)]) + 1
+		setbg (0)
+		tp = tm = 0
+		for (f, b1, b2 in diffed) {
+			ll = [" ", vdfs (f, b, (f, b1, b2)), " " * (fmax - len (f))]
+			if.continue ("\0" in b1.data or "\0" in b2.data) {
+				ll<< bold ("binary files differ")
+				adl (*ll)
+			}
+
+			np, nm = diffstat_blobs (b1.sig, b2.sig, f)
+			tp += np
+			tm += nm
+			ll.extend (list (pluses_n_minuses (np, nm)))
+			adl (*ll)
+		}
+		adl (*([" " + "="*fmax] + list (pluses_n_minuses (tp, tm))))
+		adl (" %i files changed, %i insertions (+), %i deletions (-), %+i difference"
+				 %(len (diffed),tp,tm,tp-tm))
+		popbg ()
+	}
+
+	if (fb1b2)
+		gdiff (*fb1b2)
+}
+
 gen gen_commit (c, par=0, fb1b2=None)
 {
 	with (PB) {
-		o = repo.openobj (c)
-		tree = repo.openobj (o.tree)
+		o = OPN (c)
+		tree = OPN (o.tree)
 		adls ([tbh ("author    "), tblh (o.authorName ())],
 		      [tbh ("committer "), tblh (o.committerName ())],
 		      [tbh ("          "), tblh (strtime (o.date ()))],
@@ -200,11 +268,11 @@ gen gen_commit (c, par=0, fb1b2=None)
 		if (!o.parents)
 			return
 
-		added, removed, renamed, diffed = diff_trees (repo.openobj (o.parents [par]).tree, o.tree)
+		added, removed, renamed, diffed = diff_trees (OPN (o.parents [par]).tree, o.tree)
 	}
 
 	if (diffed)
-		adls ([("VIEW DIFF", BR, "bu", ("cd", c, o.parents [par]))], [])
+		adls ([("VIEW DIFF", BR, "bu", ("cd", OPN (c).tree, OPN (o.parents [par]).tree))], [])
 
 	if (added) {
 		adl (ddesc ("New files"))
@@ -253,11 +321,8 @@ gen gen_commit (c, par=0, fb1b2=None)
 
 def gen_commitdiff (c1, c2)
 {
-	with (PB) {
-		o = repo.openobj (c1)
-		o2 = repo.openobj (c2)
-		added, removed, renamed, diffed = diff_trees (o2.tree, o.tree)
-	}
+	with (PB)
+		added, removed, renamed, diffed = diff_trees (c1, c2)
 
 	setbg (0xeeeeee)
 	for (f, b1, b2 in diffed)  {
@@ -294,7 +359,7 @@ def gen_blob (fnm, sig)
 	adl ("blob: "+sig)
 	adl (("Export to current directory", 0xff1111, "bu", ("e", fnm, sig)))
 	setbg (0)
-	for (l in repo.openobj (sig).data.split ("\n"))
+	for (l in OPN (sig).data.split ("\n"))
 		adl (bold (l.expandtabs (), 0xdddddd))
 	popbg ()
 }
@@ -305,14 +370,16 @@ def genpage ()
 	s, Offset = states [-1]
 	if (s [0] == "shortlog") gen_commits ()
 	else if (s [0] == "c")   gen_commit (s [1], s [2])
+	else if (s [0] == "s")   gen_stash (s [1])
 	else if (s [0] == "cd")  gen_commitdiff (s [1], s [2])
 	else if (s [0] == "b")   gen_blob (*s [1:])
 	else if (s [0] == "vd")  gen_commit (s [1], s [2], s [3])
+	else if (s [0] == "vs")  gen_stash (s [1], s [2])
 	else if (s [0] == "sb")  gen_commits (s [1])
 	else if (s [0] == "e") {
 		fnm = s [1]
 		if ("/" in fnm) fnm = fnm.rpartition ("/")[2]
-		open  (fnm, "w").write (repo.openobj (s [2]).data)
+		open  (fnm, "w").write (OPN (s [2]).data)
 	} else return True
 }
 
@@ -337,7 +404,7 @@ import gui
 
 wm = gui.Wm ()
 with (gui.vcontainer ()) {
-	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0)
+	rt = gui.rtext (dowheel=1, lst0=L, fontsize=0, blackbg=True)
 	rt.doclick = go
 	PB = gui.work_in_progress ()
 }

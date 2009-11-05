@@ -725,11 +725,15 @@ method repository.find_common_ancestor (c1, c2)
 	A = {c1.sig, c2.sig}
 	while (1)
 		if (c1.date () > c2.date ()) {
+			if (!c1.parents)
+				return
 			c1 = c1.Parent (0)
 			if (c1.sig in A)
 				return c1
 			A.add (c1.sig)
 		} else {
+			if (!c2.parents)
+				return
 			c2 = c2.Parent (0)
 			if (c2.sig in A)
 				return c2
