@@ -38,6 +38,7 @@ class repository
 	{
 		if ($BASEDIR [-1] != "/") $BASEDIR += "/"
 		$isPyvmRepo = $BASEDIR == HOME + ".git/"
+		$PROJDIR = $BASEDIR [:-5]
 		$IDX = INDEX ($BASEDIR, self)
 		$init_domain ()
 	}
@@ -60,6 +61,8 @@ class repository
 	method mkdir (d)    os.mkdir ($BASEDIR + d)
 	method remove (d)   os.remove ($BASEDIR + d)
 	method writefile (fnm, data) open ($BASEDIR + fnm, "w").write (data)
+	method ReadFile (path) return ReadFile ($PROJDIR + path)
+	method ReadFilex (path) return ReadFile ($PROJDIR + path) ?? ""
 
 	#
 	method readhead (h)
@@ -232,7 +235,7 @@ class repository
 		F = []
 		for (k, mts in [(k, v [2])
 			for (k, v in $IDX.D.items ().sort ())])
-				try if (os.stat (k).st_mtime > mts)
+				try if (os.stat ($PROJDIR + k).st_mtime > mts)
 					F.append (k)
 				except F.append (k)
 		return F
@@ -800,7 +803,7 @@ class INDEX
 		s = os.lstat ($PROJDIR + path)
 		if (path in $D and s.st_mtime == $D [path][2])
 			return
-		sig = $repo.write ("blob", ReadFile (path))
+		sig = $repo.write ("blob", $repo.ReadFile (path))
 		p = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
 			 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig
 		$D [path] = p

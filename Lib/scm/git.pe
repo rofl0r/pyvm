@@ -11,7 +11,6 @@ Repository = @scm."git-core".repository
 find_repository = @scm."git-core".find_repository
 RemoteRepo = @scm."git-core".RemoteRepo
 UpstreamRepo = @scm."git-core".UpstreamRepo
-ReadFile = @scm."git-core".ReadFile
 MakeTagobj = @scm."git-core".make_tag
 
 import os, re, time
@@ -135,7 +134,7 @@ def need_checkin (repo)
 			files_to_diff.add (f)
 	L = []
 	for (f in list (files_to_diff).sort ())
-		try if (repo.openblob (treefiles [f]) != readfilee (f))
+		try if (repo.openblob (treefiles [f]) != repo.ReadFilex (f))
 			L.append (f)
 		except L.append (f)
 	return L
@@ -164,10 +163,6 @@ def find_files (exclude, dir=".")
 ## shell commands
 ##
 
-def readfilee (f)
-	# ReadFile(): if the file is s symlink returns readlink () else returns readfile()
-	return ReadFile (f) ?? ""
-
 from scm.diff import pydiff as diff
 
 def dflt_diff (data1, data2, f)
@@ -184,7 +179,7 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 	# diff: cache -- working directory
 	if (told == tnew == None) {
 		for (f in repo.diff_files ()) 
-			differ (repo.IDX.readfile (f), readfilee (f), f)
+			differ (repo.IDX.readfile (f), repo.ReadFilex (f), f)
 		return
 	}
 
@@ -206,7 +201,7 @@ def cmd_diff (repo, told=None, tnew=None, differ=dflt_diff)
 		# do
 		for (f in list (files_to_diff).sort ()) {
 			oldf = repo.openblob (treefiles [f]) ?? ""
-			newf = readfilee (f)
+			newf = repo.ReadFilex (f)
 			differ (oldf, newf, f)
 		}
 		return
