@@ -148,7 +148,6 @@ gen gen_commits (branch=None)
 			adl ("    ", cstash (b))
 		if (sig in hset) continue
 		h2 = History (sig)
-		if (current in [x.sig for (x in h2)]) continue
 		if (ca = repo.find_common_ancestor (OPN(sig), OPN(current))) {
 			for (h in h2)
 				if (ca.sig == h.sig)

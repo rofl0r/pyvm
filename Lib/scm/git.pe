@@ -348,8 +348,10 @@ def cmd_switch (repo, branch, nostash=False)
 	}
 
 	# need to save changes to stash?
-	if (need_checkin (repo) and !nostash) {
+	if ((nc = need_checkin (repo)) and !nostash) {
 		print "Uncommited changes. Writting stash"
+		for (nc in nc)
+			print " stash:", nc
 		current_tree = write_cwd_tree (repo)
 		repo.write_stash (cur, current_tree)
 	} else current_tree = repo.branch (cur).tree

@@ -98,6 +98,8 @@ if (__name__ == __main__)
 
 	print source, destination, overwrite, econic, nodirs, symlinks
 	for (a in copytree (source, destination, symlinks=symlinks, econic=econic,
-			    overwrite=overwrite, mkdirs=!nodirs))
-		print a;
+			    overwrite=overwrite, mkdirs=!nodirs)) {
+		print a
+		sys.stdout.flush ()
+	}
 }
