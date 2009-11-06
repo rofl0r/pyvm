@@ -92,11 +92,8 @@ static struct {
 	struct {		/* key state */
 		int ctrl, shift, alt;
 	} k;
-	int winkeyvt;		/* the winkeys are used to switch vt ? */
-	int screenshot;		/* CTRL-ALT-ESC: screenshot? */
 
 	int hibernating;	/* should mouse motion wake up */
-	int switchto;		/* vt to switch to */
 	int away;		/* true if out of the vt */
 
 	/* mouse kill */
@@ -113,8 +110,6 @@ static struct {
 
 #include "accel.c"
 
-static int keymap [128];
-static void init_kmap ();
 static void config_mouse ();
 static void *mouse_thread (void*);
 
@@ -164,7 +159,7 @@ static void clear_state ()
 	D.mmoved = 0;
 }
 
-int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt, int screenshot)
+int init (int ret[], int do_accel, int try_imps2, void (*killvm)())
 {
 	struct fb_var_screeninfo v;
 	struct fb_fix_screeninfo f;
@@ -175,8 +170,6 @@ int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt
 	clear_state ();
 	D.in_use     = 1;
 	D.killvm     = killvm;
-	D.winkeyvt   = winkeyvt;
-	D.screenshot = screenshot;
 
 	// mmap the framebuffer
 	D.fd = open ("/dev/fb0", O_RDWR);
@@ -232,7 +225,7 @@ int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt
 	if (D.kbd == -1) return 5;
 	if (ioctl (D.kbd, KDSETMODE, KD_GRAPHICS) == -1)
 		return 6;
-	if (ioctl (D.kbd, KDSKBMODE, K_MEDIUMRAW) == -1)
+	if (ioctl (D.kbd, KDSKBMODE, K_RAW) == -1)
 		return 7;
 	tcgetattr (D.kbd, &D.ts);
 	ts = D.ts;
@@ -240,6 +233,7 @@ int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt
 	ts.c_cc [VMIN] = 1;	// blocking
 	ts.c_lflag &= ~(ICANON|ISIG|ECHO);
 	ts.c_iflag = 0;
+	ts.c_cflag = CREAD | CS8;
 	tcsetattr (D.kbd, TCSAFLUSH, &ts);
 	D.k.ctrl = D.k.alt = D.k.shift = 0;
 
@@ -252,8 +246,6 @@ int init (int ret[], int do_accel, int try_imps2, void (*killvm)(), int winkeyvt
 	D.mqueued = 0;
 	if (try_imps2)
 		config_mouse ();
-
-	init_kmap ();
 
 	if (sem_init (&D.sem, 0, 1) == -1)
 		return 10;
@@ -515,14 +507,12 @@ static void *mouse_thread (void *x)
 
 /*
  The event types are (ev [0]):
-	0: key press [keysym]
-	1: key release [keysym]
+	0: raw key scancode from linux kbd
 	2: button press [button 0-1-2-4-5, x, y]
 	   (4-5 are the scroll wheel)
 	3: button release [button 0-1-2, x, y]
 	4: vtswitch and redraw
 	5: shutdown
-	6: screenshot
 */
 
 int get_event (int ev[])
@@ -560,46 +550,8 @@ int get_event (int ev[])
 		unsigned char ch;
 		int r = read (D.kbd, &ch, 1);
 		if (r > 0) {
-			int press = (ch & 0x80) == 0;
-			ev [0] = !press;
-			ev [1] = keymap [ch & 0x7f];
-			if (ev [1] >= 256 && ev [1] <= 258)
-				switch (ev [1]) {
-				case 256:
-					if (press && D.k.shift) return 0;
-					D.k.shift = press;
-					break;
-				case 257:
-					if (press && D.k.alt) return 0;
-					D.k.alt = press;
-					break;
-				case 258:
-					if (press && D.k.ctrl) return 0;
-					D.k.ctrl = press;
-					break;
-				}
-			else if (ev [1] == 311 && press && D.winkeyvt) goto sr;
-			else if (ev [1] == 310 && press && D.winkeyvt) goto sl;
-			else if (!press) return 0;
-			else if (D.k.ctrl) {
-				if (D.k.alt) {
-					if (ev [1] == 308 || ev [1] == 301) {
-					  sr:
-						D.switchto = 1;
-						ev [0] = 4;
-					} else if (ev [1] == 300) {
-					  sl:
-						D.switchto = -1;
-						ev [0] = 4;
-					} else if (ev [1] == 8) {
-						// crtl-alt-backspace. kill graphics
-						terminate ();
-						ev [0] = 5;
-					} else if (ev [1] == 27 && D.screenshot)
-						ev [0] = 6;
-				} else if (ev [1] == 'c') fprintf (stderr, "Ctrl-c\n");
-					// send SIGINT to self?
-			}
+			ev [0] = 0;
+			ev [1] = ch;
 			return 1;
 		}
 	}
@@ -628,7 +580,7 @@ int get_event (int ev[])
 }
 
 /* Will return when the VT is back */
-void switch_vt ()
+void switch_vt (int to)
 {
 	struct vt_stat vtstate;
 	unsigned short thisvt, othervt;
@@ -636,7 +588,7 @@ void switch_vt ()
 	if (ioctl (D.kbd, VT_GETSTATE, &vtstate) < 0)
 		return;
 	thisvt = vtstate.v_active;
-	othervt = thisvt + D.switchto;
+	othervt = thisvt + to;
 	D.away = 1;
 	ioctl (D.kbd, KDSKBMODE, K_XLATE);
 	ioctl (D.kbd, KDSETMODE, KD_TEXT);
@@ -649,7 +601,7 @@ void switch_vt ()
 	}
 	D.away = 0;
 	ioctl (D.kbd, KDSETMODE, KD_GRAPHICS);
-	ioctl (D.kbd, KDSKBMODE, K_MEDIUMRAW);
+	ioctl (D.kbd, KDSKBMODE, K_RAW);
 	D.k.ctrl = D.k.alt = D.k.shift = 0;
 }
 
@@ -809,9 +761,9 @@ void accel_put_image (void *data, int x, int y, int sx, int sy, int w, int h, in
 
 const char ABI [] =
 "i getvt		-		\n"
-"i init			p32iiiii	\n"
+"i init			p32iii		\n"
 "i get_event		p32		\n"
-"- switch_vt!		-		\n"
+"- switch_vt!		i		\n"
 "i block_until_event!	-		\n"
 "i lock			iiii		\n"
 "- unlock		-		\n"
@@ -834,70 +786,6 @@ const char ABI [] =
 // framebuffer where drawing happens by C code, has not happened yet.
 // (games, demos, etc).
 
-/*
- Convert scancodes (what the /dev/tty character device returns)
- to ascii and special values.
-*/
-
-static const struct {
-	int k, v;
-} konvert [/*inspired from KDE*/] = {
-		{K_SHIFT, 256},
-		{K_SHIFTL, 256},
-		{K_SHIFTR, 256},
-		{K_ALT, 257},
-		{K_ALTGR, 257},
-		{K_CTRL, 258},
-		{K_CTRLR, 258},
-		{K_CTRLL, 258},
-		{K_DOWN, 259},
-		{K_LEFT, 300},
-		{K_RIGHT, 301},
-		{K_UP, 302},
-		{K_INSERT, 303},
-		{K_FIND, 304}, //home
-		{K_SELECT, 305}, //end
-		{K_PGUP, 306},
-		{K_PGDN, 307},
-		{K_REMOVE, 127},
-		{K_ENTER, 10},
-		{K_F1, 308},
-		{K_CAPS, 309},
-		// winkeys. what's their K_ ??
-		{528, 310},
-		{529, 311},
-};
-
-static void init_kmap ()
-{
-	struct kbentry en;
-	int i, j;
-
-	en.kb_table = K_NORMTAB;
-	for (i = 0; i < 128; i++) {
-		en.kb_index = i;
-		en.kb_value = 0;
-		ioctl (D.kbd, KDGKBENT, &en);
-		int v = en.kb_value;
-		int t = KTYP (v);
-		int r;
-		if (i == 14)
-			r = 8;	// backspace. totally undocumented ?!
-		else if (t == KT_LATIN || t == KT_ASCII || t == KT_LETTER)
-			r = KVAL (v);
-		else {
-			for (j = 0; j < sizeof konvert / sizeof *konvert; j++)
-				if (konvert [j].k == v) {
-					r = konvert [j].v;
-					goto found;
-				}
-			r = -i; /* unknown/skip */
-		}
-	found:
-		keymap [i] = r;
-	}
-}
-
 //////////////////////// C testing /////////////////////////////
 
 /*
@@ -907,14 +795,12 @@ static void init_kmap ()
 #define NN 10
 int main ()
 {
-#if 0
-	int rez[4], i, k [4], b[1000], j;
-	if (init (rez)) {
+#if 1
+	int rez[14], i, k [4], b[1000], j;
+	if (init (rez, 0, 0, 0)) {
 		fprintf (stderr, "FAILUER\n");
 		return 1;
 	}
-	memset (D.mm, 23, D.xres * D.bpp * 440);
-	memset (D.mm, 123, D.xres * D.bpp * 140);
 	for (j = 0; j < NN;) {
 		if (get_event (k)) {
 			printf ("--Event type [%i], val [%i]\n", k [0], k [1]);
