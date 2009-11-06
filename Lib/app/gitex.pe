@@ -321,7 +321,7 @@ gen gen_commit (c, par=0, fb1b2=None)
 def gen_commitdiff (c1, c2)
 {
 	with (PB)
-		added, removed, renamed, diffed = diff_trees (c1, c2)
+		added, removed, renamed, diffed = diff_trees (c2, c1)
 
 	setbg (0xeeeeee)
 	for (f, b1, b2 in diffed)  {

@@ -54,8 +54,12 @@ USE_SCROLLWHEEL = int (@sysconfig.GETCONF ("usescrollwheelinfb"))
 
 # enable winkeys to switch vt? their keycodes are not documented in linux/keyboard.h
 # and over here they are 125,126. if this is the std make it a sysconfig option.
-WINKEYS = 1
+WINKEYS = True
 
+# Ctrl-Alt-Shift hides the mouse poitner?
+HIDE_MOUSE = False
+
+# Ctrl-Alt-Esc takes a screenshot?
 SCREENSHOT = int (@sysconfig.GETCONF ("escscreenshot"))
 
 class linuxfb (**FBBase)
@@ -172,7 +176,6 @@ ATKBD =
 	43:"\\",
 	44:"z", 45:"x", 46:"c", 47:"v", 48:"b", 49:"n", 50:"m", 51:",", 52:".", 53:"/",
 	54:"SHIFT",
-	55:None,
 	56:"ALT",
 	57:" ",
 	58:"CAPS",
@@ -181,7 +184,6 @@ ATKBD =
 	103:"UP",
 	104:"PAGEUP",
 	105:"LEFT",
-	106:None,
 	107:"RIGHT",
 	108:"END",
 	109:"DOWN",
@@ -295,7 +297,7 @@ class Window (**BaseWin)
 		if (et == 0) {
 			# process scancodes from linux RAW keyboard
 			n = ee [1]
-			pressed = !(n & 0x80)
+			pressed = n <= 127
 			n = n & 127
 
 			if (n in (96, 97) and !$at_prefix) {
@@ -322,6 +324,7 @@ class Window (**BaseWin)
 				if (len (key) > 1) {
 					if (key == "CAPS") {
 						$CAPS = not $CAPS
+						C.set_caps_led ($CAPS ? 1 : 0)
 						return
 					}
 					if (key == "SHIFT") {
@@ -355,6 +358,10 @@ class Window (**BaseWin)
 						}
 						if (key == "ESC" and SCREENSHOT) {
 							$fb.save_as_ppm ("SCREENSHOT.ppm")
+							return
+						}
+						if (key == "SHIFT" and HIDE_MOUSE) {
+							C.mouse_visible (-1)
 							return
 						}
 					}

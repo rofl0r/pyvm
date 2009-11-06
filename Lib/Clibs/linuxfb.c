@@ -95,6 +95,7 @@ static struct {
 
 	int hibernating;	/* should mouse motion wake up */
 	int away;		/* true if out of the vt */
+	int mouse_visible;	/* show the pointer? */
 
 	/* mouse kill */
 	int keepmouse;		/* call termination but keep the mouse thread running in order to.. */
@@ -155,6 +156,7 @@ static void clear_state ()
 	D.hibernating = 0;
 	D.imps2 = 0;
 	D.away = 0;
+	D.mouse_visible = 1;
 	D.keepmouse = 0;
 	D.mmoved = 0;
 }
@@ -286,7 +288,7 @@ static unsigned char ps2_init[] =
  { GPM_AUX_SET_SCALE11, GPM_AUX_ENABLE_DEV, GPM_AUX_SET_SAMPLE, 100, GPM_AUX_SET_RES, 3 };
 static unsigned char send_id[] = { GPM_AUX_SEND_ID };
 
-void config_mouse ()
+static void config_mouse ()
 {
 	unsigned char c = 0;
 	write (D.mfd, basic_init, sizeof basic_init);
@@ -311,6 +313,10 @@ static void put_mouse ()
 {
 	int x0, y0, x, y, c, sx, sy;
 	int mask, col;
+
+	if (!D.mouse_visible)
+		return;
+
 	x0 = D.mx - MOUSE_HOTX;
 	y0 = D.my - MOUSE_HOTY;
 	D.rmouse = 0;
@@ -358,6 +364,10 @@ static void put_mouse ()
 static void rmv_mouse ()
 {
 	int x0, y0, x, y, c, sx, sy;
+
+	if (!D.mouse_visible)
+		return;
+
 	x0 = D.mx - MOUSE_HOTX;
 	y0 = D.my - MOUSE_HOTY;
 	D.rmouse = 1;
@@ -377,6 +387,22 @@ static void rmv_mouse ()
 				case 4: D.mm32 [offset] = D.um.um32 [c]; break;
 			}
 		}
+}
+
+void mouse_visible (int b)
+{
+	if (b == -1)
+		b = !D.mouse_visible;
+	else if (b == D.mouse_visible)
+		return;
+
+	if (b) {
+		D.mouse_visible = 1;
+		put_mouse ();
+	} else  {
+		rmv_mouse ();
+		D.mouse_visible = 0;
+	}
 }
 
 /*
@@ -579,6 +605,11 @@ int get_event (int ev[])
 	return 0;
 }
 
+void set_caps_led (int on)
+{
+	ioctl (D.kbd, KDSETLED, on ? LED_CAP : 0);
+}
+
 /* Will return when the VT is back */
 void switch_vt (int to)
 {
@@ -658,6 +689,9 @@ void terminate ()
 	if (!D.in_use) return;
 	D.in_use = 0;
 	if (D.kbd != -1) {
+		/* found in xmame:svgainput.c - seems to restore the leds */
+		ioctl (D.kbd, KDSETLED, 8);
+
 		tcsetattr (D.kbd, TCSAFLUSH, &D.ts);
 		ioctl (D.kbd, KDSKBMODE, K_XLATE);
 		ioctl (D.kbd, KDSETMODE, KD_TEXT);
@@ -762,7 +796,9 @@ void accel_put_image (void *data, int x, int y, int sx, int sy, int w, int h, in
 const char ABI [] =
 "i getvt		-		\n"
 "i init			p32iii		\n"
+"- mouse_visible	i		\n"
 "i get_event		p32		\n"
+"- set_caps_led		i		\n"
 "- switch_vt!		i		\n"
 "i block_until_event!	-		\n"
 "i lock			iiii		\n"
