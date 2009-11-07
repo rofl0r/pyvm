@@ -13,11 +13,13 @@
 __autosem__
 
 import thread, re, serialize
-from mailnews.mime import Mime, rfc2047, rfc822
+from mailnews.mime import Mime, rfc2047, rfc822, NameFromAddr
 from utfutil       import utf8_len as ulen
-from time          import monthof
+from time          import monthof, rfc1123, wdddmmyy
 from pgp.gpg       import do_verify_mime as verify_pgp
 from mailnews      import usenet, mail, index
+from random	   import hrandstr
+from md5	   import hexdigest as MD5
 
 @lockfile.exclusive ("newsgroups", "newsread")
 
@@ -239,6 +241,62 @@ def make_text (m, replies, raw, att)
 	return lst
 }
 
+def ExportReply (m, rfnm)
+{
+	text = m.data ()
+	msg = Mime (text)
+	H = dict (msg.H)
+	RH = []
+	RH<< "# Edit the headers"
+	if (current.G.Type == "mail")
+		RH<< "From: " + current.G.config.get ("address",
+			 " # add a field 'address' to the pyvm/user/mail/<account>/config file")
+	else
+		RH<< "From: ???"
+	RH<< "To: " + H.get ("reply-to", H.get ("from", ""))
+	to = H.get ("to", "")
+	cc = H.get ("cc", "")
+	if (cc) cc += ", " + to
+	else cc = to
+	RH<< "# Reply to ALL recipients?"
+	RH<< "Cc: " + cc
+	Subject = H.get ("subject", "").strip ()
+	if (!Subject.lower ().sw ("re:"))
+		Subject = "Re: " + Subject
+	RH<< "Subject: " + Subject
+	mid = H.get ("message-id")
+	RH<< "In-Reply-To: " + mid 
+	refs = H.get ("references")
+	if (refs) {
+		RH<< "# want references?"
+		RH<< "References: " + refs + ", " + mid
+	}
+	RH<< "#X-No-Archive: Yes"
+	RH<< "Date: " + rfc1123 (now ())
+	RH<< "Message-Id: " + "<%i.%s.%s@mail>"%(now (), hrandstr (6), MD5 (Subject)[:4])
+	RH<< "Content-Type: text/plain; charset=utf-8"
+	RH<< "Content-Transfer-Encoding: 8bit"
+	RH<< ""
+	RH<< "On %s, %s wrote:" %(wdddmmyy (H.get ("date", rfc1123 (now ()))),
+				  NameFromAddr (H.get ("from", "")))
+	if (!msg.multipart) {
+		for (l in msg.decode2utf ().strip ().split ("\n"))
+			RH<< "> " + l.rstrip ()
+	} else {
+		for (p in msg.flatten ()) {
+			if (p.content_type.sw ("text/html") or "\0" in p.decoded () or
+			   !p.content_type.sw ("text/"))
+				continue
+			for (l in p.decode2utf ().strip ().split ("\n"))
+				RH<< "> " + l.rstrip ()
+				
+		}
+	}
+	RH<< ""
+
+	open (rfnm, "w").write ("\n".join (RH))
+}
+
 EI = 0
 
 def messagemenu ()
@@ -281,6 +339,11 @@ def messagemenu ()
 	def unwatch ()     del current.W [m.op ().id]
 	def watchauth ()   current.A.add (m.author ())
 	def unwatchauth () del current.A [m.author ()]
+	M<< None
+	for (i in *100)
+		if (!havefile (((rfnm = "REPLY%i.txt"%i))))
+			break
+	M<< ("Export reply message %s"%rfnm, 1, def () ExportReply (m, rfnm))
 	M<< None
 	if (m.isbookmarked ()) M<< ("unbookmark message", 1, rld (unbookmark))
 	else M<< ("Bookmark message", 1, rld (bookmark))
@@ -742,6 +805,7 @@ class GL
 				if (current.G)
 					current.G.unload ()
 				ng = current.G = MAs [a][0]
+print ng
 				current.G.load ()
 				current.LT = ng.ith (-(MAs [a][1]+1)).n ()
 				current.B = ng.rninfo ["bookmarks"]
@@ -775,6 +839,7 @@ class GL
 				current.G.unload ()
 #@meminfo.mstat ()
 			ng = current.G = NGs [g][0]
+print ng
 			current.G.load ()
 			xx = ng.ith (-(NGs [g][1] + 1))
 			current.LT = xx.n ()

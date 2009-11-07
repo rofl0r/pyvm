@@ -81,6 +81,13 @@ def ltimetz (t):
 	return "%s, %02i %s %i %02i:%02i:%02i %s" % (WDAY [wday], mday, MONTH [mon - 1],
 				 year, hour, min, sec, LocalOffset)
 
+# "Sat, 7 Nov 2009"
+def wdddmmyy (t):
+	if type (t) is str:
+		t = datestr_to_secs (t)
+	year, mon, mday, hour, min, sec, wday, yday, isdst = gmtime (t)
+	return "%s, %i %s %i"%(WDAY [wday], mday, MONTH [mon - 1], year)
+
 # Various classes to be used for timing
 
 class Timit:

@@ -142,7 +142,12 @@ def SendMail (text)
 			if (!yn ("No [%s] header. Continue"%hdr))
 				return False
 
+	for (k, None in M.H)
+		if (k.sw ("#"))
+			return error ("Header line begins with '#'! Edit headers plz")
+
 	From = M.H [0][1]
+
 	def getaddr (x)
 		return "<" + mime.AddrFromAddr (x) + ">"
 	myaddr = getaddr (From)
