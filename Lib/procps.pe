@@ -103,6 +103,56 @@ class Process
 		return os.readlink ("/proc/%s/exe"%$pid) ?? "?"
 }
 
+class cpuloader
+{
+	method __init__ ()
+	{
+		$T = []
+		$L = @thread.xlock (False)
+		@thread.start_new ($run)
+	}
+
+	method read_load ()
+		for (l in read_proc ("stat").split ("\n")) {
+			if !(l = l.split ())
+				continue
+			if (l [0] == "cpu") {
+				user, user_low, system, idle = [int (x) for (x in l [1:5])]
+				load = user + user_low + system
+				return load, load + idle
+			}
+		}
+
+	method run ()
+	{
+		p = $read_load ()
+		$T<< p
+		sleep (1)
+		while (1) {
+			p = $read_load ()
+			$T<< p
+			if (len ($T) > 60)
+				$T.pop (0)
+			$L.release ()
+			sleep (1)
+		}
+	}
+
+	method __iter__ ()
+		while (1) {
+			$L.acquire ()
+			l0, t0 = $T [-1]
+			T = []
+			for (x in (2, 10, 60))
+				if (len ($T) < x) T<< None
+				else {
+					l1, t1 = $T [-x]
+					T<< 100 * (l0 - l1) / float (t0 - t1)
+				}
+			yield T
+		}
+}
+
 # system uptime
 def uptime ()
 	return float (read_proc ("uptime").split ()[0])
@@ -116,6 +166,7 @@ Usage:
  procps 'a'	: show processes of current user
  procps 'aa'	: show processes of all users
  procps 'ut'	: show system uptime in seconds
+ procps 'cpu'	: show cpu load every one second
 "
 
 if (__name__ == __main__)
@@ -125,7 +176,7 @@ if (__name__ == __main__)
 	whoami = SELF.user ()
 
 	if (!sys.argp.have_args ()) cmd = ""
-	else cmd = sys.argp.pop_one_arg ()
+	else cmd = sys.argp.pop_command ("a,aa,ut,cpu")
 
 	if (!cmd) {
 		L = [["PID", "RSS", "FDs", "THs", "CMDLINE"]]
@@ -150,5 +201,19 @@ if (__name__ == __main__)
 		print @misc.tabprint (80, ["l", "r", "l", "l", "l", "r"], -1, L)
 	} else if (cmd == "ut") {
 		print uptime ()
+	} else if (cmd == "cpu") {
+		print "cpu load:"
+		sys.pty_stdin (True)
+		for (t1, t10, t60 in cpuloader ()) {
+			s = "1s: %.2f%%"%t1
+			if (t10 is not None)
+				s += "  10s: %.2f%%" %t10
+			if (t60 is not None)
+				s += "  1min: %.2f%%" %t60
+			try if.break (sys.pty_inkey () == "q")
+				print
+			sys.stdout.write (s + "    \r")
+			sys.stdout.flush ()
+		}
 	}
 }

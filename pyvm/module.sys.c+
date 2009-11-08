@@ -162,7 +162,7 @@ static	bool state;
 		RaiseNotImplemented ("tty_stdin(): not a tty");
 
 	if (argv [0]->Bool () && !state) {
-		fcntl (fd, F_SETFL, fcntl (fd, F_GETFL) & ~O_NONBLOCK);
+//		fcntl (fd, F_SETFL, fcntl (fd, F_GETFL) & ~O_NONBLOCK);
 		tcgetattr (fd, &ts);
 		memcpy (&orig, &ts, sizeof ts);
 		ts.c_cc [VTIME] = 0;
@@ -193,9 +193,21 @@ bool ptyNotify.do_notify (int)
 	return NotifyObj.do_notify (0);
 }
 
+// blocking
 _module __object__ *pty_getchar ()
 {
 	return vmpollin (new ptyNotify (), fileno (stdin), -1);
+}
+
+// non-blocking
+_module __object__ *pty_inkey ()
+{
+	char tmp [100];
+	int n;
+	n = read (fileno (stdin), tmp, sizeof tmp);
+	if (n < 0)
+		return &None;
+	return new StringObj (tmp, n);
 }
 
 /*
@@ -230,6 +242,7 @@ static const bltinfunc funcs [] = {
 	{ "_getframe",		SETARGC (0, 1), _getframe },
 	{ "pty_stdin",		SETARGC (1, 1), pty_stdin },
 	{ "pty_getchar",	SETARGC (0, 0), pty_getchar },
+	{ "pty_inkey",		SETARGC (0, 0), pty_inkey },
 	{ "tty_size",		SETARGC (0, 0), tty_size },
 	{ "set_thread_stdout",	SETARGC (1, 1), set_thread_stdout },
 	{ "set_bootstrap",	0, set_bootstrap },

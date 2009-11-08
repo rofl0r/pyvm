@@ -784,7 +784,7 @@ if (__name__ == __main__)
 	} else if (cmd == "pull") {
 		nostage = sys.argp.check_switch ("-nostage")
 		repo2, rb, lb = nargs (3)
-		cmd_pull (repo, repo, rb, lb, nostage=nostage)
+		cmd_pull (repo, repo2, rb, lb, nostage=nostage)
 	} else if (cmd == "sigbranch") {
 		cmd_sigbranch (repo, *nargs (0, 1))
 	} else if (cmd == "pullpgp") {

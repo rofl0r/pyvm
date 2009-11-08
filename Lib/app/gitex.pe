@@ -140,7 +140,7 @@ gen gen_commits (branch=None)
 
 	adl (info ("Branches"))
 	for (b, sig in branches) {
-		if.continue (sig == current)
+		if.continue (sig == current and !repo.read_stash (b))
 			adl (bold ("->", 0xaa3333), "[", b, "]", sig == HEAD.sig ? bold (" HEAD") : "")
 		adl ("  [", swbr (b), "]", sig == HEAD.sig ? bold (" HEAD") : "")
 		if (!BRANCHDIFF) continue
