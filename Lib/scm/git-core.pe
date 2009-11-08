@@ -355,8 +355,15 @@ class http_repository (repository)
 			$cache [f] = data
 		return data
 	}
+
+	method access (f)
+		try {
+			$readfile (f)
+			return True
+		}
+
 	method NA (*args) raise Error ("Not available in HTTP repo")
-	access = listdir = mkdir = writefile = NA
+	listdir = mkdir = writefile = NA
 
 }
 
@@ -385,6 +392,9 @@ class dual_repository (repository)
 	method readobj (o)
 		try return $local.readobj (o)
 		except return $remote.readobj (o)
+
+	method access (f)
+		return $remote.access (f)
 }
 
 def UpstreamRepo ()

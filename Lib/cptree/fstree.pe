@@ -53,6 +53,7 @@ class fs_local
 	method remove (f) $os.remove ($B (f));
 	method writefile (f, data) open ($B (f), "w").write (data);
 	method mkdir (d) $os.mkdir ($B (d));
+	method chmod (p, m) @os.chmod ($B (p), m);
 }
 
 LOCAL = fs_local ();

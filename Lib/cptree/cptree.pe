@@ -2,7 +2,7 @@ __autosem__
 
 from fstree import LOCAL
 
-gen copytree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdirs=True, econic=False)
+gen copytree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdirs=True, econic=False, chmod=None)
 {
 	if (fs1 is None) fs1 = LOCAL
 	if (fs2 is None) fs2 = LOCAL
@@ -37,13 +37,15 @@ gen copytree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdi
 			else if (!fs2.isdir (dstf))
 				raise "Destination [%s] not a directory" %dstf
 			for (p in copytree (srcf, dstf, fs1, fs2, symlinks=symlinks,
-					 overwrite=overwrite, mkdirs=mkdirs, econic=econic))
+					 overwrite=overwrite, mkdirs=mkdirs, econic=econic, chmod=chmod))
 				yield p
 		} else if (overwrite or !havedst) {
 			yield 'copy: ' + dstf
 			if (!econic) {
 				data = fs1.readfile (srcf)
 				fs2.writefile (dstf, data)
+				if (chmod)
+					fs2.chmod (dstf, chmod)
 			}
 		} else if (havedst)
 			yield 'have: ' + dstf
@@ -54,7 +56,7 @@ def CopyTree (src, dst, fs1=None, fs2=None, symlinks=True, overwrite=False, mkdi
 	for (p in copytree (src, dst, fs1, fs2, symlinks, overwrite, mkdirs, econic))
 		print p
 
-USAGE = """cptree [-o|-li|-ld|-e|-nd] source destination
+USAGE = """cptree [-o|-li|-ld|-e|-nd][-chmod mode] source destination
 
 copy recursively source tree to destination tree.
 
@@ -64,41 +66,26 @@ copy recursively source tree to destination tree.
 	-li	: ignore symbolic links
 	-ld	: dereference symbolic links
 	-nd	: do not create new directories in the destination tree
+	-chmod	: set mode of copied files (for example 0644 for rw-r--r--)
 """
 
 if (__name__ == __main__)
 {
-	args = sys.argv [1:]
-	if (len (args) < 2 or "--help" in args) {
-		print USAGE
-		exit (1)
-	}
-	destination = args.pop ()
-	source = args.pop ()
-	def haveopt (o)
-		if (o in args) {
-			args.remove (o)
-			return True
-		} else return False
+	chmod = sys.argp.check_vswitch ("-chmod")
+	if (chmod)
+		chmod = chmod.sw ("0") ? int (chmod, 8) : int (chmod)
+	overwrite, econic, nodirs, li, ld = sys.argp.check_switches ("-o", "-e", "-nd", "-li", "-ld")
+	symlinks = li ? "ignore" : ld ? "deref" : "copy"
+	source, destination = sys.argp.nargs (2)
 
-	overwrite = haveopt ("-o")
-	econic = haveopt ("-e")
-	nodirs = haveopt ("-nd")
-	symlinks = haveopt ("-li") ? "ignore" : haveopt ("ld") ? "deref" : "copy"
 	if (symlinks == "deref") {
 		print "symlink dereference not implemented yet. please hack cptree.pe"
 		exit (1)
 	}
 
-	if (args) {
-		print "leftover arguments", args
-		print USAGE
-		exit (1)
-	}
-
-	print source, destination, overwrite, econic, nodirs, symlinks
+	print source, destination, overwrite, econic, nodirs, symlinks, chmod
 	for (a in copytree (source, destination, symlinks=symlinks, econic=econic,
-			    overwrite=overwrite, mkdirs=!nodirs)) {
+			    overwrite=overwrite, mkdirs=!nodirs, chmod=chmod)) {
 		print a
 		sys.stdout.flush ()
 	}
