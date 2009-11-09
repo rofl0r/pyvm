@@ -1,0 +1,208 @@
+##  git packfiles
+##
+##  This program is free software; you can redistribute it and/or modify
+##  it under the terms of the GNU General Public License as published by
+##  the Free Software Foundation; either version 2 of the License, or
+##  (at your option) version 3 of the License.
+
+__autosem__
+
+from bigset import hs as BigHash
+from binascii import unhexlify as uh
+from datastream import data_parser, file_parser
+from zlib import decompressor
+from sha import digest as SHA
+
+VERIFY_SHA = True
+
+class Packfile
+{
+	method __init__ ($p, $verify=VERIFY_SHA)
+	{
+		d = file_parser (p + ".idx")
+
+		if (d.r32b () != 0xff744f63)
+			raise Error ("Bad packfile")
+
+		version = d.r32b ()
+		$fanout = [d.r32b () for (None in *256)]
+		nr = $fanout [-1]
+
+		shas = d.read (20 * nr)
+		$H = BigHash (shas, 20)
+
+		# crcs
+		d.skip (4 * nr)
+
+		$offsets = array ("i", [d.r32b () for (None in *nr)])
+		$pack = None
+	}
+
+	method haveobj (s)
+		return $H.contains (uh (s)) is not None
+
+	method findsig (s)
+	{
+		fan = ord (uh (s [:2]))
+		start = fan ? $fanout [fan - 1] : 0
+		end = $fanout [fan]
+		# xx: bigset internals
+		nth = $H.nth
+		M = []
+		for (i in xrange (start, end)) {
+			x = nth (i).hexlify ()
+			if (x.sw (s))
+				M<< x
+		}
+		return M
+	}
+
+	method openobj (s)
+	{
+		if ((offset = $H.contains (uh (s))) is None)
+			return
+
+		if (!$pack)
+			$pack = readfile ($p + ".pack")
+
+		t, data = $object_at ($offsets [offset])
+		if ($verify) {
+			if (SHA ("%s %i\0"%(t, len (data)) + data).hexlify () != s)
+				raise Error ("CRAPS. Packfile implementation broken")
+			if (__name__ == __main__)
+				@misc.fprint (".")
+		}
+
+		return t, data
+	}
+
+	method object_at (offset)
+	{
+		dp = data_parser ($pack, offset)
+		c = dp.r8 ()
+		t = (c>>4)&7
+		size = c & 15
+		shift = 4
+		while (c & 0x80) {
+			c = dp.r8 ()
+			size += (c & 0x7f) << shift
+			shift += 7
+		}
+
+		if (t not in (1, 2, 3, 7, 6))
+			return
+
+		# grr. packfiles mention the size of the *uncompressed* data.
+		# so we have to uncompress that and see how much zlib advanced
+		# in the compressed stream.
+
+		if (t == 7)
+			basesha = dp.read (20).hexlify ()
+		else if (t == 6) {
+			b = dp.r8 ()
+			n = b & 0x7f
+			while (b & 0x80) {
+				b = dp.r8 ()
+				n = ((n + 1) << 7) | (b & 0x7f)
+			}
+		}
+
+		dc = decompressor (dp.data, dp.offset)
+		p0 = dc.zavail ()
+		data = dc.unzip (size)
+		p1 = dc.zavail ()
+		dp.skip (p0 - p1)
+
+		if (t == 3)
+			return 'blob', data
+		if (t == 2)
+			return 'tree', data
+		if (t == 1)
+			return 'commit', data
+
+		obj_type, obj_data = t == 7 ? $openobj (basesha) : $object_at (offset - n)
+		data = $patch_delta (data, obj_data)
+		return obj_type, data
+	}
+
+	method patch_delta (delta_data, src)
+	{
+		# patch-delta.c
+		dp = data_parser (delta_data)
+		r8 = dp.r8
+		parse_le (dp)
+		parse_le (dp)
+		out = []
+		while (dp.left ()) {
+			cmd = r8 ()
+			if (cmd & 0x80) {
+				cpoff = cpsz = 0
+				if (cmd & 1) cpoff = r8 ()
+				if (cmd & 2) cpoff |= (r8 ()<<8)
+				if (cmd & 4) cpoff |= (r8 ()<<16)
+				if (cmd & 8) cpoff |= (r8 ()<<24)
+				if (cmd & 0x10) cpsz = r8 ()
+				if (cmd & 0x20) cpsz |= (r8 ()<<8)
+				if (cmd & 0x40) cpsz |= (r8 ()<<16)
+				if (cpsz == 0) cpsz = 0x10000
+				out += src [cpoff:cpoff+cpsz]
+			} else if (cmd) {
+				out += dp.read (cmd)
+			} else raise Error ("unexpected delta opcode 0")
+		}
+		# we got our data
+		return "".join (out)
+	}
+}
+
+def parse_le (dp)
+{
+	s = i = 0
+	do {
+		b = dp.r8 ()
+		s = s | (((b & 0x7f)) << i)
+		i += 7
+	} while (b & 0x80)
+	return s
+}
+
+class Packfiles
+	method __init__ (P)
+	{
+		P = [Packfile (p) for (p in P)]
+		haveobjs = [p.haveobj for (p in P)]
+		openobjs = [p.openobj for (p in P)]
+		findsigs = [p.findsig for (p in P)]
+
+		def $haveobj (sig)
+			for (f in haveobjs)
+				if (f (sig))
+					return True
+		def $openobj (sig)
+			for (f in openobjs)
+				if (r = f (sig))
+					return r
+		def $findsig (sig)
+		{
+			M = []
+			for (f in findsigs)
+				M.extend (f (sig))
+			return M
+		}
+	}
+
+if (__name__ == __main__)
+{
+	USAGE = "pyvm packfile <pack-SHA>
+
+The argument should be the filename of a packfile without the extension.
+The script will test the implementation of packfiles by extacting all
+the objects in it and verifying their sha.
+"
+
+	P = Packfile (sys.argp.one (), True)
+
+	for (x in P.H.makelist ())
+		P.openobj (x.hexlify ())
+	print "OK"
+}

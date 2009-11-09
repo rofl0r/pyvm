@@ -41,6 +41,13 @@ class hs
 		return [nth (x) for (x in *$dl)]
 	}
 
+	method __iter__ ()
+	{
+		nth = $nth
+		for (n in *$dl)
+			yield nth (n)
+	}
+
 	# returns the index (integer) or none.
 	method contains (i)
 	{

@@ -11,6 +11,7 @@ unpack    = @struct.unpack
 fprint    = @misc.fprint
 import os, zlib
 from sha import digest as SHA
+from scm.packfile import Packfiles
 
 # Base access to a git repository.  With this module we can write little
 # scripts to work with git repositories and easilly perform all the git
@@ -33,6 +34,7 @@ def ReadFile (path)
 class repository
 {
 	isPyvmRepo = False
+	PF = None
 
 	method __init__ ($BASEDIR)
 	{
@@ -41,6 +43,7 @@ class repository
 		$PROJDIR = $BASEDIR [:-5]
 		$IDX = INDEX ($BASEDIR, self)
 		$init_domain ()
+		$use_packfiles ()
 	}
 
 	method init_domain ()
@@ -63,6 +66,16 @@ class repository
 	method writefile (fnm, data) open ($BASEDIR + fnm, "w").write (data)
 	method ReadFile (path) return ReadFile ($PROJDIR + path)
 	method ReadFilex (path) return ReadFile ($PROJDIR + path) ?? ""
+
+	#
+	method list_packfiles ()
+		return [$BASEDIR + "objects/pack/" + f [:-5] for (f in $listdir ("objects/pack/"))
+			if (f.sw ("pack-") and f.ew (".pack")
+			    and $access ("objects/pack/" + f [:-4] + "idx"))]
+
+	method use_packfiles ()
+		if (pf = $list_packfiles ())
+			$PF = Packfiles (pf)
 
 	#
 	method readhead (h)
@@ -127,7 +140,54 @@ class repository
 
 	### Reading operations
 	method haveobj (sig)
-		return $access ("objects/" + sig [:2] + "/" + sig [2:])
+		return ($PF and $PF.haveobj (sig)) or
+			$access ("objects/" + sig [:2] + "/" + sig [2:])
+
+	method findsig (s)
+	{
+		if (len (s) == 40)
+			return s
+		if (len (s) == 1)
+			raise Error ("partial hash must have more than 1 char")
+
+		M = $PF ? $PF.findsig (s) : []
+
+		try {
+			c = $listdir ("objects/" + s [:2])
+			if (s2 = s [2:]) M.extend ([s [:2] + i for (i in c) if (i.sw (s2))])
+			else M.extend ([s [:2] + i for (i in c)])
+		}
+
+		M = set (M)
+		if (len (M) == 1)
+			return list (M) [0] 
+
+		#if (len (M) < 10)
+		#	for (x in list (M).sort ())
+		#		print x
+		raise Error ((M ? "Ambiguous hash: %s" : "No object starts with: %s") %s)
+	}
+
+	method _openobj (sig)
+	{
+		if ($PF and (r = $PF.openobj (sig))) {
+			typ, data = r
+		} else {
+			d = zlib.decompress ($readobj (sig [:2] + "/" + sig [2:]))
+			if (SHA (d).hexlify () != sig)
+				raise Error ("Repository inconsistent")
+			hdr, None, data = d.partition ("\0")
+			typ, None, siz = hdr.partition (" ")
+			# (xxx: could use this in advance to allocate exact buffer)
+			if (int (siz) != len (data))
+				raise Error ("Repository inconsistent")
+		}
+		if (typ in $ctors)
+			return $ctors [typ](sig, data)
+		print "UNKNOWN OBJECT", typ
+		print data
+		raise Error ("Unknown git object")
+	}
 
 	method openobj (sig, want=None)
 	{
@@ -138,34 +198,6 @@ class repository
 	}
 	open = openobj
 	
-	method findsig (s)
-	{
-		if (len (s) == 40) return s
-		try c = $listdir ("objects/" + s [:2])
-		except raise Error ("Ambiguous hash: %s" %s)
-		if (s2 = s [2:]) c2 = [i for (i in c) if (i.sw (s2))]
-		else c2 = c
-		if (len (c2) == 1) return s [:2] + c2 [0]
-		raise Error ((c2 ? "Ambiguous hash: %s" : "No object starts with: %s") %s)
-	}
-
-	method _openobj (sig)
-	{
-		d = zlib.decompress ($readobj (sig [:2] + "/" + sig [2:]))
-		if (SHA (d).hexlify () != sig)
-			raise Error ("Repository inconsistent")
-		hdr, None, data = d.partition ("\0")
-		typ, None, siz = hdr.partition (" ")
-		# (xxx: could use this in advance to allocate exact buffer)
-		if (int (siz) != len (data))
-			raise Error ("Repository inconsistent")
-		if (typ in $ctors)
-			return $ctors [typ](sig, data)
-		print "UNKNOWN OBJECT", typ
-		print data
-		raise Error ("Unknown git object")
-	}
-
 	method openblob (sig)
 		return $open (sig).data
 
