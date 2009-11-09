@@ -71,7 +71,7 @@ filedes.filedes (const char *fnm, int mode, bool nonblock, bool dommap, int have
 	}
 
 	if (mode == O_RDONLY && dommap) {
-		if (S_ISREG (statbuf.st_mode) && (len = statbuf.st_size) != -1i && len < 2*1024*1024) {
+		if (S_ISREG (statbuf.st_mode) && (len = statbuf.st_size) != -1 && len < 2*1024*1024) {
 #ifdef USE_MMAP2
 			mm_start = (char*) mmap (0, len, $PROT_READ, $MAP_PRIVATE, fd, 0);
 			if (mm_start) {

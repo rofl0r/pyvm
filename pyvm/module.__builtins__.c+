@@ -1308,6 +1308,50 @@ _module __object__ *tuple_or_builtin (REFPTR argv[])
 	return T;
 }
 
+/* mmap file:
+ *  returns a string and a file descriptor.
+ *  The string *must* be freed with mmap_free because normal
+ *  stringobj destruction will try to free() the buffer which
+ *  will result in segfault.
+ */
+_module __object__ *mmap_file_builtin (REFPTR argv[])
+{
+	char *filename = argv [0].CheckStringNZ ()->str;
+	char *mm_start;
+	int fd, len;
+	stat statbuf;
+
+	if ((fd = open (filename, O_RDONLY)) == -1)
+		RaiseNotImplemented ("Can't mmap file");
+
+	if (fstat (fd, &statbuf) != 0 || !S_ISREG (statbuf.st_mode))
+		goto err2;
+
+	len = statbuf.st_size;
+	if (len == -1)
+		goto err2;
+	mm_start = (char*) mmap (0, len, $PROT_READ, $MAP_PRIVATE, fd, 0);
+	if (!mm_start)
+		goto err2;
+
+	return new Tuplen (new StringObj allocated (mm_start, len), newIntObj (fd));
+  err2:
+	close (fd);
+	RaiseNotImplemented ("Can't mmap file");
+}
+
+_module __object__ *mmap_free_builtin (REFPTR argv[])
+{
+	StringObj *s = argv [0].CheckString ();
+	int fd = argv [1].check_int ()->i;
+	munmap (s->str, s->len);
+	close (fd);
+	// put fake buffer which can be freed
+	s->str = seg_alloc (5);
+	s->len = 4;
+	return &None;
+}
+
 /* */
 _module __object__ *__prealloc___builtin (REFPTR argv[])
 {
@@ -1408,6 +1452,8 @@ static const bltinfunc funcs [] = {
 	{"mallinfo",		SETARGC (0, 0), mallinfo_builtin},
 	{"max",			SETARGC (1, INFARGC), max_builtin},
 	{"min",			SETARGC (1, INFARGC), min_builtin},
+	{"mmap_file",		SETARGC (1, 1), mmap_file_builtin},
+	{"mmap_free",		SETARGC (2, 2), mmap_free_builtin},
 	{"ord",			SETARGC (1, 1), ord_builtin},
 	{"ord_signed",		SETARGC (1, 1), ord_signed_builtin},
 	{"ord16b",		SETARGC (1, 1), ord16b_builtin},

@@ -241,33 +241,52 @@ def execfile (f, D=None)
 }
 
 #
-# Evaluate a string which is a function definition (pe-whitespaceless)
+# ring buffer
 #
 
-def evalfunc (fdef, function, ns=None, pseudo_filename="file:evalfunc.pe")
+class ring
 {
-	from pyc import compile
-	cod = compile (fdef, pseudo_filename, "exec")
-	D = ns or {}
-	eval (cod, D)
-	try return D [function]
-	raise Error ("No function \"%s\" in the code!" %function)
+	method __init__ ($size)
+	{
+		$L = [None] * size
+		$len = $offset = 0
+	}
+
+	method __getitem__ (i)
+	{
+		if (i < 0) i = $len + i
+		if (i >= $len or i < 0) raise IndexError
+		return $L [($offset + i) % $size]
+	}
+
+	method add (x)
+		if ($len < $size) {
+			$L [$len] = x
+			$len += 1
+			return None
+		} else {
+			r, $L [$offset] = $L [$offset], x
+			$offset = ($offset + 1) % $size
+			return r
+		}
+
+	method __len__ ()
+		return $len
 }
 
 #
-# Watchdog, kill main thread after...
+# mmap
 #
 
-def watchdog (x)
+class mmapFile
 {
-	import thread
-	def f ()
-	{
-		sleep (x)
-		print "WATCHDOG ACTIVATED"
-		try thread.interrupt (0, SystemExit, 2)
-	}
-	thread.start_new (f)
+	method __init__ (f)
+		try $s, $fd = mmap_file (f)
+		except $s, $fd = readfile (f), None
+
+	method __del__ ()
+		if ($fd is not None)
+			mmap_free ($s, $fd)
 }
 
 #

@@ -107,7 +107,7 @@ class cpuloader
 {
 	method __init__ ()
 	{
-		$T = []
+		$T = @misc.ring (61)
 		$L = @thread.xlock (False)
 		@thread.start_new ($run)
 	}
@@ -126,13 +126,11 @@ class cpuloader
 	method run ()
 	{
 		p = $read_load ()
-		$T<< p
+		$T.add (p)
 		sleep (1)
 		while (1) {
 			p = $read_load ()
-			$T<< p
-			if (len ($T) > 60)
-				$T.pop (0)
+			$T.add (p)
 			$L.release ()
 			sleep (1)
 		}

@@ -12,6 +12,7 @@ from binascii import unhexlify as uh
 from datastream import data_parser, file_parser
 from zlib import decompressor
 from sha import digest as SHA
+from misc import mmapFile
 
 VERIFY_SHA = True
 
@@ -63,7 +64,7 @@ class Packfile
 			return
 
 		if (!$pack)
-			$pack = readfile ($p + ".pack")
+			$pack = mmapFile ($p + ".pack")
 
 		t, data = $object_at ($offsets [offset])
 		if ($verify) {
@@ -78,7 +79,7 @@ class Packfile
 
 	method object_at (offset)
 	{
-		dp = data_parser ($pack, offset)
+		dp = data_parser ($pack.s, offset)
 		c = dp.r8 ()
 		t = (c>>4)&7
 		size = c & 15
