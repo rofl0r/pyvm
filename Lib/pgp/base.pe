@@ -7,7 +7,7 @@
 
 __autosem__
 
-import sha, md5, base64
+import sha, md5, base64, zlib
 from sha import digest as SHA1
 from datastream import data_parser
 from crypto.longs import PKCToLong, LongToPKC
@@ -81,7 +81,7 @@ def parse_packet (dd)
 	if (old) {
 		tag = (t >> 2) & 31
 		ltype = t & 3
-		sz = ltype ==0 ? dd.r8 () : ltype == 1 ? dd.r16b () : ltype == 2 ? dd.r32b () : None
+		sz = ltype ==0 ? dd.r8 () : ltype == 1 ? dd.r16b () : ltype == 2 ? dd.r32b () : dd.left ()
 	} else {
 		tag = t & 63
 		sz = dd.r8 ()
@@ -94,12 +94,17 @@ def parse_packet (dd)
 	}
 
 	try f = {
+		1:  PubkeyEncryptedSessionKey,
 		2:  Signature,
 		5:  PrivateKey,
 		6:  PublicKey,
+		7:  PrivateSubKey,
+		8:  CompressedData,
+		11: LiteralData,
 		13: UserID,
 		17: UserAttr,
 		14: PublicSubKey,
+		18: SymEncrypted,
 	} [tag]
 	except {
 		print "Packet of unknown type:", tag
@@ -172,7 +177,7 @@ class PublicKey (**PGPPacket)
 				p, q, g, y = $keys
 			}
 
-		if (self => PrivateKey) {
+		if (self => PrivateKey or self => PrivateSubKey) {
 			$SecretPart = d.rest ()
 			$skeys = None
 		}
@@ -217,7 +222,6 @@ class PublicKey (**PGPPacket)
 	}
 }
 
-# A subkey. Don't know what these are good for
 class PublicSubKey (**PublicKey) { }
 
 def write_mpi (mpi)
@@ -368,7 +372,18 @@ class PrivateKey (**PublicKey)
 				 digest [:2]) + sigdata
 		return write_packet (packet, 2)
 	}
+
+	method decrypt (seskeypacket)
+	{
+		if (!$skeys)
+			$open_secret ()
+		mpi = PKCToLong (seskeypacket.K)
+		plaintext = RSA_sign (mpi, $rsa.d, $rsa.p, $rsa.q, $rsa.u)
+		seskeypacket.Decrypted (LongToPKC (plaintext))
+	}
 }
+
+class PrivateSubKey (**PrivateKey) { }
 
 class UserID (**PGPPacket)
 {
@@ -506,9 +521,98 @@ class Signature (**PGPPacket)
 	}
 }
 
+class PubkeyEncryptedSessionKey (**PGPPacket)
+{
+	DEK = None
+
+	method Init (d)
+	{
+		if (d.r8 () != 3)
+			raise Error ("version != 3")
+
+		$pkid = d.read (8)
+		if (d.r8 () != 1)
+			raise Error ("Cannot decrypt session key because it's not RSA")
+
+		$K = d.read_mpi ()
+	}
+
+	# The encrypted part ($K) has been decrypted with the apropriate private key.
+	# Use its data to find the DEK (which is the symmetric AES key)
+	method Decrypted (K)
+	{
+		d = data_parser (K)
+		if (d.r8 () != 0)
+			raise Error ("Can't decrypt session key")
+		if (d.r8 () != 2)
+			raise Error ("Old version session key")
+		# skip random
+		while (d.r8 ());
+		$cipher_algo = d.r8 ()
+		if ($cipher_algo != 7)
+			raise Error ("Ecryption is not AES (its type is %i)"%$cipher_algo)
+		$DEK = d.rest () [:-2]
+	}
+}
+
+class SymEncrypted (**PGPPacket)
+{
+	# right now this works only for symmetric keys that are themselves
+	# encrypted with a public key. Thus, the 'sk' in Decrypt() below is
+	# an unlocked PubkeyEncryptedSessionKey
+
+	method Init (d)
+	{
+		if (d.r8 () != 1)
+			raise Error ("version != 1")
+		$ciphertext = d.rest ()
+	}
+
+	method Decrypt (sk)
+	{
+		d = AES.decrypt (sk.DEK, None, $ciphertext, "cfb")
+		dp = data_parser (d)
+		dp.skip (14)
+		m = dp.read (4)
+		if (m [:2] != m [2:])
+			raise Error ("Decryption FAIL")
+		p = parse_packet (dp)
+		if (p => CompressedData)
+			p = p.literal
+		if !(p => LiteralData)
+			raise Error ("Was expecting Compressed or Literal Data Packet in plaintext")
+		return p
+	}
+}
+
+class CompressedData (**PGPPacket)
+	method Init (d)
+	{
+		meth = d.r8 ()
+		if (meth == 2)
+			data = zlib.decompress (d.rest ())
+		else if (meth == 0)
+			data = d.rest ()
+		else raise Error ("Unknown method")
+		$literal = parse_packet (data_parser (data))
+	}
+
+class LiteralData (**PGPPacket)
+	method Init (d)
+	{
+		type = d.rbyte ()
+		if (type not in "lbut")
+			raise Error ("Unknown literal data packet type")
+		fsz = d.r8 ()
+		$filename = fsz ? d.read (fsz) : ""
+		$date = d.r32b ()
+		$text = d.rest ()
+	}
+
 # A keyring is a bunch of packets that has
 #	One PublicKey packet
 #	a number of UserID and Signature packets
+#	a number subkeys
 
 class Keyring
 {
@@ -531,6 +635,8 @@ class Keyring
 				$signatures << p
 			else if (p => PrivateKey and !public)
 				$pk = p
+			else if (p => PrivateSubKey and !public)
+				$subkeys << p
 			else print "UNEXPECTED PACKET", p
 
 		$KeyID = $pk.KeyID
@@ -560,6 +666,11 @@ class Keyring
 			s.do_verify (pk.hash_content () + uidnode.hash_content (s), pk)
 		}
 	}
+
+	method have_subkey (kid)
+		for (s in $subkeys)
+			if (s.keyid == kid)
+				return s
 
 	method reconstruct ()
 		return "".join ([x.bin for (x in $packets)])

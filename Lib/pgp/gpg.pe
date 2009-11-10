@@ -8,6 +8,7 @@
 __autosem__
 
 from pgp import base
+from misc import yN
 
 DOUBLE_CHECK = 1#False
 
@@ -50,6 +51,10 @@ usage: pyvm gpg [import|export|list|verify|import-private|-b|sign|get-key] <argu
 
  signmime <infile> <outfile>
 	sign a mime message. (tested only with gpg.pe's verifymime)
+
+ decrypt <infile> [<outfile>]
+	decrypt a message that has been encrypted with your public key and can be
+	decrypted with your private keys.
 
  get-key <KEYID>
 	Try to find/download the key <KEYID> from subkeys.pgp.net.
@@ -229,6 +234,40 @@ def do_verify ()
 		return
 	}
 	VERIFY (fsig, fdat, sigdata, rdata)
+}
+
+def do_decrypt (fnm, outfnm=None)
+{
+	# An encrypted message is a series of session keys (one for each user
+	# that would be able to decrypt the message), and a SymEcrypted packet)
+	PRIVS.load ()
+	ctx = base.read_armor (readfile (fnm), "MESSAGE")
+	sk = None
+	SessionKey = None
+	for (p in base.parse_packets (ctx)) {
+		if (p => base.PubkeyEncryptedSessionKey) {
+			if (!SessionKey)
+				for (r in PRIVS.get_all_rings ().values ())
+					if.break (sk = r.have_subkey (p.pkid)) {
+						sk.decrypt (p)
+						SessionKey = p
+					}
+		} else if (p => base.SymEncrypted) {
+			if (!SessionKey)
+				raise Error ("Couldn't find private key to unlock message")
+			literal = p.Decrypt (SessionKey)
+			print "Message Decrypted"
+			if (!outfnm)
+				if (literal.filename) outfnm = literal.filename
+				else if (fnm.ew (".asc")) outfnm = fnm [:-4]
+				else outfnm = fnm + ".plaintext"
+			if (havefile (outfnm))
+				if (!yN ("[%s] exists. Overwrite"%outfnm))
+					return
+			open (outfnm, "w").write (literal.text)
+			print "Saved to:", outfnm
+		}
+	}
 }
 
 def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
@@ -413,7 +452,9 @@ def do_sign_mime (infile, outfile)
 if (__name__ == __main__)
 {
 	mode = sys.argp.pop_command (
-	"import,import-private,export,list,list-priv,verify,-b,sign,get-key,verifymime,signmime")
+			"import,import-private,export,list,list-priv,"+
+			"verify,-b,sign,get-key,verifymime,signmime,decrypt"
+	)
 
 	if (mode == "import")
 		do_import ()
@@ -431,6 +472,8 @@ if (__name__ == __main__)
 		do_sign ()
 	else if (mode == "get-key")
 		do_get_key ()
+	else if (mode == "decrypt")
+		do_decrypt (*sys.argp.nargs (1, 2))
 	else if (mode == "verifymime") {
 		r = do_verify_mime (readfile (sys.argp.one ()))
 		print "Status:", r
