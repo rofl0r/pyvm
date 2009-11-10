@@ -1,0 +1,44 @@
+__autosem__
+
+USAGE = "cpuload [-w width]
+
+gui program that shows the CPU load.
+"
+
+W = 133
+
+if (ww = sys.argp.check_vswitch ("-w"))
+	W = int (ww)
+load = @procps.cpuloader (W)
+import gui
+
+wm = gui.Wm (W, 101, "cpuload")
+wm.avtheme ()
+fnt = wm.OpenFont ("mono-b", -1)
+with (gui.vcontainer ())
+	F = gui.fbview (w=W, h=101)
+def Draw ()
+	while (1) {
+		load.L.acquire ()
+		p = None
+		l = []
+		for (x in load.T) {
+			if (p) l<< (p [1] == x [1] ? 0 :
+				int (100 * (p [0] - x [0]) / float (p [1] - x [1])))
+			p = x
+		}
+		fb = F.fb
+		fb.clear (0)
+		C = 0x335599
+		for (x, l in enumerate (l)) {
+			fb.draw_line (x, 100-l, x, 100, C)
+			fb.put_pixel (x, 100-l, 0x11ff00)
+		}
+		p0 = load.T [0]
+		p1 = load.T [-1]
+		avg = 100 * (p1 [0] - p0 [0]) / float (p1 [1] - p0 [1])
+		fnt.render_to (fb, 0, 0, "%.1f%%"%avg, 0xaabbaa)
+		wm.async (F.flip_fb)
+	}
+@thread.start_new (Draw)
+wm.Start ()

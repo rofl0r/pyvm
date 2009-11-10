@@ -276,6 +276,7 @@ class Go (**basewin)
 	method __init__ ($dpy)
 	{
 		$apps = [
+			["cpu load",	"pyvm cpuload"],
 			["webbrowser",	"pyvm www"],
 			["e-mail/news",	"pyvm mymbox"],
 			["IRC chat",	"pyvm irc"],

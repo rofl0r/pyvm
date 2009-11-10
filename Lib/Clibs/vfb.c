@@ -256,7 +256,7 @@ void fb_fill_rect (fb *f, int x, int y, int w, int h, RRGGBB col)
 
 void fb_put_pixel (fb *f, uint x, uint y, RRGGBB col)
 {
-	if (x > SCRX || y > SCRY)
+	if (x >= SCRX || y >= SCRY)
 		return;
 
 	switch (f->depth) {

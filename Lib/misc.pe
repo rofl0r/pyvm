@@ -272,6 +272,10 @@ class ring
 
 	method __len__ ()
 		return $len
+
+	method __iter__ ()
+		for (i in *$len)
+			yield self [i]
 }
 
 #
