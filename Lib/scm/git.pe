@@ -392,15 +392,16 @@ def cmd_switch (repo, branch, nostash=False)
 		# touch immediatelly. If not (currently the case) we sleep
 		# for some time so that one second will have ellapsed since
 		# the file creation.
+		PD = repo.PROJDIR
 		if (files) {
-			dt = 1.05 + max ([os.stat (ff).st_mtime for (ff in files)]) - now ()
+			dt = 1.05 + max ([os.stat (PD+ff).st_mtime for (ff in files)]) - now ()
 			if (dt > 0) {
 				print "sleep: %.2f"%dt
 				sleep (dt)
 			}
 		}
 		for (f in files)
-			os.touch (f)
+			os.touch (PD+f)
 
 		# remove the stash
 		repo.remove_stash (branch)

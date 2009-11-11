@@ -32,7 +32,7 @@ def encode_hmac (chall, user, pass)
 
 class smtp		# SMTP connection
 {
-	method __init__ (host, user=None, pass=None, port=25)
+	method __init__ (host, userpass=None, port=25)
 	{
 		from socket import socket
 		$s = s = socket ()
@@ -45,19 +45,12 @@ class smtp		# SMTP connection
 		$cmd ('EHLO %s' %hostname)
 		try while (37) $greeting += s.recv (timeout=1)
 
-		if (user and pass) {
-
-			# AUTH CRAM-MD5 fails on my test server
-			# However the strings seem to be correct, as
-			# verified by python's smtplib and cmd5.
-			# So I suppose that my test server is broken.
-
+		if (userpass) {
+			user, pass = userpass
 			r = $cmd ('AUTH CRAM-MD5')
 			r = $cmd (encode_hmac ($rmsg, user, pass))
-			if (r == 235)
-				print "CRAM-MD5 works!!! Please report this to the pyvm list"
-			else r = $cmd ('AUTH PLAIN ' + 
-				base64.enc ('%s\0%s\0%s' %(user, user, pass)))
+			if (r != 235)
+				r = $cmd ('AUTH PLAIN ' + base64.enc ('%s\0%s\0%s' %(user, user, pass)))
 			if (r != 235)
 				raise Error ("Authentication Failed")
 		}
@@ -125,9 +118,13 @@ def SendMail (text)
 		f = f.strip ()
 		if (!f or f.sw ("#"))
 			continue
-		try addr, serv = f.split ()
+		l = f.split ()
+		userpass = None
+		if (len (l) == 4)
+			(addr, serv), userpass = l [:2], l [2:]
+		else try addr, serv = f.split ()
 		except return error ("Bad line in SMTP [%s]"%f)
-		servers [addr] = serv
+		servers [addr] = serv, userpass
 	}
 
 	M = mime.Mime (text)
@@ -170,7 +167,7 @@ def SendMail (text)
 		return 0
 
 	print "Connecting..."
-	S = smtp (servers [myaddr])
+	S = smtp (servers [myaddr][0], servers [myaddr][1])
 	print "Sending."
 	if (!S.sendmail (myaddr, recipients, text.split ("\n"))) {
 		S.quit ()

@@ -1,20 +1,18 @@
-You need to construct manually a well formed MIME mail message.
-Then run
+A mail message must be created. One option is to select 'export reply'
+from the mailnews reader. Then edit this file and finally:
+
 	pyvm smtp -sendmail <file>
 
-The file should
+'pyvm smtp' is an interactive program that will ask if you really
+want to send the mail, etc.
 
-- Fill in Date: and Message-ID:
-- Encode the message properly (base64 or quoted printable)
-  (NOTE: most SMTP servers are supposed to support 8bit
-   MIME since 1995! so passing UTF-8 text should be perfectly
-   possible without any extra encoding)
-  'Content-transfer-encoding: 8bit' works.
+Outgoing mailservers should be listed in the file PYVM/user/mail/SMTP
+like
 
-To Do:
+	<user@isp.com> smtp.isp.com
+	<jim@univ.edu> mailserver.univ.edu jim pa55w0rdz
 
-- Attach files
+Todo:
+- attach files
 - PGP sign messages
-- Set X-No-Archive
-- add signatures
 - spell checking
