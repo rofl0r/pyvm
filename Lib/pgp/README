@@ -5,6 +5,11 @@ these keys to sign/verify/crypt content.
 HOWTO:
 ------
 
+Import the "pyvm public key":
+
+	# from this directory
+	pyvm gpg import ../pyvm-pubkey.pgp
+
 Export keys from GnuPG and import in gpg.pe:
 
 	gpg --armor --export > KEYS
@@ -12,24 +17,27 @@ Export keys from GnuPG and import in gpg.pe:
 
 Verify the signature of Python-2.6.tar.bz2:
 
+	# assuming you've imported Barry's key
 	pyvm gpg verify Python-2.6.tar.bz2.asc
 
-Import secret keys:
+Generate your own keys:
 
-	gpg --armor --export-secret-keys > KEYS
-	pyvm gpg import-private KEYS
+	pyvm keygen
+	# follow instructions
+	pyvm gpg import key.pub
+	pyvm gpg import-private key.pri
 
-Sign a file:
+Sign a file (you must have one private key):
 
 	pyvm gpg sign Message.txt
 
-This implementation is more useful for verifying signed messages.
+Encrypt a file that can be decrypted by the owner of the pyvm private key:
+
+	pyvm encrypt some-file.txt E1A88C45
 
 
 Limitations:
 ------------
-
-- No encryption/decryption, only sign/verify
 
 - Implemented algorithms are RSA and DSA (as GnuPG)
 
@@ -37,12 +45,6 @@ Limitations:
 
 - Only "armored" radix-64 messages are usable.
 
-- Currently there is a bug and we cannot import Philip R. Zimmermann's key
-  that is distributed with gnupg/doc/samplekeys.asc
-  (the problem is that signature packet with digest start "07 d1" occurs twice.
-   the first check fails, while the second is OK.  How do we know that a failed
-   sigcheck may be ignored?)
-  This bug reflects the status of this implementation :)
 
 Possibly Insecure
 =================
