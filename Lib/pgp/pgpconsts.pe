@@ -1,0 +1,38 @@
+__autosem__
+
+namespace PKT
+{
+	SIGNATURE = 2
+	PRIVKEY   = 5
+	PUBKEY    = 6
+	PRIVSUB   = 7
+	USERID    = 13
+	PUBSUB    = 14
+}
+
+namespace SUBPKT
+{
+	CTIME      = 2
+	PREFCIPHER = 11
+	PREFCOMPR  = 22
+	ISSUER     = 16
+	FLAGS      = 27
+}
+
+namespace CIPHER
+{
+	AES = 7
+}
+
+namespace COMPRESSION
+{
+	NONE = 0
+	ZLIB = 2
+}
+
+namespace HASH
+{
+	MD5 = 1
+	SHA = 2
+	SHA256 = 8
+}

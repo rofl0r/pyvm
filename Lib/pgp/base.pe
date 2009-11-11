@@ -15,36 +15,7 @@ from crypto.cryptorand import randstr
 from crypto.DSA import verify as DSA_verify, sign as DSA_sign
 from crypto.RSA import sign_fast as RSA_sign
 from crypto import AES
-
-namespace PKT
-{
-	SIGNATURE = 2
-	PRIVKEY   = 5
-	PUBKEY    = 6
-	PRIVSUB   = 7
-	USERID    = 13
-	PUBSUB    = 14
-}
-
-namespace SUBPKT
-{
-	CTIME      = 2
-	PREFCIPHER = 11
-	PREFCOMPR  = 22
-	ISSUER     = 16
-	FLAGS      = 27
-}
-
-namespace CIPHER
-{
-	AES = 7
-}
-
-namespace COMPRESSION
-{
-	NONE = 0
-	ZLIB = 2
-}
+from pgp.pgpconsts import *
 
 def ReadPassword ()
 	return raw_input ("Type password to unlock the secret key: ")[:-1]
@@ -407,7 +378,7 @@ class PrivateKey (**PublicKey)
 				 timestamp,
 				 $keyid,
 				 $algoid,
-				 2,		# signature algorithm 2==SHA
+				 HASH.SHA,	# signature algorithm 2==SHA
 				 digest [:2]) + sigdata
 		return write_packet (packet, PKT.SIGNATURE)
 	}
@@ -443,6 +414,11 @@ class UserID (**PGPPacket)
 
 class UserAttr (**UserID)
 	ptype = 0xd1
+
+DIGS = {
+	HASH.MD5: md5,
+	HASH.SHA: sha
+}
 
 class Signature (**PGPPacket)
 {
@@ -530,15 +506,13 @@ class Signature (**PGPPacket)
 	method __str__ ()
 		return "<Signature packet %02x>" %$sig_class
 
-	DIGS = { 1: md5, 2: sha }
-
 	method do_verify (data, pk)
 	{
-		if ($sigalg == 8) {
+		if ($sigalg == HASH.SHA256) {
 			print "pyvm does not have a SHA256 implementation"
 			raise Error ("No SHA256")
 		}
-		try md = $DIGS [$sigalg].new (data)
+		try md = DIGS [$sigalg].new (data)
 		except raise Error ("N/A digest function")
 
 		md.update ($hash_content ())
@@ -801,13 +775,14 @@ def key_sign_packet (E, N, D, data, timestamp, sig_class)
 	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
 	keyid = SHA1 (pkhc) [-8:]
 
-	 # signature hash content (V3)
+	 # signature hash content (V4)
 	def subp (t, data)
 		return "%c%c"%(len (data) + 1, t) + data
 	hd = subp (SUBPKT.ISSUER, keyid) + subp (SUBPKT.CTIME, "%MI"%timestamp) +
 		subp (SUBPKT.FLAGS, "%c" %(sig_class == 0x13 ? 3 : 0xc))
 	if (sig_class == 0x13)
-		hd += subp (SUBPKT.PREFCIPHER, "%c"%CIPHER.AES) + subp (SUBPKT.PREFCOMPR, "%c"%2)
+		hd += subp (SUBPKT.PREFCIPHER, "%c"%CIPHER.AES) +
+		      subp (SUBPKT.PREFCOMPR, "%c"%COMPRESSION.ZLIB)
 	sihc = "%c%c%c%c" % (4, sig_class, 1, 2)
 	sihc += "%Mh" %len (hd) + hd
 	n = len (sihc)
@@ -884,7 +859,7 @@ def enc_secret_part (secret_part, passphrase)
 				254,		# is_protected
 				CIPHER.AES,	# AES
 				3,		# salt-iterated
-				2,		# SHA1
+				HASH.SHA,	# SHA1
 				salt,
 				96,		# for count 65536
 				iv
