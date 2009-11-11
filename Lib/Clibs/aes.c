@@ -838,7 +838,7 @@ static int _AES_set_encrypt_key(const unsigned char *userKey, const int bits,
 	return 0;
 }
 
-int set_encrypt_key(const unsigned char *userKey, const int bits, AES_KEY *key)
+static int set_encrypt_key(const unsigned char *userKey, const int bits, AES_KEY *key)
 {
 	return _AES_set_encrypt_key (userKey, bits, key);
 }
@@ -846,7 +846,7 @@ int set_encrypt_key(const unsigned char *userKey, const int bits, AES_KEY *key)
 /**
  * Expand the cipher key into the decryption key schedule.
  */
-int set_decrypt_key(const unsigned char *userKey, const int bits,
+static int set_decrypt_key(const unsigned char *userKey, const int bits,
 			 AES_KEY *key) {
 
         u32 *rk;
@@ -1278,20 +1278,54 @@ static void AES_decrypt(const unsigned char *in, unsigned char *out,
 #endif /* AES_ASM */
 
 #define KEY AES_KEY
+
+typedef struct CIPHERCTXt
+{
+	KEY *key;
+	unsigned char *ivec;
+	int enc;
+	int unused;
+	int (*f)(unsigned char*, unsigned char*, unsigned long, struct CIPHERCTXt*);
+} CIPHERCTX;
+
 #define BLOCKSIZE AES_BLOCK_SIZE
 #define ENCRYPT AES_encrypt
 #define DECRYPT AES_decrypt
 #include "cbc.h"
 #include "cfb.h"
 
-const int sizeof_ctx = sizeof (AES_KEY);
+int init_ctx (const unsigned char *userKey, const int bits, AES_KEY *key,
+	      unsigned char *iv, int enc, int cfb, CIPHERCTX *ctx)
+{
+	int r;
+	if (enc || cfb)
+		r = set_encrypt_key (userKey, bits, key);
+	else r = set_decrypt_key (userKey, bits, key);
+
+	if (r) return r;
+
+	ctx->key = key;
+	ctx->ivec = iv;
+	ctx->enc = enc;
+	ctx->unused = 0;
+	ctx->f = cfb ? cfb_encrypt : cbc_encrypt;
+
+	return 0;
+}
+
+int do_crypt (unsigned char *data, unsigned long len, CIPHERCTX *ctx)
+{
+	return ctx->f (data, data, len, ctx);
+}
+
+const int sizeof_key = sizeof (AES_KEY);
+const int sizeof_ctx = sizeof (CIPHERCTX);
 
 const char ABI [] =
-"i sizeof_ctx			\n"
-"i set_encrypt_key	sis	\n"
-"i set_decrypt_key	sis	\n"
-"- cbc_encrypt		ssissi	\n"
-"- cfb_encrypt		ssissi	\n"
+"i sizeof_key		\n"
+"i sizeof_ctx		\n"
+"i init_ctx	sissiis	\n"
+"i do_crypt	sis	\n"
 ;
 
 const char __DEPENDS__ [] = "cbc.h,cfb.h";

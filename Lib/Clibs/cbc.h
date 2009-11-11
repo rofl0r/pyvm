@@ -2,13 +2,18 @@
 #error "this cbc works only for 16/8 blocksize"
 #endif
 
-void cbc_encrypt(const unsigned char *in, unsigned char *out,
-		     const unsigned long length, const KEY *key,
-		     unsigned char *ivec, const int enc) 
+static int cbc_encrypt (unsigned char *in, unsigned char *out,
+			unsigned long length, CIPHERCTX *ctx)
 {
+	const KEY *key = ctx->key;
+	unsigned char *ivec = ctx->ivec;
+	int enc = ctx->enc;
 	unsigned long n;
 	unsigned long len = length;
 	unsigned char tmp[BLOCKSIZE];
+
+	if (ctx->unused)
+		return 1;
 
 	if (enc) {
 		while (len >= BLOCKSIZE) {
@@ -38,7 +43,8 @@ void cbc_encrypt(const unsigned char *in, unsigned char *out,
 			ENCRYPT(tmp, tmp, key);
 			__builtin_memcpy(out, tmp, BLOCKSIZE);
 			__builtin_memcpy(ivec, tmp, BLOCKSIZE);
-		}			
+			ctx->unused = BLOCKSIZE - len;
+		}
 	} else {
 		while (len >= BLOCKSIZE) {
 			__builtin_memcpy(tmp, in, BLOCKSIZE);
@@ -62,6 +68,8 @@ void cbc_encrypt(const unsigned char *in, unsigned char *out,
 			for(n=0; n < len; ++n)
 				out[n] = tmp[n] ^ ivec[n];
 			__builtin_memcpy(ivec, tmp, BLOCKSIZE);
-		}			
+			ctx->unused = BLOCKSIZE - len;
+		}
 	}
+	return 0;
 }

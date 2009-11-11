@@ -2,14 +2,20 @@
 #error "this cfb works only for 16/8 blocksize"
 #endif
 
-void cfb_encrypt(unsigned char *in, unsigned char *out,
-		     const unsigned long length, const KEY *key,
-		     unsigned char *ivec, const int enc)
+static int cfb_encrypt (unsigned char *in, unsigned char *out,
+			unsigned long length, CIPHERCTX *ctx)
 {
+	const KEY *key = ctx->key;
+	unsigned char *ivec = ctx->ivec;
+	int enc = ctx->enc;
+
 	unsigned long n;
 	unsigned long len = length;
 	unsigned char tmp[BLOCKSIZE];
 	unsigned char tmp2[BLOCKSIZE];
+
+	if (ctx->unused)
+		return 1;
 
 	if (enc) {
 		while (len >= BLOCKSIZE) {
@@ -32,7 +38,8 @@ void cfb_encrypt(unsigned char *in, unsigned char *out,
 			ENCRYPT (ivec, tmp, key);
 			for (n=0;n<len;n++)
 				out [n] = ivec [n] = tmp [n] ^ in [n];
-		}			
+			ctx->unused = BLOCKSIZE - len;
+		}
 	} else {
 		while (len >= BLOCKSIZE) {
 			unsigned int *o0 = (unsigned int*)out;
@@ -57,6 +64,8 @@ void cfb_encrypt(unsigned char *in, unsigned char *out,
 			for (n=0;n<len;n++)
 				out [n] = tmp [n] ^ in [n];
 			__builtin_memcpy (ivec, tmp2, len);
+			ctx->unused = BLOCKSIZE - len;
 		}
 	}
+	return 0;
 }
