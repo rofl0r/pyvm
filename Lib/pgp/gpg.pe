@@ -56,6 +56,11 @@ usage: pyvm gpg [import|export|list|verify|import-private|-b|sign|get-key] <argu
 	decrypt a message that has been encrypted with your public key and can be
 	decrypted with your private keys.
 
+ encrypt <infile> <recipient> [<outfile>]
+	encrypt a file with a person's public key.  At the moment the <recipient> must
+	be a Key ID.  Using names for the recipient and searching the keydb to be
+	implemented.
+
  get-key <KEYID>
 	Try to find/download the key <KEYID> from subkeys.pgp.net.
 	The KEYID may be a short keyid (8 characters) or a long key fingerprint (32).
@@ -88,6 +93,7 @@ class KDB
 	method get_ring (k)
 	{
 		$load ()
+		k = k.upper ()
 
 		if (k in $Rings)
 			return $Rings [k]
@@ -271,7 +277,32 @@ def do_decrypt (fnm, outfnm=None)
 
 			open (outfnm, "w").write (literal.text)
 			print "Saved to:", outfnm
-		}
+		} else print "OTHA", p
+}
+
+def do_encrypt (fnm, recipient, outfnm=None)
+{
+	PUBS.load ()
+	try KR = PUBS.get_ring (recipient)
+	except {
+		print "Don't have public key [%s] to encrypt the file for"%recipient
+		return
+	}
+
+	# right now use the first subkey. (what's the right thing?)
+	if !(PK = KR.get_subkey ()) {
+		print "Public key [%s] does not have any subkeys and therefore "+
+		      "cannot be used for encryption"%recipient
+		return
+	}
+
+	msg = PK.encrypt (readfile (fnm), fnm)
+	if (!outfnm) outfnm = fnm + ".asc"
+	if (havefile (outfnm))
+		if (!yN ("[%s] exists. Overwrite"%outfnm))
+			return
+	open (outfnm, "w").write (msg)
+	print "Saved to:", outfnm
 }
 
 def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
@@ -461,7 +492,7 @@ if (__name__ == __main__)
 {
 	mode = sys.argp.pop_command (
 			"import,import-private,export,list,list-priv,"+
-			"verify,-b,sign,get-key,verifymime,signmime,decrypt"
+			"verify,-b,sign,get-key,verifymime,signmime,decrypt,encrypt"
 	)
 
 	if (mode == "import")
@@ -482,6 +513,8 @@ if (__name__ == __main__)
 		do_get_key ()
 	else if (mode == "decrypt")
 		do_decrypt (*sys.argp.nargs (1, 2))
+	else if (mode == "encrypt")
+		do_encrypt (*sys.argp.nargs (1, 3))
 	else if (mode == "verifymime") {
 		r = do_verify_mime (readfile (sys.argp.one ()))
 		print "Status:", r

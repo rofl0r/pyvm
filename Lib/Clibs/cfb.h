@@ -4,7 +4,7 @@
 
 void cfb_encrypt(unsigned char *in, unsigned char *out,
 		     const unsigned long length, const KEY *key,
-		     unsigned char *ivec, const int enc) 
+		     unsigned char *ivec, const int enc)
 {
 	unsigned long n;
 	unsigned long len = length;
@@ -53,10 +53,10 @@ void cfb_encrypt(unsigned char *in, unsigned char *out,
 		}
 		if (len) {
 			ENCRYPT (ivec, tmp, key);
-			__builtin_memcpy (tmp2, in, BLOCKSIZE);
+			__builtin_memcpy (tmp2, in, len);
 			for (n=0;n<len;n++)
 				out [n] = tmp [n] ^ in [n];
-			__builtin_memcpy (ivec, tmp2, BLOCKSIZE);
-		}			
+			__builtin_memcpy (ivec, tmp2, len);
+		}
 	}
 }

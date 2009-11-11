@@ -1,13 +1,20 @@
 __autosem__
 
+# constants only for what we need/use
+
 namespace PKT
 {
+	SESKEY    = 1
 	SIGNATURE = 2
 	PRIVKEY   = 5
 	PUBKEY    = 6
 	PRIVSUB   = 7
+	COMPRESS  = 8
+	LITERAL   = 11
 	USERID    = 13
 	PUBSUB    = 14
+	USERATTR  = 17
+	SYMENC    = 18
 }
 
 namespace SUBPKT
@@ -32,7 +39,13 @@ namespace COMPRESSION
 
 namespace HASH
 {
-	MD5 = 1
-	SHA = 2
+	MD5    = 1
+	SHA    = 2
 	SHA256 = 8
+}
+
+ASNOID =
+{
+	HASH.MD5: "\x30\x20\x30\x0c\x06\x08\x2a\x86\x48\x86\xf7\x0d\x02\x05\x05\x00\x04\x10",
+	HASH.SHA: "\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14",
 }

@@ -17,6 +17,9 @@ from crypto.RSA import sign_fast as RSA_sign
 from crypto import AES
 from pgp.pgpconsts import *
 
+def randstr_nz (n)
+	return randstr (n).replace ("\0", "\1")
+
 def ReadPassword ()
 	return raw_input ("Type password to unlock the secret key: ")[:-1]
 
@@ -103,17 +106,17 @@ def parse_packet (dd)
 	}
 
 	try f = {
-		1:  PubkeyEncryptedSessionKey,
+		PKT.SESKEY:     PubkeyEncryptedSessionKey,
 		PKT.SIGNATURE:  Signature,
-		PKT.PRIVKEY:  PrivateKey,
-		PKT.PUBKEY:  PublicKey,
-		PKT.PRIVSUB:  PrivateSubKey,
-		8:  CompressedData,
-		11: LiteralData,
-		PKT.USERID: UserID,
-		17: UserAttr,
-		PKT.PUBSUB: PublicSubKey,
-		18: SymEncrypted,
+		PKT.PRIVKEY:    PrivateKey,
+		PKT.PUBKEY:     PublicKey,
+		PKT.PRIVSUB:    PrivateSubKey,
+		PKT.COMPRESS:   CompressedData,
+		PKT.LITERAL:    LiteralData,
+		PKT.USERID:     UserID,
+		PKT.USERATTR:   UserAttr,
+		PKT.PUBSUB:     PublicSubKey,
+		PKT.SYMENC:     SymEncrypted,
 	} [tag]
 	except {
 		print "Packet of unknown type:", tag
@@ -123,6 +126,15 @@ def parse_packet (dd)
 		print "packet :", f
 
 	return f (dd.copyfrom (m), dparser (pdata))
+}
+
+def write_packet (packet, ptype)
+{
+	l = len (packet)
+	if (l < 192) sz = "%c" %l
+	else sz = "%c%Mi" %(255, l)
+
+	return "%c"% (0x80 | 0x40 | ptype) + sz + packet
 }
 
 # mpi in PKC form. how many bits it needs?
@@ -230,7 +242,51 @@ class PublicKey (**PGPPacket)
 	}
 }
 
-class PublicSubKey (**PublicKey) { }
+class PublicSubKey (**PublicKey)
+	method encrypt (text, filename)
+	{
+		# FYI: RSA *can* be used to encrypt data. However, RSA encryption is
+		# *very* slow. So what happens is that the message is encrypted with
+		# AES which is a million times faster and the AES key is encrypted
+		# with RSA, which is fast because the AES key is, like, 128 bytes.
+		if ($algorithm != "rsa")
+			raise Error ("Encryption for DSA keys not implemented")
+
+		# literal packet
+		literal = "b%c%s%Mi"%(len (filename), filename, int (now ())) + text
+		literal = write_packet (literal, PKT.LITERAL)
+
+		# compressed packet containing the literal packet == plaintext
+		compressed = "%c"%COMPRESSION.ZLIB + zlib.compress (literal)
+		plaintext = write_packet (compressed, PKT.COMPRESS)
+
+		# make key
+		DEK = randstr (16)
+
+		# encrypt plaintext with AES
+		startbytes = randstr (16)
+		plaintext = startbytes + startbytes [-2:] + plaintext + "\xd3\x14"
+		plaintext = plaintext + SHA1 (plaintext)
+		ciphertext = AES.encrypt (DEK, None, plaintext, "cfb")
+
+		# create symenc packet
+		symenc = write_packet ("\1" + ciphertext, PKT.SYMENC)
+
+		# encrypt DEK key with RSA
+		keylen = len ($keys [0])
+		ms = "\0%c%s%Mh"% (CIPHER.AES, DEK, sum (ords (DEK)))
+		plaintext = "\0\2" + randstr_nz (keylen - len (ms) - 2) + ms
+		if ($algorithm == "rsa")
+			ciphertext = write_mpi (pow (PKCToLong (plaintext), $rsa.e, $rsa.n))
+		else ; # todo
+
+		# create SESKEY packet
+		seskey = "\3" + $keyid + "%c"%$algoid + ciphertext
+		seskey = write_packet (seskey, PKT.SESKEY)
+
+		# join/return armored message
+		return write_armor (seskey + symenc, "MESSAGE")
+	}
 
 def write_mpi (mpi)
 {
@@ -238,24 +294,6 @@ def write_mpi (mpi)
 	bits = mpi_bits (mpi)
 	bytes = (bits+7)/8
 	return "%Mh" % bits + mpi [-bytes:]
-}
-
-def write_packet (packet, ptype)
-{
-	if (len (packet) < 255) {
-		l = 0
-		sz = "%c" %len (packet)
-	} else {
-		l = 1
-		sz = "%Mh" %len (packet)
-	}
-
-	return "%c%s" % ((ptype<<2)|0x80|l, sz) + packet
-}
-
-ASNOID = {
-	1: "\x30\x20\x30\x0c\x06\x08\x2a\x86\x48\x86\xf7\x0d\x02\x05\x05\x00\x04\x10",
-	2: "\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14",
 }
 
 def encode_rsa_mpi (sigalg, digest, keylen)
@@ -382,7 +420,9 @@ class PrivateKey (**PublicKey)
 				 digest [:2]) + sigdata
 		return write_packet (packet, PKT.SIGNATURE)
 	}
+}
 
+class PrivateSubKey (**PrivateKey)
 	method decrypt (seskeypacket)
 	{
 		if (!$skeys)
@@ -391,9 +431,6 @@ class PrivateKey (**PublicKey)
 		plaintext = RSA_sign (mpi, $rsa.d, $rsa.p, $rsa.q, $rsa.u)
 		seskeypacket.Decrypted (LongToPKC (plaintext))
 	}
-}
-
-class PrivateSubKey (**PrivateKey) { }
 
 class UserID (**PGPPacket)
 {
@@ -562,7 +599,7 @@ class PubkeyEncryptedSessionKey (**PGPPacket)
 		if (d.r8 () != 2)
 			raise Error ("Old version session key")
 		# skip random
-		while (d.r8 ());
+		while (d.r8 ()) ;
 		$cipher_algo = d.r8 ()
 		if ($cipher_algo != CIPHER.AES)
 			raise Error ("Ecryption is not AES (its type is %i)"%$cipher_algo)
@@ -585,7 +622,14 @@ class SymEncrypted (**PGPPacket)
 
 	method Decrypt (sk)
 	{
-		dp = data_parser (AES.decrypt (sk.DEK, None, $ciphertext, "cfb"))
+		pp = AES.decrypt (sk.DEK, None, $ciphertext, "cfb")
+		dp = data_parser (pp [:-22])
+		mdc = pp [-22:]
+		if (!mdc.sw ("\xd3\x14"))
+			raise Error ("Bad MDC packet")
+		if (SHA1 (pp [:-22] + mdc [:2]) != mdc [2:])
+			raise Error ("MDC hash fail")
+
 		dp.skip (14)
 		m = dp.read (4)
 		if (m [:2] != m [2:])
@@ -714,6 +758,9 @@ class Keyring
 		for (s in $subkeys)
 			if (s.keyid == kid)
 				return s
+
+	method get_subkey ()
+		return $subkeys ? $subkeys [0] : None
 
 	method reconstruct ()
 		return "".join ([x.bin for (x in $packets)])
