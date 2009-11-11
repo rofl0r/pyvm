@@ -10,6 +10,7 @@
 __autosem__
 
 from crypto.prime import getPrime
+from misc import yn
 
 def gcd (a, b)
 {
@@ -108,11 +109,13 @@ def input (prompt, accept=None, e=False)
 			return T
 	}
 
-T = input ("Enter key size, (1) for 1024 bits and (2) for 2048 bits: ", "12")
+fastgen = sys.argp.check_switch ("-f")
+
+T = fastgen ? '1' : input ("Enter key size, (1) for 1024 bits and (2) for 2048 bits: ", "12")
 keysize = T == "1" ? 1024 : 2048
 
 print
-T = input ("Enter passphrase (type enter to generate a random key): ", e=1)
+T = fastgen ? "" : input ("Enter passphrase (type enter to generate a random key): ", e=1)
 if (T) {
 	print
 	print "Your passphrase is [%s]" %T
@@ -132,7 +135,7 @@ nbits = keysize / 16
 Q = PKCToLong ((sha.digest (T)*40)[:nbits])
 P = PKCToLong ((md5.digest (T)*40)[:nbits])
 
-E, D, N, Q, P, U = mkkey (getPrime (P), getPrime (Q))
+E, D, N, Q, P, U = EDNQPU = mkkey (getPrime (P), getPrime (Q))
 
 print
 
@@ -143,10 +146,13 @@ print
 print "Modulo: ", llong.tostringnum (N)
 print
 
-T = input ("Make keys for use by, (1) PGP (2) SSH: ", "12")
+T = fastgen ? "1" : input ("Make keys for use by, (1) PGP (2) SSH: ", "12")
 format = T == "1" ? "pgp" : "ssh"
 
-while (1) {
+if (fastgen) {
+	try os.mkdir ("x")
+	os.chdir ("x")
+} else while (1) {
 	d = input ("Enter directory name to store the keys (must not exist): ")
 	try os.mkdir (d)
 	except {
@@ -158,15 +164,23 @@ while (1) {
 }
 
 if (format == "pgp") {
-	uid = input ("Enter your identity string (required by PGP, must be 'name <address>' form): ", e=1)
+	print
+	print "Generating RSA subkey that can be used for encryption/decryption"
+	sQ = PKCToLong ((sha.digest (2*T)*40)[:nbits])
+	sP = PKCToLong ((md5.digest (2*T)*40)[:nbits])
+	sEDNQPU = mkkey (getPrime (sP), getPrime (sQ))
+
+	print
+	uid = fastgen ? "foo" :
+	      input ("Enter your identity string (required by PGP, must be 'name <address>' form): ", e=1)
 	print
 	print "It is possible to encrypt(protect) the private key with a password."
 	print " Advantage: if your laptop is stolen your private key is OK, and you can just re-create it"
 	print " Disadvantage: you'll have to type the password every time you want to use the key"
-	passphrase = input ("Enter passphrase (type enter avoid encypting the key): ", e=1)
+	passphrase = fastgen ? "" : input ("Enter passphrase (type enter avoid encypting the key): ", e=1)
 
 	from pgp.base import gen_pgp_keys
-	pub, priv = gen_pgp_keys (E, D, N, Q, P, U, uid, timestamp, passphrase)
+	pub, priv = gen_pgp_keys (EDNQPU, sEDNQPU, uid, timestamp, passphrase)
 	writefile ("pgp.pub", pub)
 	writefile ("pgp.pri", priv)
 } else {

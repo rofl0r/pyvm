@@ -244,7 +244,8 @@ def do_decrypt (fnm, outfnm=None)
 	ctx = base.read_armor (readfile (fnm), "MESSAGE")
 	sk = None
 	SessionKey = None
-	for (p in base.parse_packets (ctx)) {
+
+	for (p in base.parse_packets (ctx))
 		if (p => base.PubkeyEncryptedSessionKey) {
 			if (!SessionKey)
 				for (r in PRIVS.get_all_rings ().values ())
@@ -255,19 +256,22 @@ def do_decrypt (fnm, outfnm=None)
 		} else if (p => base.SymEncrypted) {
 			if (!SessionKey)
 				raise Error ("Couldn't find private key to unlock message")
+
 			literal = p.Decrypt (SessionKey)
 			print "Message Decrypted"
+
 			if (!outfnm)
 				if (literal.filename) outfnm = literal.filename
 				else if (fnm.ew (".asc")) outfnm = fnm [:-4]
 				else outfnm = fnm + ".plaintext"
+
 			if (havefile (outfnm))
 				if (!yN ("[%s] exists. Overwrite"%outfnm))
 					return
+
 			open (outfnm, "w").write (literal.text)
 			print "Saved to:", outfnm
 		}
-	}
 }
 
 def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
@@ -392,6 +396,7 @@ def do_verify_mime (data)
 		print "No From Line"
 		return "error"
 	}
+
 	rez = []
 	for (m in M.get_signed ()) {
 		print "Found signed part"
@@ -399,11 +404,13 @@ def do_verify_mime (data)
 			rez<< "error"
 			print "Unknown format. Expecting 2 parts in multipart/signed"
 		}
+
 		p1, p2 = m.body
 		if.continue (p2.content_type != "application/pgp-signature") {
 			rez<< "error"
 			print "Error. Part 2 has content_type:", p2.content_type
 		}
+
 		# Headers + text, not decoded
 		data = p1.text
 		data = data.replace ("\n", "\r\n")
@@ -411,6 +418,7 @@ def do_verify_mime (data)
 		signature = p2.decoded ()
 		rez<< VERIFY ("", "", signature, data, From)
 	}
+
 	if (!rez) {
 		print "Not signed"
 		return "error"

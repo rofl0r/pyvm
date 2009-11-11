@@ -16,6 +16,36 @@ from crypto.DSA import verify as DSA_verify, sign as DSA_sign
 from crypto.RSA import sign_fast as RSA_sign
 from crypto import AES
 
+namespace PKT
+{
+	SIGNATURE = 2
+	PRIVKEY   = 5
+	PUBKEY    = 6
+	PRIVSUB   = 7
+	USERID    = 13
+	PUBSUB    = 14
+}
+
+namespace SUBPKT
+{
+	CTIME      = 2
+	PREFCIPHER = 11
+	PREFCOMPR  = 22
+	ISSUER     = 16
+	FLAGS      = 27
+}
+
+namespace CIPHER
+{
+	AES = 7
+}
+
+namespace COMPRESSION
+{
+	NONE = 0
+	ZLIB = 2
+}
+
 def ReadPassword ()
 	return raw_input ("Type password to unlock the secret key: ")[:-1]
 
@@ -81,29 +111,37 @@ def parse_packet (dd)
 	if (old) {
 		tag = (t >> 2) & 31
 		ltype = t & 3
-		sz = ltype ==0 ? dd.r8 () : ltype == 1 ? dd.r16b () : ltype == 2 ? dd.r32b () : dd.left ()
+		pdata = dd.read (ltype ==0 ? dd.r8 () : ltype == 1 ? dd.r16b () :
+				 ltype == 2 ? dd.r32b () : dd.left ())
 	} else {
 		tag = t & 63
-		sz = dd.r8 ()
-		if (sz < 192) ;
-		else if (sz < 224)
-			sz = (sz - 192) * 256 + dd.r8 () + 192
-		else if (sz == 255)
-			sz = dd.r32b ()
-		else raise Error ("New type packet not implemented (tag=%i)!" %tag)
+		pdata = ""
+		while (1) {
+			sz = dd.r8 ()
+			if (sz < 192) pdata += dd.read (sz);
+			else if (sz < 224)
+				pdata += dd.read ((sz - 192) * 256 + dd.r8 () + 192)
+			else if (sz == 255)
+				pdata += dd.read (dd.r32b ())
+			else {
+				pdata += dd.read (1<< (sz & 0x1f))
+				continue
+			}
+			break
+		}
 	}
 
 	try f = {
 		1:  PubkeyEncryptedSessionKey,
-		2:  Signature,
-		5:  PrivateKey,
-		6:  PublicKey,
-		7:  PrivateSubKey,
+		PKT.SIGNATURE:  Signature,
+		PKT.PRIVKEY:  PrivateKey,
+		PKT.PUBKEY:  PublicKey,
+		PKT.PRIVSUB:  PrivateSubKey,
 		8:  CompressedData,
 		11: LiteralData,
-		13: UserID,
+		PKT.USERID: UserID,
 		17: UserAttr,
-		14: PublicSubKey,
+		PKT.PUBSUB: PublicSubKey,
 		18: SymEncrypted,
 	} [tag]
 	except {
@@ -113,7 +151,6 @@ def parse_packet (dd)
 	if (VERBOSE)
 		print "packet :", f
 
-	pdata = dd.read (sz)
 	return f (dd.copyfrom (m), dparser (pdata))
 }
 
@@ -289,7 +326,7 @@ class PrivateKey (**PublicKey)
 		sha1chk = algo2 == 254
 		algo2 = d.r8 ()
 		# AES only
-		if (algo2 != 7) {
+		if (algo2 != CIPHER.AES) {
 			print "The secret key is encrypted with a cipher other than AES."
 			print "pyvm cannot decrypt it. Do:"
 			print "		gpg --s2k-cipher-algo aes --edit-key <the key>"
@@ -299,6 +336,7 @@ class PrivateKey (**PublicKey)
 			print "And finally, try to import `KEY` in pyvm gpg"
 			raise Error ("not implemented")
 		}
+
 		mode = d.r8 ()
 		hash_algo = d.r8 ()
 		if (hash_algo != 2)
@@ -330,6 +368,7 @@ class PrivateKey (**PublicKey)
 			if (C.csum (plaintext [:-2]) != ord16b (plaintext [-2:]))
 				raise Error ("decryption of secret key failed!")
 		}
+
 		print "Okey"
 		d = dparser (plaintext)
 		$skeys = [ d.read_mpi () for (None in *($ns - $np)) ]
@@ -370,7 +409,7 @@ class PrivateKey (**PublicKey)
 				 $algoid,
 				 2,		# signature algorithm 2==SHA
 				 digest [:2]) + sigdata
-		return write_packet (packet, 2)
+		return write_packet (packet, PKT.SIGNATURE)
 	}
 
 	method decrypt (seskeypacket)
@@ -463,8 +502,10 @@ class Signature (**PGPPacket)
 			# get needed subpackets only.  atm that is the ISSUER sub-packet.
 			# according to the RFC we MUST parse all "critical" subpackets.
 			for (pid, pdat in $subpackets ())
-				if (pid == 16)
+				if (pid == SUBPKT.ISSUER)
 					$keyid = pdat
+				else if (pid == SUBPKT.CTIME)
+					$timestamp = ord32b (pdat)
 		}
 		$data = [ d.read_mpi () for (None in *ALGOS [$pubalg][3]) ]
 	}
@@ -549,7 +590,7 @@ class PubkeyEncryptedSessionKey (**PGPPacket)
 		# skip random
 		while (d.r8 ());
 		$cipher_algo = d.r8 ()
-		if ($cipher_algo != 7)
+		if ($cipher_algo != CIPHER.AES)
 			raise Error ("Ecryption is not AES (its type is %i)"%$cipher_algo)
 		$DEK = d.rest () [:-2]
 	}
@@ -570,12 +611,12 @@ class SymEncrypted (**PGPPacket)
 
 	method Decrypt (sk)
 	{
-		d = AES.decrypt (sk.DEK, None, $ciphertext, "cfb")
-		dp = data_parser (d)
+		dp = data_parser (AES.decrypt (sk.DEK, None, $ciphertext, "cfb"))
 		dp.skip (14)
 		m = dp.read (4)
 		if (m [:2] != m [2:])
 			raise Error ("Decryption FAIL")
+
 		p = parse_packet (dp)
 		if (p => CompressedData)
 			p = p.literal
@@ -589,11 +630,11 @@ class CompressedData (**PGPPacket)
 	method Init (d)
 	{
 		meth = d.r8 ()
-		if (meth == 2)
+		if (meth == COMPRESSION.ZLIB)
 			data = zlib.decompress (d.rest ())
-		else if (meth == 0)
+		else if (meth == COMPRESSION.NONE)
 			data = d.rest ()
-		else raise Error ("Unknown method")
+		else raise Error ("Unknown method (%i)"%meth)
 		$literal = parse_packet (data_parser (data))
 	}
 
@@ -645,26 +686,54 @@ class Keyring
 
 	method verify ()
 	{
-		uidnode = None
-		pk = None
+		uidnode = pk = subk = None
+		needsig = {}
 		# verify all the signatures
 		for (s in $packets) {
-			if.continue (s => UserID or s => UserAttr)
+			if.continue (s => UserID or s => UserAttr) {
+				needsig [s] = False
 				uidnode = s
+			}
 
-			if.continue (s => PublicKey or s => PublicSubKey or s => PrivateKey)
+			if.continue (s => PublicSubKey or s => PrivateSubKey) {
+				needsig [s] = False
+				subk = s
+			}
+
+			if.continue (s => PublicKey or s => PrivateKey)
 				pk = s
+
+			if.continue !(s => Signature)
+				print "Unexpected packet type in keyring", s
 
 			if (s.keyid and s.keyid != pk.keyid) {
 				print "Skip signature:", s
 				continue
 			}
 
-			if (s.sig_class not in (0x10, 0x13))
-				continue
+			if.continue (s.sig_class in (0x10, 0x13)) {
+				if.continue (!uidnode)
+					print "Signature but no userID!"
+				s.do_verify (pk.hash_content () + uidnode.hash_content (s), pk)
+				if (uidnode => UserID)
+					print "verified UserID:", uidnode.userid
+				else print "verified user attributes"
+				needsig [uidnode] = True
+			}
 
-			s.do_verify (pk.hash_content () + uidnode.hash_content (s), pk)
+			if.continue (s.sig_class == 0x18) {
+				if.continue (!subk)
+					print "Signature but no subkey!"
+				s.do_verify (pk.hash_content () + subk.hash_content (), pk)
+				print "verified subkey", subk.keyid.hexlify ()
+				needsig [subk] = True
+			}
+
+			print "unhandled signature type:", s.sig_class
 		}
+		for (k, v in needsig.items ())
+			if (!v) print "Untrusted/not-signed:", k
+		print
 	}
 
 	method have_subkey (kid)
@@ -708,12 +777,14 @@ def read_keyrings (data, public=True)
 def read_keyring (data, public=True)
 	return Keyring ([p for (p in parse_packets (data))], public)
 
-# key generation. From given the RSA parameters E, D, N, Q, P, U and
-# a userid in the form "user <address>" generate two armored messages,
-# one for the public key and one for the private.
-#
-# If we want to be able to regenerate the key (with the same KEY-ID),
-# we also have to supply a known timestamp as a key creation time.
+### ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## 
+### key generation. From given the RSA parameters E, D, N, Q, P, U and
+### a userid in the form "user <address>" generate two armored messages,
+### one for the public key and one for the private.
+###
+### If we want to be able to regenerate the key (with the same KEY-ID),
+### we also have to supply a known timestamp as a key creation time.
+### ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## 
 
 def key_size (L)
 {
@@ -723,127 +794,162 @@ def key_size (L)
 	return len (L)
 }
 
-def gen_pub_key (E, D, N, uid, timestamp)
+def key_sign_packet (E, N, D, data, timestamp, sig_class)
+{
+	 # pubkey hash content
+	pkhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (N) + write_mpi (E)
+	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
+	keyid = SHA1 (pkhc) [-8:]
+
+	 # signature hash content (V3)
+	def subp (t, data)
+		return "%c%c"%(len (data) + 1, t) + data
+	hd = subp (SUBPKT.ISSUER, keyid) + subp (SUBPKT.CTIME, "%MI"%timestamp) +
+		subp (SUBPKT.FLAGS, "%c" %(sig_class == 0x13 ? 3 : 0xc))
+	if (sig_class == 0x13)
+		hd += subp (SUBPKT.PREFCIPHER, "%c"%CIPHER.AES) + subp (SUBPKT.PREFCOMPR, "%c"%2)
+	sihc = "%c%c%c%c" % (4, sig_class, 1, 2)
+	sihc += "%Mh" %len (hd) + hd
+	n = len (sihc)
+	sihc += "%c%c%MI" %(4, 0xff, n)
+
+	digest = SHA1 (pkhc + data + sihc)
+	edigest = encode_rsa_mpi (2, digest, key_size (N))
+
+	sigdata = write_mpi (pow (PKCToLong (edigest), D, N))
+
+	uhd = ""
+	s = "%c%c%c%c%Mh%s%Mh%s%s" %(
+		4,
+		sig_class,
+		1,
+		2,
+		len (hd),
+		hd,
+		len (uhd),
+		uhd,
+		digest [:2]
+	) + sigdata
+	return write_packet (s, PKT.SIGNATURE)
+}
+
+def gen_pub_key (rsa, sub, uid, timestamp)
 {
 	timestamp = timestamp or int (now ())
 
+	P = []
 	# --- publicKey packet
 	packet1 = "%c%Mi%c" %(
 		4,		# version
 		timestamp,	# timestamp
 		1		# algoid
-	) + write_mpi (N) + write_mpi (E)
-	packet1 = write_packet (packet1, 6)
+	) + write_mpi (rsa.N) + write_mpi (rsa.E)
+	P<< write_packet (packet1, PKT.PUBKEY)
 
 	# --- userID packet
-	packet2 = write_packet (uid, 13)
+	P<< write_packet (uid, PKT.USERID)
 
 	# --- signature packet
-	sig_class = 19
+	uid ="%c%MI" %(0xb4, len (uid)) + uid
+	P<< key_sign_packet (rsa.E, rsa.N, rsa.D, uid, timestamp, 0x13)
 
-	 # pubkey hash content
-	pkhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (N) + write_mpi (E)
-	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
-	keyid = SHA1 (pkhc) [-8:]
+	# --- publicSubKey packet
+	packet1 = "%c%Mi%c" %(
+		4,		# version
+		timestamp,	# timestamp
+		1		# algoid
+	) + write_mpi (sub.N) + write_mpi (sub.E)
+	P<< write_packet (packet1, PKT.PUBSUB)
 
-	 # signature hash content (V3)
-	sihc = "%c%MI" % (sig_class, timestamp)
-
-	digest = SHA1 (pkhc + uid + sihc)
-	edigest = encode_rsa_mpi (2, digest, key_size (N))
-
-	sigdata = write_mpi (pow (PKCToLong (edigest), D, N))
-
-	packet3 = "%c%c%c%MI%s%c%c%s" %(
-			 3,		# V3 signature
-			 16,		# - unused - md5len
-			 sig_class,	# sig_class
-			 timestamp,
-			 keyid,
-			 1,		# algorithm id: RSA
-			 2,		# signature algorithm 2==SHA
-			 digest [:2]) + sigdata
-	packet3 = write_packet (packet3, 2)
+	# --- subkey binding signature packet
+	skhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (sub.N) + write_mpi (sub.E)
+	skhc = "%c%Mh" % (0x99, len (skhc)) + skhc
+	P<< key_sign_packet (rsa.E, rsa.N, rsa.D, skhc, timestamp, 0x18)
 
 	# ---
-	return write_armor (packet1 + packet2 + packet3, "PUBLIC KEY BLOCK")
+	return write_armor ("".join (P), "PUBLIC KEY BLOCK")
 }
 
-def gen_priv_key (E, D, N, Q, P, U, uid, timestamp, passphrase)
+def enc_secret_part (secret_part, passphrase)
 {
-	if (Q < P)
-		Q, P = P, Q
+	if (!passphrase)
+		return "\0" + secret_part + "%MH" %C.csum (secret_part, 0, len (secret_part))
+	secret_part += SHA1 (secret_part)
+	salt  = randstr (8)
+	iv    = randstr (16)
+	len2  = len (passphrase) + 8
+	count = 65536
+	key   = SHA1 (((salt + passphrase) * (1 + count / len2)) [:count])
+	return "%c%c%c%c%s%c%s" %(
+				254,		# is_protected
+				CIPHER.AES,	# AES
+				3,		# salt-iterated
+				2,		# SHA1
+				salt,
+				96,		# for count 65536
+				iv
+			) + AES.encrypt (key [:16], _buffer (iv), secret_part, "cfb")
+}
 
+def gen_priv_key (rsa, sub, uid, timestamp, passphrase)
+{
 	timestamp = timestamp or int (now ())
 
-	M = [write_mpi (i) for (i in (N, E, D, P, Q, U))]
+	M = [write_mpi (i) for (i in (rsa.N, rsa.E, rsa.D, rsa.P, rsa.Q, rsa.U))]
 	secret_part = "".join (M [2:])
 
-	if (passphrase) {
-		secret_part += SHA1 (secret_part)
-		salt  = randstr (8)
-		iv    = randstr (16)
-		len2  = len (passphrase) + 8
-		count = 65536
-		key   = SHA1 (((salt + passphrase) * (1 + count / len2)) [:count])
-		secret_part2 = "%c%c%c%c%s%c%s" %(
-					254,	# is_protected
-					7,	# AES
-					3,	# salt-iterated
-					2,	# SHA1
-					salt,
-					96,	# for count 65536
-					iv
-				) + AES.encrypt (key [:16], _buffer (iv), secret_part, "cfb")
-	} else secret_part2 = "\0" + secret_part + "%MH" %C.csum (secret_part, 0, len (secret_part))
-
+	P = []
 	# --- privateKey packet
 	packet1 = "%c%Mi%c" %(
 		4,		# version
 		timestamp,	# timestamp
 		1		# algoid
-	) + M [0] + M [1] + secret_part2
-
-	packet1 = write_packet (packet1, 5)
+	) + M [0] + M [1] + enc_secret_part (secret_part, passphrase)
+	P<< write_packet (packet1, PKT.PRIVKEY)
 
 	# --- userID packet
-	packet2 = write_packet (uid, 13)
-
-	# the signature is completely useless because if one has all the private
-	# parts they can make a signature. GnuPG does not accept the private key
-	# without signature so we create it anyway...
+	P<< write_packet (uid, PKT.USERID)
 
 	# --- signature packet
-	sig_class = 19
+	uid ="%c%MI" %(0xb4, len (uid)) + uid
+	P<< key_sign_packet (rsa.E, rsa.N, rsa.D, uid, timestamp, 0x13)
 
-	 # pubkey hash content
-	pkhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (N) + write_mpi (E)
-	pkhc = "%c%Mh" % (0x99, len (pkhc)) + pkhc
-	keyid = SHA1 (pkhc) [-8:]
+	S = [write_mpi (i) for (i in (sub.N, sub.E, sub.D, sub.P, sub.Q, sub.U))]
+	secret_part = "".join (S [2:])
 
-	 # signature hash content (V3)
-	sihc = "%c%MI" % (sig_class, timestamp)
+	# --- privateSubKey packet
+	packet1 = "%c%Mi%c" %(
+		4,		# version
+		timestamp,	# timestamp
+		1		# algoid
+	) + S [0] + S [1] + enc_secret_part (secret_part, passphrase)
+	P<< write_packet (packet1, PKT.PRIVSUB)
 
-	digest = SHA1 (pkhc + uid + sihc)
-	edigest = encode_rsa_mpi (2, digest, key_size (N))
-
-	sigdata = write_mpi (pow (PKCToLong (edigest), D, N))
-
-	packet3 = "%c%c%c%MI%s%c%c%s" %(
-			 3,		# V3 signature
-			 16,		# - unused - md5len
-			 sig_class,	# sig_class
-			 timestamp,
-			 keyid,
-			 1,		# algorithm id: RSA
-			 2,		# signature algorithm 2==SHA
-			 digest [:2]) + sigdata
-	packet3 = write_packet (packet3, 2)
+	# --- subkey binding signature packet
+	skhc = "%c%Mi%c" % (4, timestamp, 1) + write_mpi (sub.N) + write_mpi (sub.E)
+	skhc = "%c%Mh" % (0x99, len (skhc)) + skhc
+	P<< key_sign_packet (rsa.E, rsa.N, rsa.D, skhc, timestamp, 0x18)
 
 	# ---
-	return write_armor (packet1 + packet2 + packet3, "PRIVATE KEY BLOCK")
+	return write_armor ("".join (P), "PRIVATE KEY BLOCK")
 }
 
-def gen_pgp_keys (E, D, N, Q, P, U, uid, timestamp, passphrase)
-	return  gen_pub_key (E, D, N, uid, timestamp),
-		gen_priv_key (E, D, N, Q, P, U, uid, timestamp, passphrase)
+def gen_pgp_keys (EDNQPU, sEDNQPU, uid, timestamp, passphrase)
+{
+	namespace key
+	{
+		E, D, N, Q, P, U = EDNQPU
+		if (Q < P)
+			Q, P = P, Q
+	}
+
+	namespace subkey
+	{
+		E, D, N, Q, P, U = sEDNQPU
+		if (Q < P)
+			Q, P = P, Q
+	}
+
+	return  gen_pub_key (key, subkey, uid, timestamp),
+		gen_priv_key (key, subkey, uid, timestamp, passphrase)
+}
