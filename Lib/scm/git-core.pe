@@ -520,7 +520,7 @@ class commit
 	}
 
 	method authtime ()
-		return int (AUTHDATE ($headers) [1])
+		return int (AUTHDATE ($headers) [1]) ?? $date ()
 
 	method title ()         return $message [:$message.find ("\n")]
 	method author ()        return $headers.split ("\n")[0][7:].partition (">")[0] + ">"

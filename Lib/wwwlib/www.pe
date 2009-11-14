@@ -540,8 +540,8 @@ class main_browser_loop
 		def YouTuber ()
 		{
 			tmp = misc.tmpfile (cleanup=False)
-			tmp.write ("cd %s/tubes; pyvm youtube -i %s"%(WHOME, $url.url))
-			os.system ("pyvm xterm -rc %s &" %tmp.fnm)
+			tmp.write ("cd %s/tubes; pyvm youtube -i '%s'"%(WHOME, $url.url))
+			os.execbin_bg ("pyvm", "xterm", "-rc", tmp.fnm)
 		}
 
 		try if ($url.url.sw ("http://www.youtube.com/watch?v=")) {

@@ -61,7 +61,7 @@ def semtest (t):
     print '+++++++++Running:', cmd
     os.system (cmd)
     print '+++++++++Comparing...',
-    if os.system ('diff -u py.out pyvm.out > /dev/null'):
+    if open ("py.out").read () != open ("pyvm.out").read ():
 	print "***** TEST %s FAILED *****" % t
 	raise SystemExit (1)
     print " Ok"
@@ -273,4 +273,6 @@ if DESCR:
 ################## cleanup ##################
 
 print 'rm *.out'
-os.system ("rm *.out *.pyc")
+for f in os.listdir ("."):
+	if f [-4:] in (".out", ".pyc"):
+		os.remove (f)

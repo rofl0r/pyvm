@@ -49,7 +49,7 @@ for (x in ilist)
 				if (isdir (x) or "." not in x) continue
 				else {
 					ext = x.rpartition (".")[2].lower ()
-					if (ext not in ("jpg", "jpeg", "gif", "png", "ppm"))
+					if (ext not in ("jpg", "jpeg", "gif", "png", "ppm", "bmp"))
 						continue
 					try I<< ImageFile (x)
 					except print "Coulnd' load:", x, sys.exc_info ()

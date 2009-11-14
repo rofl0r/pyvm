@@ -305,7 +305,7 @@ def do_encrypt (fnm, recipient, outfnm=None)
 	print "Saved to:", outfnm
 }
 
-def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
+def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None, kret=None)
 {
 	if (fsig.ew (".asc") or "-----BEGIN" in sigdata)
 		ctx = base.read_armor (sigdata, "SIGNATURE")
@@ -323,6 +323,8 @@ def VERIFY (fsig, fdat, sigdata, rdata, From=None, keyid=None)
 		try pk = PUBS.get_ring (p.KeyID)
 		except {
 			print "Don't have Key:", p.KeyID
+			if (kret is not None)
+				kret<< p.KeyID
 			return "nokey"
 		}
 
@@ -413,7 +415,7 @@ def do_get_key ()
 
 Mime = None
 
-def do_verify_mime (data)
+def do_verify_mime (data, kret=None)
 {
 	# possibilities: bad format, unknown method, user mismatch,
 	#  don't have key, sig OK, sig fail, unexpected implementation error, not signed
@@ -447,7 +449,7 @@ def do_verify_mime (data)
 		data = data.replace ("\n", "\r\n")
 		data = data.rstrip () + "\r\n"
 		signature = p2.decoded ()
-		rez<< VERIFY ("", "", signature, data, From)
+		rez<< VERIFY ("", "", signature, data, From, kret=kret)
 	}
 
 	if (!rez) {

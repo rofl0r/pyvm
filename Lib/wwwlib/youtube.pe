@@ -58,7 +58,7 @@ class tube
 			x = arg [:len (YOUTUBE)].lower ()
 			if (x != YOUTUBE) 
 				raise Error ("Bad youtube url [%s]" %x)
-			$video_id = arg [len (YOUTUBE):]
+			$video_id = arg [len (YOUTUBE):].partition ("&") [0]
 			$url = arg
 		} else {
 			$video_id = arg
@@ -170,7 +170,7 @@ def parse_metadata (page, video_id)
 		} else if (n.tag == "script" and !t) {
 			ina = s1 = s2 = 0
 			for (l in jslex.jslex (n.cdata ()))
-				if (l == "swfArgs") ina = True
+				if (l == "'SWF_ARGS'") ina = True
 				else if (ina)
 					if (l == '"t"') s1 = 1
 					else if (l == '"fmt_url_map"') s1 = 2
@@ -181,15 +181,21 @@ def parse_metadata (page, video_id)
 						s1 = 0
 					}
 		}
+
 	urls = []
-	if (fum) try {
-		for (u in urlesc (fum).split (",")) {
-			q, None, u = u.partition ("|")
-			urls<< (int (q), u)
+	if (fum) {
+		try {
+			for (u in urlesc (fum).split (",")) {
+				q, None, u = u.partition ("|")
+				urls<< (int (q), u)
+			}
+		} except {
+			print "Failed to extract urls from ftm_url_map"
 		}
-	} except {
+	} else {
 		print "Failed to extract urls from ftm_url_map"
 	}
+
 	if (t) vurl = GYOUTUBE %(video_id, t)
 	else {
 		print "Failed to extract the 't=...' parameter from the youtube page."

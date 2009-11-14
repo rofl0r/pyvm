@@ -8,6 +8,7 @@
 __autosem__
 
 import thread, gui
+from misc import caseless_sort
 
 BeepMsg = @audio.beep.IRCBeep
 
@@ -68,7 +69,7 @@ class channel
 		$names.extend (n)
 
 	method end_names ()
-		$addmsg (" ".join ($names), 353)
+		$addmsg (" ".join (caseless_sort ($names)), 353)
 
 	method addmsg (m, user=None)
 	{
@@ -100,7 +101,7 @@ class channel
 		} else if (user == 332) {
 			l<< B (i, 0xffdddd)
 		} else if (user) {
-			col = user == G.nick ? 0xaaffaa : 0xaaaaff
+			col = user == G.nick or user.sw ("To ") ? 0xaaffaa : 0xaaaaff
 			l.extend (["[", B (user, col), "] "])
 			l<< B (i, i.sw (G.nick) ? 0xffffff : 0xcccccf)
 		} else l<< B (i, 0xaaafaa)
@@ -294,7 +295,10 @@ def PROMPT.onEnter ()
 		TABS.Draw ()
 	} else if (t.sw ("/msg ")) {
 		to, None, msg = t [5:].partition (' ')
-		if (msg) G.IRC.msg (to, msg)
+		if (msg) {
+			G.IRC.msg (to, msg)
+			DChannel.addmsg (msg, "To " + to)
+		}
 	}
 
 	return t

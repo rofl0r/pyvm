@@ -29,12 +29,9 @@ class Packfile
 		$fanout = [d.r32b () for (None in *256)]
 		nr = $fanout [-1]
 
-		shas = d.read (20 * nr)
-		$H = BigHash (shas, 20)
-
+		$H = BigHash (d.read (20 * nr), 20)
 		# crcs
 		d.skip (4 * nr)
-
 		$offsets = array ("i", [d.r32b () for (None in *nr)])
 		$pack = None
 	}
@@ -49,13 +46,8 @@ class Packfile
 		end = $fanout [fan]
 		# xx: bigset internals
 		nth = $H.nth
-		M = []
-		for (i in xrange (start, end)) {
-			x = nth (i).hexlify ()
-			if (x.sw (s))
-				M<< x
-		}
-		return M
+		us = uh (s)
+		return [ nth (i).hexlify () for (i in xrange (start, end)) if (nth (i).sw (us)) ]
 	}
 
 	method openobj (s)
@@ -122,8 +114,7 @@ class Packfile
 			return 'commit', data
 
 		obj_type, obj_data = t == 7 ? $openobj (basesha) : $object_at (offset - n)
-		data = $patch_delta (data, obj_data)
-		return obj_type, data
+		return obj_type, $patch_delta (data, obj_data)
 	}
 
 	method patch_delta (delta_data, src)

@@ -216,7 +216,7 @@ gen gen_stash (b, fb1b2=None)
 	adl (ddesc ('Stash diffstat of branch "%s"'%b))
 	adl ()
 	if (diffed)
-		adls ([("VIEW DIFF", BR, "bu", ("cd", HEAD.tree, STASH.sig))], [])
+		adls ([("VIEW DIFF", BR, "bu", ("cd", STASH.sig, HEAD.tree))], [])
 	if (diffed) {
 		fmax = max ([len (f) for (f, None, None in diffed)]) + 1
 		setbg (0)
@@ -250,6 +250,7 @@ gen gen_commit (c, par=0, fb1b2=None)
 		o = OPN (c)
 		tree = OPN (o.tree)
 		adls ([tbh ("author    "), tblh (o.authorName ())],
+		      [tbh ("          "), tblh (strtime (o.authtime ()))],
 		      [tbh ("committer "), tblh (o.committerName ())],
 		      [tbh ("          "), tblh (strtime (o.date ()))],
 		      [tbh ("commit    "), tblh (o.sig)])

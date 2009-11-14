@@ -105,7 +105,7 @@ class Process
 
 class cpuloader
 {
-	method __init__ (rs=61)
+	method __init__ (rs=61, $interval=1)
 	{
 		$T = @misc.ring (rs)
 		$L = @thread.xlock (False)
@@ -133,7 +133,7 @@ class cpuloader
 			p = $read_load ()
 			$T.add (p)
 			$L.release ()
-			sleep (1)
+			sleep ($interval)
 		}
 	}
 

@@ -123,8 +123,9 @@ def make_text (m, replies, raw, att)
 		top<< ("DELETED", 0x112299, "b", None)
 	if (msg.is_signed ())
 		if (DOPGP) {
+			kret = []
 			top<< (" DIGITALLY SIGNED(", 0x000063, "b", None)
-			r = verify_pgp (text)
+			r = verify_pgp (text, kret)
 			PGT = {
 				"error":("ERROR", 0),
 				"nokey":("NO-KEY", 0x0000ff),
@@ -133,6 +134,8 @@ def make_text (m, replies, raw, att)
 			}
 			t2, tc = PGT [r]
 			top<< (t2, tc, "b", None)
+			if (r == "nokey")
+			top<< (": " + kret [0], 0x000063, "b", None)
 			top<< (") ", 0x000063, "b", None)
 		} else top<< (" DIGITALLY SIGNED ", 0x000063, "b", None)
 	if (m.isbookmarked ())
@@ -215,6 +218,7 @@ def make_text (m, replies, raw, att)
 	if (!byth)
 		rl = [mm for (None, mm in [(mm.date (), mm) for (mm in rl)].sort ())]
 	for (mm in rl) {
+		mbold = mm.n () > current.LT ? "b" : None
 		d = mm.depth ()
 		isthis = m.id == mm.id
 		if (!isthis and mm.is_reply_to (m))
@@ -233,7 +237,9 @@ def make_text (m, replies, raw, att)
 			lst<< (RCOLOR, [tab + " ", (s0, None, "b", None), (s1, None, "b", None)])
 		else {
 			cc = c == " " ? c : (c, 0xdd99aa, "b", None)
-			t = s1, mm.is_seen () ? COLORS.SEEN : 0x2233aa, None, (go_message, mm)
+			t = s1, mm.is_seen () ? COLORS.SEEN : 0x2233aa, mbold, (go_message, mm)
+			if (mm.authwatched ())
+				s0 = s0, None, "b", None
 			lst<< (RCOLOR, [tab, cc, s0, t])
 		}
 	}
@@ -805,7 +811,6 @@ class GL
 				if (current.G)
 					current.G.unload ()
 				ng = current.G = MAs [a][0]
-print ng
 				current.G.load ()
 				current.LT = ng.ith (-(MAs [a][1]+1)).n ()
 				current.B = ng.rninfo ["bookmarks"]
@@ -839,7 +844,6 @@ print ng
 				current.G.unload ()
 #@meminfo.mstat ()
 			ng = current.G = NGs [g][0]
-print ng
 			current.G.load ()
 			xx = ng.ith (-(NGs [g][1] + 1))
 			current.LT = xx.n ()
