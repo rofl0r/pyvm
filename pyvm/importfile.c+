@@ -74,7 +74,7 @@ extern REFPTR modpath;
 static bool needs_recompile (char *pyc, char *py)
 {
 	bool ret = false;
-	filedes fd (pyc, O_RDONLY, false, false);
+	filedes fd (pyc, O_RDONLY, 0644, false, false);
 
 	if (fd.type != FD_BAD) {
 		int pycheader [2];

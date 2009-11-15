@@ -36,7 +36,7 @@ class filedes
 	int len;
     public:
 	filedes ()	{ type = FD_BAD; }
-	filedes (const char*, int, bool=true, bool=true, int=-1);
+	filedes (const char*, int, int=0644, bool=true, bool=true, int=-1);
 	filedes (int, int, bool=true);
 	filedes (filedes);
 	int size ();

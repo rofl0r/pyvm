@@ -10,85 +10,119 @@ __autosem__
 from tokenize2 import gentokens
 from pe import RESERVED
 
-FFILE = []
-LL = ""
+def pecolor (code)
+{
+	FFILE = []
+	LL = ""
 
-for (t in gentokens (readfile (sys.argp.filename ()), True)) {
-	if.continue (t.isspace ())
-		for (c in t)
-			if (c == "\n") {
-				FFILE.append (LL)
-				LL = ""
-			} else if (c == "\t") LL += " " * (8 - len (LL) % 8)
-			else LL += " "
+	for (t in gentokens (code, True)) {
+		if.continue (t.isspace ())
+			for (c in t)
+				if (c == "\n") {
+					FFILE.append (LL)
+					LL = ""
+				} else if (c == "\t") LL += " " * (8 - len (LL) % 8)
+				else LL += " "
 
-	if.continue (t [0] == "#") {
-		for (c in t)
-			if (c == "\t") LL += " " * (8 - len (LL) % 8)
-			else if (c.isspace ()) LL += " "
-			else if (c != "\n") LL += "#"
-		FFILE.append (LL)
-		LL = ""
-	}
-
-	if.continue ("'" in t or '"' in t) {
-		if (t [0] == "r") {
-			LL += "X"
-			t = t [1:]
+		if.continue (t [0] == "#") {
+			for (c in t)
+				if (c == "\t") LL += " " * (8 - len (LL) % 8)
+				else if (c.isspace ()) LL += " "
+				else if (c != "\n") LL += "#"
+			FFILE.append (LL)
+			LL = ""
 		}
-		if (len (t) > 2 and t [1] == t [0]) {
-			t = t [3:-3]
-			aa = "XXX"
-		} else {
-			aa = "X"
-			t = t [1:-1]
-		}
-		LL += aa
-		for (c in t)
-			if (c == "\t") LL += " " * (8 - len (LL) % 8)
-			else if (c == "\n") {
-				FFILE.append (LL)
-				LL = ""
+
+		if.continue ("'" in t or '"' in t) {
+			if (t [0] == "r") {
+				LL += "X"
+				t = t [1:]
 			}
-			else if (c.isspace ()) LL += " "
-			else if (c != "\n") LL += "r"
-		LL += aa
+			if (len (t) > 2 and t [1] == t [0]) {
+				t = t [3:-3]
+				aa = "XXX"
+			} else {
+				aa = "X"
+				t = t [1:-1]
+			}
+			LL += aa
+			for (c in t)
+				if (c == "\t") LL += " " * (8 - len (LL) % 8)
+				else if (c == "\n") {
+					FFILE.append (LL)
+					LL = ""
+				}
+				else if (c.isspace ()) LL += " "
+				else if (c != "\n") LL += "r"
+			LL += aa
+		}
+
+		if (t in ("method", "def", "gen"))
+			c = "G"
+		else if (t in RESERVED)
+			c = "B"
+		else if (t in "${}[]%().?:@-;=")
+			c = "*"
+		else c = "X"
+		LL += c * len (t)
 	}
 
-	if (t in ("method", "def", "gen"))
-		c = "G"
-	else if (t in RESERVED)
-		c = "B"
-	else if (t in "${}[]%().?:@-;=")
-		c = "*"
-	else c = "X"
-	LL += c * len (t)
+	return FFILE
 }
 
-ML = max ([len (n) for (n in FFILE)])
-for (l in FFILE)
-	print l
-
-print ML
-
-FrameBuffer = importFB ()
-
-FB = FrameBuffer (2*ML, 2*len (FFILE), 3, clear=0)
 COLS = {
 	" ":0,
-	"X":0x808080,
-	"B":0xa52a2a,
-	"*":0xffffff,
+	"X":0xa0a0a0,
+	"B":0xd48440,
+	"*":0xf0f0f0,
 	"G":0x11ff11,
-	"r":0xff1111,
+	"r":0xbb0000,
 	"#":0x40e0d0,
 }
 
-for (y, l in enumerate (FFILE)) {
-	l += (ML - len (l)) * " "
-	for (x, c in enumerate (list (l)))
-		if (c != " ")
-			FB.put_pixel (2*x, 2*y, COLS [c])
+def ccnt (c, t)
+{
+	p = None
+	o = 0
+	n = 1
+	L = []
+	for (c in c)
+		if (!p)
+			p = c
+		else if (p != c) {
+			L<< (COLS [p], t [o:o+n])
+			o += n
+			n = 1
+			p = c
+		} else n += 1
+	if (n and p)
+		L<< (COLS [p], t [o:o+n])
+	return L
 }
-FB.save_as_ppm ("WOOT.ppm")
+
+def colorsplit (code)
+	for (l, c in zip (code.split ("\n"), pecolor (code)))
+		yield ccnt (c, l.expandtabs ())
+
+if (__name__ == __main__)
+{
+	FFILE = pecolor (sys.argp.Readfile ())
+	ML = max ([len (n) for (n in FFILE)])
+	for (l in FFILE)
+		print l
+
+	print ML
+
+	FrameBuffer = importFB ()
+
+	FB = FrameBuffer (2*ML, 2*len (FFILE), 3, clear=0)
+
+	for (y, l in enumerate (FFILE)) {
+		l += (ML - len (l)) * " "
+		for (x, c in enumerate (list (l)))
+			if (c != " ")
+				FB.put_pixel (2*x, 2*y, COLS [c])
+	}
+	FB.save_as_ppm ("WOOT.ppm")
+}
 # COMMENT CA VA

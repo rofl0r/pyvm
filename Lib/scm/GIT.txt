@@ -1,9 +1,6 @@
 This is a minimal implementation of git, basically useful for self-hosting
 pyvm, getting updates and as an interesting testcase.  It can't do everything
-standard git does.  For example, it doesn't understand packfiles, so using
-it with other project's git repositories will probably fail, not to mention,
-that it's not tuned for huge projects like the kernel and the performance
-will explode.
+standard git does.
 
 On the other hand, it is possible to use standard git on the pyvm repo
 and do things that this git can't do yet.

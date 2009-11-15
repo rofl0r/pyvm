@@ -162,6 +162,9 @@ _module __object__ *file_builtin (REFPTR argv [], int argc)
 	if (argc > 1)
 		mode = argv [1].CheckString ()->str;
 	int flags;
+	int perm = 0644;
+	if (argc > 2)
+		perm = argv [2].CheckInt ()->i;
 
 	if (!strcmp (mode, "r") || !strcmp (mode, "rb"))
 		flags = $O_RDONLY;
@@ -177,7 +180,7 @@ _module __object__ *file_builtin (REFPTR argv [], int argc)
 
 	if (IntObj.isinstance (fn))
 		return open_file_fd (IntObj.cast (fn)->i, flags);
-	return open_file (argv [0].CheckStringNZ ()->str, flags);
+	return open_file (argv [0].CheckStringNZ ()->str, flags, perm);
 }
 
 /* ----* chr *---- */
@@ -1002,7 +1005,7 @@ _module __object__ *readfile_builtin (REFPTR argv[], int argc)
 	}
 
 	{
-		filedes F (filename, O_RDONLY, true, false, fd);
+		filedes F (filename, O_RDONLY, 0, true, false, fd);
 		int l = F.size ();
 		if (argc == 2)
 			l = min (argv [1].CheckInt ()->i, l);

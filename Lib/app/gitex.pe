@@ -156,7 +156,7 @@ gen gen_commits (branch=None)
 		}
 	}
 	adl ()
-	M = maun = max ([ulen (NameFromAddr (h.author ())) for (h in history)])
+	M = maun = min (20, max ([ulen (NameFromAddr (h.author ())) for (h in history)]))
 	N = len (history)
 	mmyy = None
 
@@ -353,14 +353,20 @@ def gdiff (f, b1, b2)
 	popbg ()
 }
 
+from app.pethumb import colorsplit
+
 def gen_blob (fnm, sig)
 {
 	adl ("File: "+fnm)
 	adl ("blob: "+sig)
 	adl (("Export to current directory", 0xff1111, "bu", ("e", fnm, sig)))
 	setbg (0)
-	for (l in OPN (sig).data.split ("\n"))
-		adl (bold (l.expandtabs (), 0xdddddd))
+	if (fnm.ew (".pe"))
+		for (l in colorsplit (OPN (sig).data))
+			adl (*[bold (t, c) for (c, t in l)])
+	else.if
+		for (l in OPN (sig).data.split ("\n"))
+			adl (bold (l.expandtabs (), 0xdddddd))
 	popbg ()
 }
 

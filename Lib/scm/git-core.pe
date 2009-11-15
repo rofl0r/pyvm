@@ -69,13 +69,14 @@ class repository
 
 	#
 	method list_packfiles ()
-		return [$BASEDIR + "objects/pack/" + f [:-5] for (f in $listdir ("objects/pack/"))
-			if (f.sw ("pack-") and f.ew (".pack")
-			    and $access ("objects/pack/" + f [:-4] + "idx"))]
+		if (!$access ("objects/info/packs")) return []
+		else return [ "objects/pack/" + l [2:-5]
+			for (l in $readfile ("objects/info/packs").strip ().split ("\n"))
+				if (l.sw ("P "))]
 
 	method use_packfiles ()
 		if (pf = $list_packfiles ())
-			$PF = Packfiles (pf)
+			$PF = Packfiles ([$BASEDIR + x for (x in pf)])
 
 	#
 	method readhead (h)
@@ -376,10 +377,10 @@ class http_repository (repository)
 		$cache = {}
 	}
 
-	method readfile (f)
+	method readfile (f, progress=False)
 	{
 		try return $cache [f]
-		status, headers, file = $C.get ($BP + f, {})
+		status, headers, file = $C.get ($BP + f, {}, progress=progress ? "stdout" : None)
 		if (status != "200")
 			raise Error ("Can't fetch object via HTTP!")
 		data = file.read ()
@@ -396,7 +397,7 @@ class http_repository (repository)
 
 	method NA (*args) raise Error ("Not available in HTTP repo")
 	listdir = mkdir = writefile = NA
-
+	use_packfiles = void
 }
 
 def RemoteRepo (r)
@@ -893,6 +894,7 @@ class INDEX
 		lstat  = os.lstat
 		for (path in $D) {
 			sig = $D [path][-1]
+			mode = $D [path][6]
 			if ("/" in path)
 				if (!os.access ($PROJDIR + path.rpartition ("/")[0])) {
 					d = ""
@@ -907,7 +909,7 @@ class INDEX
 				} else {
 					print ' writting:', path
 					$wrfiles.add (path)
-					open ($PROJDIR + path, "w").write ($repo.openblob (sig))
+					open ($PROJDIR + path, "w", mode).write ($repo.openblob (sig))
 				}
 			}
 			s = lstat ($PROJDIR + path)

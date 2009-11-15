@@ -1782,7 +1782,7 @@ extern __object__ *donothing_f (REFPTR[]);
 
 /* open/file API */
 
-extern __object__ *open_file (const char*, int);
+extern __object__ *open_file (const char*, int, int);
 extern __object__ *open_file_fd (int, int);
 extern __object__ *stdoutObj, *stderrObj, *stdinObj;
 extern __object__ *load_marshal (REFPTR[]);

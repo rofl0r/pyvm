@@ -561,6 +561,7 @@ def cmd_sigbranch (repo, branch="master")
 	print "OK, signed branch [%s] created" %branch
 }
 
+# HTTP pull
 def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=False)
 {
 	# There is the possibility that the pull will be interrupted.
@@ -581,6 +582,7 @@ def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=
 		except on_branch = False
 	}
 
+	# find remote branch possibly signed
 	repo2 = RemoteRepo (remote_repo)
 	sbranch = None
 	if (pgp) {
@@ -610,14 +612,46 @@ def cmd_pull (repo, remote_repo, remote_branch, local_branch, pgp=None, nostage=
 		print 'Switched to branch "staged"'
 	}
 
+	# fetch packs
+	have_packs = set (repo.list_packfiles ())
+	want_packs = set (repo2.list_packfiles ())
+	if (want_packs - have_packs) {
+		print "Fetching new packfiles"
+		for (f in (want_packs - have_packs))
+			for (e in ("idx", "pack")) {
+				ff = f + "." + e
+				print " ", ff
+				if (!repo.access (ff))
+					repo.writefile (ff, repo2.readfile (ff, True))
+			}
+		if (have_packs - want_packs) {
+			print "The following packs should be removed now?"
+			for (f in (have_packs - want_packs))
+				print " ", f
+		}
+		repo.writefile ("objects/info/packs", "\n".join (
+			["P %s.pack"%s.rpartition ("/")[2] for (s in want_packs)]) + "\n\n")
+		# enable new packfiles so that we'll know we have the objects in them
+		repo.use_packfiles ()
+	}
+
 	have = set ()
 	saw = have.add
 	write = repo.write
 
+	# determine which loose commits will have to be fetched
 	c = []
-	for (h in repo2.MainHistory (b))
-		if (repo.haveobj (h.sig)) break
-		else c<< h
+	h = b
+	if (!repo.haveobj (h.sig))
+		while (1) {
+			c<< h
+			if (!h.parents) break
+			if (len (h.parents) > 1)
+				raise Error ("Can't pull merges with dumb loose http")
+			if (repo.haveobj (h.parents [0]))
+				break
+			h = repo2.openobj (h.parents [0])
+		}
 	print "%i commits to pull" %len (c)
 	c.reverse ()
 

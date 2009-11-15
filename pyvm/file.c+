@@ -52,14 +52,14 @@ static final class FileObj : iteratorBase
 
 static TypeObj FileTypeObj ctor (FileObj._v_p_t_r_);
 
-__object__ *open_file (const char *fn, int mode)
+__object__ *open_file (const char *fn, int mode, int perm)
 {
 	// this *may* take time.  we should only release the gil if WOULDBLOCK
 	REFPTR F;
 	filedes FD;
 
 //		RELEASE_GIL
-		FD.ctor (fn, mode, true, true);
+		FD.ctor (fn, mode, perm, true, true);
 //		ACQUIRE_GIL
 
 	F = new FileObj (fn, FD);

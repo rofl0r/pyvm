@@ -41,7 +41,7 @@ RESERVED = set ((
 	'and', 'assert', 'break', 'class', 'continue', 'def', 'del',
 	'else', 'except', 'finally', 'for', 'from', 'gen', 'global', 'if',
 	'import', 'in', 'is', 'lambda', 'method', 'namespace', 'not', 'or',
-	'print', 'raise', 'return', 'try', 'while', 'yield', 'do', '__LINE__',
+	'print', 'raise', 'return', 'try', 'with', 'while', 'yield', 'do', '__LINE__',
 	'else.for', 'else.while', 'else.if', 'if.break', 'if.continue',
 	'try.break',
 ))

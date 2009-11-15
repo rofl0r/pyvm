@@ -45,7 +45,7 @@ static inline tick_t get_cpu_ticks ()
 	return val;
 }
 
-filedes.filedes (const char *fnm, int mode, bool nonblock, bool dommap, int havefd)
+filedes.filedes (const char *fnm, int mode, int perm, bool nonblock, bool dommap, int havefd)
 {
 	type = FD_BAD;
 	blocked = false;
@@ -60,7 +60,7 @@ filedes.filedes (const char *fnm, int mode, bool nonblock, bool dommap, int have
 	*/
 
 	if (havefd != -1) fd = havefd;
-	else if ((fd = open (fnm, mode & O_WRONLY ? mode|O_LARGEFILE : mode, 0666)) == -1)
+	else if ((fd = open (fnm, mode & O_WRONLY ? mode|O_LARGEFILE : mode, perm)) == -1)
 		return;
 
 	/* directory not allowed */
