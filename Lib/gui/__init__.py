@@ -19,7 +19,6 @@ from editor     import editor
 from dialog     import Dialogue
 from combo      import combo
 from message    import Message
-from thumbview  import thumbview
 from chopper    import chopper
 from fb         import fb, fbview
 from scrollbarz import hscrollable, vscrollable, hvscrollable, hscrollbar, vscrollbar

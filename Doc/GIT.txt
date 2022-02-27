@@ -37,7 +37,8 @@ without knowing it.
 
   from the toplevel pyvm direcory, run:
 
-	cat commit > .git/refs/heads/master 
+	cat commit > .git/refs/heads/master
+	pyvm git reset-cache
 
   and that's just about it.  If you have modified any files since the tarball,
   they can be explored with 'pyvm git diff'

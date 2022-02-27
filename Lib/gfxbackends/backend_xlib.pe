@@ -204,14 +204,6 @@ class Window (**BaseWin)
 		$std_fonts ()
 		$dpy.clear (0)
 
-		$MODS = {
-			"SHIFT":False,
-			"CTRL":False,
-			"ALT":False,
-			# caps-lock is very special in SDL
-			# it acts as a pressed modifier while ON.
-			"CAPS":False,
-		}
 		$mouse_xy = XQueryPointer ($dpy.dpy, $dpy.W)
 	}
 
@@ -410,3 +402,5 @@ def WindowForDpy (DISPLAY)
 	}
 	return f
 }
+
+#XkbIgnoreExtension (1)

@@ -57,6 +57,12 @@ class repository
 		$ctors = { "commit":$commit, "tree":$tree, "blob":$blob, "tag":$tag }
 	}
 
+	method all_objects ()
+		for (d in $listdir ("objects"))
+			if (len (d) == 2)
+				for (x in $listdir ("objects/"+d))
+					yield d + x
+
 	# overridable for remote repos
 	method access (f)   return os.access ($BASEDIR + f)
 	method readfile (f) return readfile ($BASEDIR + f)
@@ -811,18 +817,18 @@ class INDEX
 
 	method read_index ()
 	{
-		try f = readfile ($BASEDIR + "index");
+		try f = readfile ($BASEDIR + "index")
 		except {
-			$D = {};
-			return;
+			$D = {}
+			return
 		}
 
-		dts = @datastream.data_parser (f);
-		sig, ver, entries = dts.rn (4), dts.r32b (), dts.r32b ();
+		dts = @datastream.data_parser (f)
+		sig, ver, entries = dts.rn (4), dts.r32b (), dts.r32b ()
 		if (sig != "DIRC" or ver != 2)
-			raise "Error: Bad Index";
+			raise "Error: Bad Index"
 		if (SHA (f [:-20]) != f [-20:])
-			raise "Error: CRC error in index file";
+			raise "Error: CRC error in index file"
 
 		D = {}
 		for (None in *entries) {
@@ -853,7 +859,7 @@ class INDEX
 	}
 
 	method remove (path)
-		del $D [path];
+		del $D [path]
 
 	method write_index ()
 	{
@@ -916,6 +922,36 @@ class INDEX
 			$D [path] = s.st_ctime, 0, s.st_mtime, 0, s.st_dev, s.st_ino,
 				 s.st_mode, s.st_uid, s.st_gid, s.st_size, sig
 		}
+	}
+
+	method reset ()
+	{
+		# Reset the cache. Check all the files in the working tree.
+		# if they are the same as the committed files in HEAD set their
+		# mtime in the INDEX to be the same as the real mtime of the file.
+		# If they differ set their mtime in the INDEX as one second before the
+		# actual mtime.
+		lstat  = os.lstat
+		islink = os.path.islink
+		for (path in $D) {
+			cts, ctn, mts, mtn, dev, ino, mode, uid, gid, size, sig = $D [path]
+			f = $PROJDIR + path
+			if (havefile (f)) {
+				s = lstat (f)
+				cts, mts, dev, ino, mode, uid, gid, size = s.st_ctime, s.st_mtime,
+					 s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_gid, s.st_size
+				if (!islink (f)) {
+					data = readfile (f)
+					blob = "blob %i\0" %len (data) + data
+					if (SHA (blob).hexlify () != sig) {
+						print " Modified in working tree:", f
+						mts -= 1
+					}
+				}
+			}
+			$D [path] = cts, ctn, mts, mtn, dev, ino, mode, uid, gid, size, sig
+		}
+		$write_index ()
 	}
 }
 

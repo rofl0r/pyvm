@@ -313,11 +313,18 @@ def rebuild_pyvm (repo)
 			print "- pyvm modified. Will need recompile"
 		if (yN ("rebuild necessary parts")) {
 			if (dovm) 
-				@os.system ("cd %spyvm; make cclean; make o3" %HOME)
+				@os.system ("cd %spyvm; make cclean; make -j 2 o3" %HOME)
 			if (dopyc)
 				@os.system ("cd %sLib; make rebuild" %HOME)
 		}
 	}
+
+def cmd_reset_cache (repo)
+{
+	c = repo.open_commit ()
+	repo.IDX.read_tree (repo.openobj (c.tree))
+	repo.IDX.reset ()
+}
 
 def cmd_switch (repo, branch, nostash=False)
 {
@@ -394,14 +401,17 @@ def cmd_switch (repo, branch, nostash=False)
 		# the file creation.
 		PD = repo.PROJDIR
 		if (files) {
-			dt = 1.05 + max ([os.stat (PD+ff).st_mtime for (ff in files)]) - now ()
+			T = []
+			for (ff in files)
+				try T<< os.stat (PD + ff).st_mtime
+			dt = T ? 1.05 + max (T) - now () : 0
 			if (dt > 0) {
 				print "sleep: %.2f"%dt
 				sleep (dt)
 			}
 		}
 		for (f in files)
-			os.touch (PD+f)
+			try os.touch (PD+f)
 
 		# remove the stash
 		repo.remove_stash (branch)
@@ -739,7 +749,7 @@ if (__name__ == __main__)
 {
 	cmd = sys.argp.pop_command (
 		"init-db,which,diff,past,checkin,switch,files,cat,checkout,tar,head,"+
-		"tag,history,pull,fork,sigbranch,pullpgp"
+		"tag,history,pull,fork,sigbranch,pullpgp,reset-cache"
 	)
 
 	if (cmd == "init-db") {
@@ -824,6 +834,8 @@ if (__name__ == __main__)
 		nostage = sys.argp.check_switch ("-nostage")
 		repo2, rb, lb = nargs (3)
 		cmd_pull (repo, repo2, rb, lb, nostage=nostage)
+	} else if (cmd == "reset-cache") {
+		cmd_reset_cache (repo)
 	} else if (cmd == "sigbranch") {
 		cmd_sigbranch (repo, *nargs (0, 1))
 	} else if (cmd == "pullpgp") {

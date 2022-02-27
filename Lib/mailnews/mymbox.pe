@@ -278,6 +278,7 @@ def ExportReply (m, rfnm)
 		RH<< "References: " + refs + ", " + mid
 	}
 	RH<< "#X-No-Archive: Yes"
+	RH<< "#User-Agent: pyvm mail"
 	RH<< "Date: " + rfc1123 (now ())
 	RH<< "Message-Id: " + "<%i.%s.%s@mail>"%(now (), hrandstr (6), MD5 (Subject)[:4])
 	RH<< "Content-Type: text/plain; charset=utf-8"
@@ -1040,17 +1041,5 @@ try {
 }
 for (v, None in MAs.values ())
 	v.do_deletes ()
-
-# colours:
-#	Seen
-#	New (since last fetch)
-#	Unseen
-
-# SENDER:
-#	write to tmp.txt
-#	edit tmp.txt <yourname@here>
-#	attach files
-
-# Bolden (new since last time)
 
 # Save attachments

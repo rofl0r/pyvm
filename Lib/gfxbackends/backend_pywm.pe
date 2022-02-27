@@ -230,7 +230,7 @@ class WindowClass (**BaseWin)
 				r = "MOTION",
 			} else if (r0 in ("CLICK", "UNCLICK"))
 				r [1:] = [int (x) for (x in r [1:])]
-			else if (r0 == "PRESS")
+			else if (r0 in ("PRESS", "RELEASE"))
 				if (r [1] == "NL")
 					r [1] = "\n"
 				else if (r [1] == "SP")
