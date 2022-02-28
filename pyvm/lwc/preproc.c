@@ -45,7 +45,7 @@ const static char banner [] =
 "Internet: http://students.ceid.upatras.gr/~sxanth/lwc/\n"
 "This program is *Freeware*.  Save the trees\n\n";
 
-char main_file [100];
+char main_file [256];
 bool sys_cpp =
 #ifdef DO_CPP
  0
@@ -100,11 +100,11 @@ void preproc (int argc, char **argv)
 	}
 
 	if (sys_cpp) {
-		sprintf (main_file, "%s%i", PREPROCFILE, getpid ());
+		snprintf (main_file, sizeof(main_file), "%s%i", PREPROCFILE, getpid ());
 		RUN (main_file, cppopt);
 	} else {
 #ifdef	DO_CPP
-		strcpy (main_file, current_file);
+		strncpy (main_file, current_file, sizeof(main_file));
 		setup_cpp (argc, argv);
 #endif
 	}

@@ -81,11 +81,16 @@ enum {
 	RESERVED_short,
 	RESERVED_signed,
 	RESERVED_unsigned,
+	RESERVED_ssz_t,
+	RESERVED_usz_t,
 
 	// C base types
 	RESERVED_void,
 	RESERVED_char,
 	RESERVED_int,
+#ifdef __LWC_HAS_FLOAT128
+	RESERVED__Float128,
+#endif
 	RESERVED_float,
 	RESERVED_double,
 #define ISTBASETYPE(x) (x >= RESERVED_long && x <= RESERVED_double)
@@ -283,7 +288,7 @@ static inline int issymbol (int x) { return ISSYMBOL (x); }
 static inline int isvalue (int x) { return ISVALUE (x); }
 #define ISSYMVAL(x) (x >= SYMBASE)
 static inline int isoperator (int x)
-{ return x <= '~' || x > ELLIPSIS && x <= ASSIGNLS || x == RESERVED_sizeof; }
+{ return x <= '~' || (x > ELLIPSIS && x <= ASSIGNLS) || x == RESERVED_sizeof; }
 static inline int isescoperator (int x)
 { return x > ESCBASE && x < IDENTBASE ? x - ESCBASE : 0; }
 #define ISTPLARG(x) (x >= ARGBASE && x < VALBASE)

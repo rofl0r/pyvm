@@ -25,8 +25,8 @@ for opt do
 done
 
 # do not generate config.h if it exists
-if test $force = "no"; then
-	if test -a config.h; then
+if  test $force = "no" ; then
+	if test -e config.h ; then
 		exit
 	fi
 fi
@@ -191,7 +191,7 @@ fi
 
 cat > TMP.py << EOF
 import sys
-if sys.version_info[0] == 2 and sys.version_info [1] in (3, 4, 5):
+if sys.version_info[0] == 2 and sys.version_info [1] in (3, 4, 5, 7):
 	# Not very robust but works in the common case
 	path = min ([x for x in sys.path if x.startswith ('/usr')])
 	print path + "/"
@@ -222,7 +222,7 @@ EOF
 
 echo '# config.mak, automatically generated' > config.mak
 
-if [ $have_zlib == "yes" ] ; then
+if [ $have_zlib = "yes" ] ; then
 	echo "ZLIBO=" >> config.mak
 else
 	echo "ZLIBO=zlib/libz.a" >> config.mak
@@ -243,10 +243,10 @@ if [ $endian = "big" ] ; then
 else
 	echo '#define PYVM_ENDIAN PYVM_ENDIAN_LITTLE' >> config.h
 fi
-if [ $have_memrchr == "yes" ] ; then
+if [ $have_memrchr = "yes" ] ; then
 	echo '#define HAVE_MEMRCHR' >> config.h
 fi
-if [ $have_ppoll == "yes" ] ; then
+if [ $have_ppoll = "yes" ] ; then
 	echo '#define HAVE_PPOLL' >> config.h
 fi
 if [ $python_path ] ; then

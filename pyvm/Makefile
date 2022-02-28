@@ -94,7 +94,7 @@ zlib/libz.a: zlib/*.[ch]
 	cd zlib && make
 
 clean:
-	rm objdir/*.o
+	rm -f objdir/*.o
 
 objdir/seg-malloc.c: seg-malloc.c+ mallok.h
 	$(LWC) seg-malloc.c+ > objdir/seg-malloc.c
