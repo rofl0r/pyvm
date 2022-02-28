@@ -29,7 +29,7 @@ char *current_file;
 void init ()
 {
 	Token t;
-	int p [6] = { -1, };
+	int p [8] = { -1, };
 	Token nodcl [] = { -1 };
 	Token xargs [] = { RESERVED_x, -1 };
 
@@ -88,31 +88,31 @@ void init ()
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, 0, 0, 0);
 	}
 
-	if (t = Lookup_Symbol ("__builtin_popcount")) {
+	if ((t = Lookup_Symbol ("__builtin_popcount"))) {
 		sintprintf (p, B_SINT, '(', typeID_int, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_constant_p")) {
+	if ((t = Lookup_Symbol ("__builtin_constant_p"))) {
 		sintprintf (p, B_SINT, '(', B_ELLIPSIS, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_strcmp")) {
+	if ((t = Lookup_Symbol ("__builtin_strcmp"))) {
 		sintprintf (p, typeID_charP, '(', typeID_charP, typeID_charP, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_strchr")) {
+	if ((t = Lookup_Symbol ("__builtin_strchr"))) {
 		sintprintf (p, typeID_charP, '(', typeID_charP, typeID_int, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_memset")) {
+	if ((t = Lookup_Symbol ("__builtin_memset"))) {
 		sintprintf (p, typeID_charP, '(', typeID_charP, typeID_charP, typeID_int, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_memmove")) {
+	if ((t = Lookup_Symbol ("__builtin_memmove"))) {
 		sintprintf (p, typeID_charP, '(', typeID_charP, typeID_charP, typeID_int, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
-	if (t = Lookup_Symbol ("__builtin_memcpy")) {
+	if ((t = Lookup_Symbol ("__builtin_memcpy"))) {
 		sintprintf (p, typeID_charP, '(', typeID_charP, typeID_charP, typeID_int, INTERNAL_ARGEND, -1);
 		xdeclare_function (&Global, t, t, enter_type (p), nodcl, xargs, FUNCP_NOTHROW, 0,0);
 	}
@@ -153,6 +153,7 @@ static const char stdc [] =
    "#define __STDC_VERSION__ 199901L\n"
    "";
 
+#ifdef	DO_CPP
 static const char stddef [] = 
 #ifdef __GNUC__
 	// hairy gcc crap...
@@ -170,6 +171,7 @@ static const char stddef [] =
 #endif
    "extern void free (void*);\n"
    "";
+#endif
 
 static const char stdlwc [] =
    ";\n";
@@ -182,7 +184,7 @@ static const char stdlwc [] =
 
 int main (int argc, char **argv)
 {
-	srand (time (NULL) ^ getpid () ^ (int) argv ^ (int) &argc ^ (int) main);
+	srand (time (NULL) ^ getpid () ^ (intptr_t) argv ^ (intptr_t) &argc ^ (intptr_t) main);
 #ifdef	DEBUG
 	enable_debugs ();
 #endif
@@ -242,6 +244,11 @@ int main (int argc, char **argv)
 	FUNCDEFCODE = new_stream ();
 
 	output_itoken (INCLUDE, new_symbol (strdup ("/* lightweight c++ "LWC_VERSION" */\n")));
+	output_itoken (INCLUDE, new_symbol (strdup ("#ifndef LWC_SIZES\n")));
+	output_itoken (INCLUDE, new_symbol (strdup ("#define LWC_SIZES\n")));
+	output_itoken (INCLUDE, new_symbol (strdup ("#define usz_t __SIZE_TYPE__\n")));
+	output_itoken (INCLUDE, new_symbol (strdup ("#define ssz_t __INTPTR_TYPE__\n")));
+	output_itoken (INCLUDE, new_symbol (strdup ("#endif\n")));
 #ifdef	COMMENT_OUTPUT
 	output_itoken (INCLUDE, new_symbol (COMMENT_SECTION_INCLUDE));
 	output_itoken (FPROTOS, new_symbol (COMMENT_SECTION_PROTOTYPES));
@@ -281,7 +288,7 @@ int main (int argc, char **argv)
 #endif
 
 	if (Global) export_fspace (Global);
-	outprintf (FPROTOS, RESERVED_void, '*', RESERVED_malloc, '(', RESERVED_size_t,
+	outprintf (FPROTOS, RESERVED_void, '*', RESERVED_malloc, '(', RESERVED_usz_t,
 		   ')', ';', RESERVED_void, RESERVED_free, '(', ')', ';', -1);
 
 	PROGRESS ("expanding output");

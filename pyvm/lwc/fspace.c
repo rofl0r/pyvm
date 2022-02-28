@@ -75,6 +75,9 @@ static char *mangle_type (char *p, typeID t, bool promo)
 		ncase B_FLOAT: *p++ = 'f';
 		ncase B_DOUBLE: *p++ = 'F';
 		ncase B_LDOUBLE: *p++ = 'D';
+#ifdef __LWC_HAS_FLOAT128
+		ncase B_FLOAT128: *p++ = 'Q';
+#endif
 		ndefault: *p++ = 'v';
 	}
 	return p;
@@ -440,7 +443,7 @@ int xlookup_function (fspace S, Token e, typeID argv[], flookup *ret)
 	match->used = true;
 	ret->oname = match->name;
 	ret->t = match->type;
-	if (ret->dflt_args = match->dflt_args) {
+	if ((ret->dflt_args = match->dflt_args)) {
 		for (o = (funcp*) S->v.p; o->name != match->name; o = o->next);
 		o->used = true;
 	}
