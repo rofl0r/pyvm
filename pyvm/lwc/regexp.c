@@ -238,7 +238,7 @@ static int mk_class (regstr R, int *p)
 {
 	int i = 0, j1, j2, c;
 	int not = R [i++] == RE_SPECIAL_ONBRAK;
-	char base_class [BASE_CLASS_BUF_SIZE];
+	char base_class [BASE_CLASS_BUF_SIZE+1];
 
 	if (!not && R [i + 1] == RE_SPECIAL_CBRAK && R [i] < BASE_CLASS_MAX_SIZE) {
 		*p = R [i];
@@ -246,7 +246,7 @@ static int mk_class (regstr R, int *p)
 	}
 
 	memset (base_class, '0', BASE_CLASS_BUF_SIZE);
-	base_class [258] = 0;
+	base_class [BASE_CLASS_BUF_SIZE] = 0;
 
 	while (R [i] != RE_SPECIAL_CBRAK)
 		if (R [i] < BASE_CLASS_MAX_SIZE) {
